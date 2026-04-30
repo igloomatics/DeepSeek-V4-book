@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>第三部分 · 预训练</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="p3">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">第三部分 · 预训练</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span>第三部分 · 预训练</div>
+
+      <article class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>PART 3 · 3 章 · 预训练</div>
+        <h2 class="chapter-title">第三部分 · 预训练</h2>
+        <p class="chapter-sub">32T tokens 怎么挑、loss spike 怎么压、Base 模型怎么读评分。</p>
+
+        <div class="meta-row">
+          <span><strong>章节数</strong>3 章（Ch13–Ch15）</span>
+          <span><strong>预计阅读</strong>30–40 分钟</span>
+          <span><strong>难度</strong>★★★☆☆</span>
+          <span><strong>前置</strong>tokenization / FIM、MoE 路由、long-context 训练调度</span>
+        </div>
+
+        <div class="part-jump">
+          <a href="#objectives">▸ 学习目标</a>
+          <a href="#roadmap">▸ 章节路线图</a>
+          <a href="#recap">▾ 本部分小结</a>
+          <a href="#quiz">▾ 自检题</a>
+        </div>
+
+        <div class="objectives" id="objectives">
+          <div class="objectives-eyebrow">▸ LEARNING OBJECTIVES</div>
+          <h3>读完这部分，你将能够</h3>
+          <ul>
+            <li>列出 V4 的 32T 预训练数据与 V3 相比的 4 个关键差异，并说出每个差异背后的目的。</li>
+            <li>读懂 V4-Pro / Flash 的关键超参表，并解释 4K → 16K → 64K → 1M 序列长度调度的工程意义。</li>
+            <li>解释 Anticipatory Routing 的"用 θ_t 算特征、用 θ_{t-Δt} 算路由"为什么能压住 loss spike。</li>
+            <li>说出 SwiGLU Clamping 的两组阈值（线性 [-10,10] / gate ≤ 10），并解释 DeepSeek 为什么愿意公开"还没理解清楚"的 trick。</li>
+            <li>读懂 V3.2-Base / V4-Flash-Base / V4-Pro-Base 的同框对比表，指出"Flash 用更小的参数赢更多 benchmark"的关键证据。</li>
+            <li>说出为什么 Base 评测对后续 OPD 的"可达 ceiling"具有决定性。</li>
+          </ul>
+        </div>
+
+        <h3 id="roadmap">本部分章节路线图</h3>
+        <div class="roadmap">
+          <a class="roadmap-card" href="../chapters/ch13.html">
+            <div class="roadmap-num">CH 13</div>
+            <h4>32T Tokens 数据构造</h4>
+            <p>长文档优先、采样级 mask、超参表速查。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch14.html">
+            <div class="roadmap-num">CH 14</div>
+            <h4>Anticipatory & SwiGLU 钳位</h4>
+            <p>两个朴素而极有效的稳定性 trick。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch15.html">
+            <div class="roadmap-num">CH 15</div>
+            <h4>Base 模型评测</h4>
+            <p>三模型同框对比，后训练能蒸出多大 ceiling 由此决定。</p>
+          </a>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">如何阅读这部分</div>
+          <p>
+            如果你只关心"V4 与 V3 在数据 / 稳定性上有哪些不同"，<strong>Ch13 + Ch14</strong> 已经够。Ch15 是<em>把 architecture + 数据红利量化</em>的桥段——在跳进后训练之前，请确认 Pro-Base 的"高起点"是真实存在的。
+          </p>
+        </div>
+
+        <div class="part-divider"><span>读完 3 章后,回来看这里</span></div>
+
+        <h3 id="recap">本部分小结</h3>
+        <div class="recap">
+          <div class="recap-eyebrow">▾ KEY TAKEAWAYS</div>
+          <h3>核心要点回顾</h3>
+          <ul>
+            <li><strong>数据（Ch13）</strong>：32T 长文档优先、采样级 mask、tokenizer 沿用、agentic mid-training 注入；序列长度 4K → 16K → 64K → 1M 阶梯式扩。</li>
+            <li><strong>稳定（Ch14）</strong>：Anticipatory Routing 把"路由 / 主干"更新解耦压 spike；SwiGLU Clamping 双阈值（线性 [-10,10] / gate ≤ 10）灭 outlier。</li>
+            <li><strong>评测（Ch15）</strong>：Flash-Base 用 284B 总参反超 V3.2-Base 671B；Pro-Base 在 17 个 benchmark 拿下 14 个第一，FACTS Parametric +35.5、Simple-QA +27。</li>
+          </ul>
+        </div>
+
+        <h3>关键公式 / 参数速查</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>位置</th><th>表达 / 数值</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr><td>SwiGLU 钳位</td><td>线性 [-10, 10] / gate ≤ 10</td><td>消 outlier 不掉性能</td></tr>
+              <tr><td>Anticipatory 开销</td><td>~20%（仅 spike 时）</td><td>平时回退 standard 路由</td></tr>
+              <tr><td>序列长度调度</td><td>4K → 16K → 64K → 1M</td><td>阶梯式扩长上下文</td></tr>
+              <tr><td>训练 token</td><td>32T (Flash) / 33T (Pro)</td><td>近似总规模</td></tr>
+              <tr><td>采样级 mask</td><td>同源样本可见 / 跨源屏蔽</td><td>V4 与 V3 的关键差异</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>设计直觉地图</h3>
+        <ul>
+          <li>稳定性的两个 trick 是<em>"承认子系统会发散，但把发散关在小窗口里"</em>—— 与 mHC（Ch3）的"残差矩阵从主干隔出"是同一种思路。</li>
+          <li>Base 评测里 Flash-Base 反超 V3.2-Base 的事实直接说明：<em>架构红利 &gt; 参数红利</em>。这是 Part 1 + Part 2 在数据上的"兑现单"。</li>
+          <li>序列长度调度不是单纯"扩 ctx"，而是<em>稀疏 attention 切换的时机</em>—— sparse attention 在 64K 阶段才接管，前 1T token 用 dense warmup。</li>
+        </ul>
+
+        <h3 id="quiz">自检题</h3>
+
+        <div class="quiz">
+          <p class="quiz-q">Q1. V4 与 V3 在 attention masking 上的最大差异是什么？为什么这个改动重要？</p>
+          <details><summary>查看参考答案</summary>
+            <p>V4 引入 <strong>sample-level attention masking</strong>—— 同一 packed sequence 中跨样本的 token <em>不可见</em>。V3 没这一步。改动重要是因为长文档优先后样本平均更长 + packing 概率上升，cross-sample 信号会引入隐性"关联噪声"，sample-level mask 把每个样本当独立 context 处理，干净得多。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q2. Anticipatory Routing 用 θ_{t-Δt} 算路由 index，为什么不会让训练偏离方向？</p>
+          <details><summary>查看参考答案</summary>
+            <p>(1) 仅 spike 检测到时短暂触发，平时回退 standard；(2) Δt 很小，θ_{t-Δt} 与 θ_t 差距可控；(3) 主干特征仍用 θ_t；只是路由这一步被解耦，不影响信号本身的传递。本质是"治标"而不是"治本"——但治标足够。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q3. 为什么 Pro-Base 上 FACTS Parametric +35.5 这个数字尤其值得关注？</p>
+          <details><summary>查看参考答案</summary>
+            <p>FACTS Parametric 测的是<em>模型参数里"真"事实知识的浓度</em>，与训练数据规模 / 质量直接挂钩。+35.5 说明 V4 的数据策展（长文档 / 多语言 / agentic mid-training）真正在<em>知识密度</em>上提质。这给后续 OPD 蒸馏定下了高 ceiling —— teacher 知道得多，student 才学得到。</p>
+          </details>
+        </div>
+
+        <div class="interactive-slot">
+          预留位：4K → 16K → 64K → 1M 序列长度阶梯调度的可视化、Anticipatory routing 的 θ_t / θ_{t-Δt} 解耦动画、Base 三模型按维度对比 radar / bar。
+        </div>
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本页目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+</body>
+</html>

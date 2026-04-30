@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 09 · 批不变与确定性 — 训推一致的护身符</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch9">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 09 · 批不变与确定性</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part2.html">第二部分 · 基础设施</a><span class="sep">/</span>Ch 09</div>
+
+      <article id="ch9" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 09</div>
+        <h2 class="chapter-title">批不变与确定性 — 训推一致的护身符</h2>
+        <p class="chapter-sub">同一个 token，不论批次多大、不论排在哪个位置、不论训练还是推理，输出 bit 完全一致。这件事看起来"显而易见"，工程上却几乎所有 GPU 加速优化都默默破坏它 —— V4 是怎么逐个 patch 回来的。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"批不变 + 确定性"</div>
+          <p class="term-name">批不变 = 同一 token 单独跑、混在 batch 里跑、不同 batch size 跑，输出逐 bit 一致；确定性 = 同一份输入跑两次输出逐 bit 一致</p>
+          <p>
+            一句话：<strong>大多数 GPU 优化都默认浮点结合律成立，所以会重排归约顺序换取并行度</strong>；这就破坏了"同一计算图同输入输出固定"的承诺。V4 选择放弃部分并行优化（split-K、atomicAdd），换 train / RL / infer 三段 bit-identical，让 loss spike 可调试、prompt cache 可命中、RL 优势函数可重放。
+          </p>
+          <dl>
+            <dt>浮点结合律不成立</dt>
+            <dd>$(a + b) + c \ne a + (b + c)$ 在 FP32 / BF16 下都常出现 1ULP 差异。原因：每次加法做 round-to-nearest，<em>累计误差和加法顺序绑死</em>。这是后面所有 patch 的根源：只要顺序变了，结果就变了。</dd>
+
+            <dt>批不变（Batch Invariance）</dt>
+            <dd>性质 A：同一 token 在 batch_size=1 与 batch_size=4096 下走 forward，<em>logits 字节相同</em>。这是 prompt cache 命中、推理 split decode 一致、训练-推理对齐的前提。</dd>
+
+            <dt>确定性（Determinism）</dt>
+            <dd>性质 B：同样代码 + 同样输入 + 同样 seed，跑两遍输出字节相同。<em>比批不变更弱</em>（不要求 batch 变化下也一致），但更基础 —— 没有它连"重启复现"都做不到。</dd>
+
+            <dt>split-K（被放弃的优化）</dt>
+            <dd>大 GEMM 把 reduction 维 $K$ 切成多块并行算，最后归约。能把利用率从 60% 提到 90%，<em>但归约顺序由 SM 调度决定</em> —— batch size 一变，分块数变，顺序变，结果也变。V4 的 DeepGEMM 不用 split-K，靠其他优化追平性能。</dd>
+
+            <dt>atomicAdd（破坏确定性的元凶）</dt>
+            <dd>多个 thread 并发加同一个地址，硬件保证<em>加完不丢</em>，但<strong>谁先加谁后加由调度决定</strong>。结果非确定。Sparse Attn 反向、MoE 反向都天然多 writer，原本最爱用它。</dd>
+
+            <dt>DeepGEMM（V4 自研 GEMM）</dt>
+            <dd>替代 cuBLAS 的批不变 GEMM 实现。<em>不用 split-K</em>，靠 swizzle、persistent kernel、tile-level 流水把单 SM 利用率拉满。性能与 cuBLAS 持平甚至略胜。</dd>
+
+            <dt>长序列单 SM 解码 + 末尾分布式补 wave</dt>
+            <dd>Attention 推理的批不变方案：长 prefix 解码<em>固定一个 SM 串行算</em>（顺序固定），末尾 token 用 distributed shared memory 多 SM 并行补齐 —— <em>第二个 kernel 仍然按确定顺序归约</em>。</dd>
+
+            <dt>SM-local 累加 + 全局确定性归约</dt>
+            <dd>Sparse Attn 反向的方案：每个 SM 在自己的 shared mem 里累加自己负责的部分，<em>不跨 SM atomicAdd</em>；最后所有 SM 各自的部分按 SM id 顺序归约。<strong>顺序固定就字节固定</strong>。</dd>
+
+            <dt>mHC 反向的 split-K（不得不用）</dt>
+            <dd>mHC 的 expansion 矩阵输出维只有 24，K 维 7168 → 必须 split-K。V4 的妥协：每个 split <em>单独 output 一个 buffer</em>，再用确定性 reduce kernel 求和（顺序按 split id）。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>"批不变 + 确定性"是一组放弃<em>非结合优化</em>换<em>可调试性 + 训推一致 + 缓存命中</em>的工程交易。每一处都有显式代价（DeepGEMM 不用 split-K、Sparse Attn 反向不用 atomicAdd、mHC 自己写 reduce），合起来让 V4 的 1.6T 训练真正可工程化。</div>
+        </div>
+
+        <!-- ================== §1 浮点结合律不成立 ================== -->
+        <h3 id="float">1. 一切问题的根源：浮点加法不结合</h3>
+        <p>
+          GPU 一切并行归约的优化都默默假设 $(a+b)+c = a+(b+c)$。但这条在 IEEE-754 浮点下<em>从来不成立</em>：每次加法都要 round-to-nearest，<strong>round 的方向取决于当时 mantissa 谁的位多</strong>，所以哪两个数先加会改变最后一位 bit。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译 · 1ULP 差异是怎么来的</div>
+          <p>BF16 只有 7 bit mantissa，假设算 $1.0 + 1\mathrm{e}{-3} + 1\mathrm{e}{-3}$：</p>
+          <ul>
+            <li><strong>顺序 A：$(1.0 + 0.001) + 0.001$</strong>。第一步 1.001 → BF16 量化为 $1.0$（小数被吞），再加 0.001 还是 $1.0$。<em>结果 = 1.0</em>。</li>
+            <li><strong>顺序 B：$1.0 + (0.001 + 0.001)$</strong>。第一步 0.002 在 BF16 下是 ~$0.001953$（精确），再加 1.0 → 1.001953 → BF16 量化 → 约 <em>$1.00195$</em>。</li>
+          </ul>
+          <p>两个顺序差 ~$2\mathrm{e}{-3}$ —— 在大数 + 一堆小数的累加里这就是<strong>1 ULP 量级的偏差</strong>。看似无害，但累计 1 万次后偏差量级 $\sqrt{10^4}\times 1\text{ULP} = 100$ ULP，足以让 logits 翻不同 token，让 RL 的优势计算翻号。</p>
+          <p>所以"批不变 + 确定性"不是<em>哲学洁癖</em>，而是<strong>"同一段计算的语义</strong>"。要么你接受"每次跑结果不一样、loss spike 永远复现不了"，要么你按下面的方式一项一项守住顺序。</p>
+        </div>
+
+        <!-- ================== VIZ: 浮点求和顺序敏感性 ================== -->
+        <div class="viz" id="viz-fp">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 同一组数，不同求和顺序，结果差几个 ULP</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 280" id="fp-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- input array display -->
+            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">输入数组（混合大小数，N=<tspan id="fp-n">16</tspan>）</text>
+            <g id="fp-input"></g>
+
+            <!-- result rows -->
+            <text x="20" y="118" font-size="12" fill="#1c2433" font-family="Inter" font-weight="600">顺序 A：左到右 sequential add</text>
+            <text x="380" y="118" font-size="12" fill="#475569" font-family="JetBrains Mono" id="fp-sum-seq">0</text>
+
+            <text x="20" y="148" font-size="12" fill="#1c2433" font-family="Inter" font-weight="600">顺序 B：tree reduction（pairwise）</text>
+            <text x="380" y="148" font-size="12" fill="#475569" font-family="JetBrains Mono" id="fp-sum-tree">0</text>
+
+            <text x="20" y="178" font-size="12" fill="#1c2433" font-family="Inter" font-weight="600">顺序 C：split-K 模拟（4 块并行 + 归约）</text>
+            <text x="380" y="178" font-size="12" fill="#475569" font-family="JetBrains Mono" id="fp-sum-split">0</text>
+
+            <text x="20" y="208" font-size="12" fill="#1c2433" font-family="Inter" font-weight="600">顺序 D：随机 shuffle 后求和</text>
+            <text x="380" y="208" font-size="12" fill="#475569" font-family="JetBrains Mono" id="fp-sum-shuf">0</text>
+
+            <line x1="20" y1="226" x2="700" y2="226" stroke="#cbd5e1"/>
+            <text x="20" y="246" font-size="11" fill="#1c2433" font-weight="600">最大差异 = <tspan id="fp-diff" fill="#dc2626" font-family="JetBrains Mono">0</tspan> ULP（FP32）</text>
+            <text x="20" y="262" font-size="10" fill="#94a3b8">点"重抽数据"换一组随机大/小数；同一组里四种顺序都用 FP32 模拟。</text>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="fp-resample">🎲 重抽 16 个数</button>
+            <button class="viz-btn" id="fp-bigger">N → 64（更大数组）</button>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：四个求和都用 FP32（IEEE-754 单精度）。同一组 16 个数，A/B/C/D 仅<em>顺序</em>不同。"差异 ULP" = (max - min) / ULP(max)。<em>典型差异 1–10 ULP，最坏可达 100+ ULP</em>。
+            <br>
+            把 N 加到 64 你能看到差异变得更明显 —— GEMM 的 K 维常 4K-32K，那里的差异会更显著。这就是 split-K 一旦 K 切法变化，结果就变化的本质来源。<strong>V4 的批不变 = 把"顺序"作为一阶语义钉死</strong>。
+          </p>
+        </div>
+
+        <!-- ================== §2 批不变 ================== -->
+        <h3 id="batch-inv">2. 批不变：Attention 与 GEMM 各下一刀</h3>
+
+        <h4>2.1 Attention：放弃 split-KV</h4>
+        <p>
+          推理时常见的优化是<strong>split-KV</strong>：把长 prefix 的 KV 维切成多段，每段一个 SM 算 attention，最后归约。<em>问题</em>：batch_size 不同 → SM 占用不同 → 切法不同 → 归约顺序不同 → 同一 token 的 logits 字节不一样。
+        </p>
+        <p>
+          V4 选择<strong>双 kernel 方案</strong>：
+        </p>
+        <ul>
+          <li><strong>长 prefix kernel</strong>：固定<em>一个 SM 串行</em>跑完整 prefix 的 attention。慢但顺序确定。</li>
+          <li><strong>末尾 wave kernel</strong>：剩下的几十个 token（远小于 SM 数）用 distributed shared memory 跨 SM 协同，但<em>归约阶段按 SM id 排序</em>，仍然确定。</li>
+        </ul>
+        <p>
+          代价是 prefix 部分单 SM 跑慢约 1.5×，但因为 prefix 通常 cache 命中，绝对开销可接受；末尾 wave 阶段并行度足够，综合下来推理 throughput 比 split-KV 慢 ~10%，换来 batch-invariant logits。
+        </p>
+
+        <h4>2.2 GEMM：DeepGEMM 不用 split-K</h4>
+        <p>
+          cuBLAS 在大 K（≥ 4K）时默认 split-K，<em>每个 batch 大小自动选不同切法</em>。V4 自研 DeepGEMM 把 split-K 整体砍掉，靠下面三件事追平性能：
+        </p>
+        <ol>
+          <li><strong>Persistent kernel</strong>：一个 kernel 内手动循环 N×M tile，避免反复 launch；</li>
+          <li><strong>Tile-level pipeline</strong>：load 下一 tile 与 compute 当前 tile 重叠，让 SM 利用率不靠 split-K 也能 ≥ 85%；</li>
+          <li><strong>Swizzle layout</strong>：shared memory 按 banks 错位排，避免 bank conflict。</li>
+        </ol>
+        <p>
+          实测在 V4 的典型 GEMM shape 下 DeepGEMM 比 cuBLAS-split-K <em>快 2–5%</em>，并且 batch_size 任意变化字节相同。
+        </p>
+
+        <!-- ================== §3 确定性：sparse attn 反向 / MoE 反向 ================== -->
+        <h3 id="determ">3. 确定性：sparse attn 反向 / MoE 反向 / mHC 反向</h3>
+
+        <h4>3.1 Sparse Attn 反向：拒绝 atomicAdd</h4>
+        <p>
+          Sparse attention（CSA / HCA / Indexer）反向时，每个查询 token 的梯度要回写到它选中的那 $k$ 个 key 上。<em>不同查询可能选中同一个 key</em> → 多 writer → atomicAdd 是"自然"选择。但 atomicAdd 的<em>顺序由调度决定</em>，破坏确定性。
+        </p>
+        <p>
+          V4 的方案：<strong>SM-local 累加 + 全局确定性归约</strong>：
+        </p>
+        <ol>
+          <li>把 query token 按 SM id 划分；</li>
+          <li>每个 SM 在自己的 shared memory 里累加自己负责的查询对 keys 的贡献；</li>
+          <li>所有 SM 完成后，按 <em>SM id 顺序</em>把各 SM 的部分加到 global key buffer。</li>
+        </ol>
+        <p>
+          代价是显存占用增加（每个 SM 一份 key buffer 切片），但归约顺序<strong>由 SM id 决定，与调度无关</strong>，字节固定。
+        </p>
+
+        <h4>3.2 MoE 反向：token 排序预处理 + buffer 隔离</h4>
+        <p>
+          MoE 反向时，每个 expert 的梯度要回写给所有派发到它的 tokens。直接写会因为<em>token 在 dispatch 时被打乱</em>而非确定。V4 的做法：
+        </p>
+        <ul>
+          <li><strong>每个 rank 内</strong>：dispatch 阶段对落到该 rank 的 tokens 按 (expert_id, original_token_id) <em>排序</em>，得到稳定顺序；</li>
+          <li><strong>每个 expert</strong>：单独的 grad buffer，写入位置由排序后下标决定；</li>
+          <li><strong>合并阶段</strong>：按排序顺序遍历 buffer 累加，<em>无 atomicAdd</em>。</li>
+        </ul>
+
+        <h4>3.3 mHC 反向：被迫 split-K，但自己写 reduce</h4>
+        <p>
+          mHC 的 expansion 矩阵 $W \in \mathbb{R}^{n \times r}$ 输出维 $r=24$，K 维 $n=7168$。这个 shape 极扁，<em>不切 K 的话单 SM 算太久 GPU 闲</em>。所以 mHC 不得不 split-K。妥协：
+        </p>
+        <ul>
+          <li>每个 K-split <em>单独 output 到独立 buffer</em>（不直接归约）；</li>
+          <li>归约由<em>专门的 deterministic reduce kernel</em> 完成，按 split id 顺序累加；</li>
+          <li>split id 与 batch size 无关，由 K 维分块决定 → batch-invariant 仍然成立。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 这些 patch 的代价</span>
+          <ul>
+            <li><strong>Attention 单 SM prefix</strong>：单 layer 推理慢 ~1.5×，但因 prefix cache 命中率高，整体 wall-time 慢 ~10%；</li>
+            <li><strong>DeepGEMM vs cuBLAS</strong>：实测<em>持平或快 2–5%</em>（大 K 下持平、小 K 下快）；</li>
+            <li><strong>Sparse Attn 反向 buffer</strong>：每 SM 一份 key 切片显存 ~40 MB（H100 SMs=132），可接受；</li>
+            <li><strong>MoE 反向排序</strong>：dispatch 阶段额外 ~5 µs，相对 all-to-all ~480 µs 可忽略；</li>
+            <li><strong>mHC 自定 reduce</strong>：额外 ~3% mHC 层时间，相对总训练 0.2%；</li>
+          </ul>
+          <strong>合计代价 ~3–8% wall-time</strong>。换回的是"loss spike 可逐 bit 重放" + "prompt cache 全命中" + "RL rollout 与训练对齐"，工程上是赚的。
+        </div>
+
+        <!-- ================== §4 为什么这件事重要 ================== -->
+        <h3 id="why">4. 为什么这件事是隐藏 MVP</h3>
+        <div class="callout callout-good">
+          <div class="callout-title">三件事少一样都做不成</div>
+          <ol>
+            <li><strong>调试</strong>：1.6T 模型在第 N 步爆 NaN，没有 bit-identity → 重启复现已偏；有 bit-identity → 保存 checkpoint，重新跑到那一步，attach debugger，<em>逐 head 逐 token 看到底是哪个数先溢出</em>。这是 V4 1.6T 工程化的根本姿态。</li>
+            <li><strong>训推一致</strong>：训练时 logits=L_train，推理同 prompt 给 L_infer。如果两者 bit 不同，RL 的 advantage = log(π_infer / π_train) 永远不为 0，整个 rollout 数据有偏。批不变让 L_train = L_infer 字节相同，<em>RL 的 reward 信号干净</em>。</li>
+            <li><strong>缓存命中</strong>：prompt cache 按 logits / KV 哈希命中。批不变让<em>同一段 prompt 在不同 batch_size、不同部署位置</em>命中同一份 cache，节省 30%+ prefill 算力。</li>
+          </ol>
+        </div>
+
+        <p>
+          所以批不变 + 确定性<em>不是为了"理论纯洁"</em>，而是为了让前面所有奇技淫巧（CSA / HCA / Muon / FP4 QAT / MegaMoE）<strong>可被复现、可被调试、可被部署</strong>。它是看不见的护城河 —— 平时谁都不会感谢它，出 bug 的那一天它救命。
+        </p>
+
+        <!-- ================== §5 论文图占位 ================== -->
+        <h3 id="figs">5. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">"批不变 vs split-K"对比示意：左图 split-K 的归约顺序随 batch_size 变化的树状图；右图 V4 单 SM prefix + 末尾 wave 的固定顺序示意。</p>
+          <p class="fig-source">V4 技术报告 §6.3，可能为 Figure 7 / 8。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">实测对比表：DeepGEMM vs cuBLAS 在 V4 典型 shape (M=4096, N=4096, K=7168) 下的吞吐 + bit-identity 检查（同一输入跑 1000 次的 hash 一致率）。</p>
+          <p class="fig-source">V4 技术报告 §6.3 表格。</p>
+        </div>
+
+        <h3>本章小结</h3>
+        <ul>
+          <li>浮点不结合是一切非确定性的根源；GPU 一切并行归约优化默认它结合。</li>
+          <li>批不变 = 同 token 跨 batch_size 字节一致；确定性 = 同输入跨次运行字节一致。两者都不是免费的。</li>
+          <li>V4 在 Attention（双 kernel）、GEMM（DeepGEMM 不 split-K）、Sparse Attn 反向（SM-local + 顺序 reduce）、MoE 反向（排序 + buffer）、mHC 反向（split-K + 自定 reduce）逐项守住。</li>
+          <li>合计代价 3–8% wall-time，<strong>换 loss spike 可调、训推 logits 一致、prompt cache 命中</strong>。</li>
+        </ul>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: 浮点求和顺序敏感性
+     ============================================================ -->
+<script>
+(function() {
+  let N = 16;
+  let arr = [];
+
+  // generate mixed magnitude array: half big (~1.0), half tiny (~1e-7)
+  function regen() {
+    arr = [];
+    for (let i = 0; i < N; i++) {
+      if (i % 2 === 0) arr.push(0.5 + Math.random() * 1.5);  // big: 0.5-2.0
+      else arr.push((Math.random() - 0.5) * 2e-6);            // tiny: ~1e-6 magnitude
+    }
+    // shuffle
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    render();
+  }
+
+  // simulate FP32 add by Math.fround
+  function f32(x) { return Math.fround(x); }
+
+  function sumSeq(a) {
+    let s = f32(0);
+    for (let i = 0; i < a.length; i++) s = f32(s + f32(a[i]));
+    return s;
+  }
+  function sumTree(a) {
+    let cur = a.map(f32);
+    while (cur.length > 1) {
+      const next = [];
+      for (let i = 0; i < cur.length; i += 2) {
+        if (i + 1 < cur.length) next.push(f32(cur[i] + cur[i+1]));
+        else next.push(cur[i]);
+      }
+      cur = next;
+    }
+    return cur[0];
+  }
+  function sumSplit(a, k) {
+    // split into k chunks, sum each sequentially, then reduce in id order
+    const chunks = [];
+    const sz = Math.ceil(a.length / k);
+    for (let i = 0; i < a.length; i += sz) {
+      chunks.push(sumSeq(a.slice(i, i + sz)));
+    }
+    return sumSeq(chunks);
+  }
+  function sumShuffled(a) {
+    const b = a.slice();
+    for (let i = b.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [b[i], b[j]] = [b[j], b[i]];
+    }
+    return sumSeq(b);
+  }
+
+  function ulp32(x) {
+    // 1 ULP for FP32 near |x|: 2^(floor(log2|x|) - 23)
+    const ax = Math.abs(x);
+    if (ax === 0) return Math.pow(2, -149);
+    const e = Math.floor(Math.log2(ax));
+    return Math.pow(2, e - 23);
+  }
+
+  function render() {
+    document.getElementById('fp-n').textContent = N;
+    // input visualisation
+    const g = document.getElementById('fp-input');
+    g.innerHTML = '';
+    const startX = 20, y = 50, perRow = 16;
+    for (let i = 0; i < arr.length; i++) {
+      const col = i % perRow;
+      const row = Math.floor(i / perRow);
+      const x = startX + col * 42;
+      const yy = y + row * 24;
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', x); t.setAttribute('y', yy);
+      t.setAttribute('font-size', '9.5');
+      t.setAttribute('font-family', 'JetBrains Mono');
+      t.setAttribute('fill', Math.abs(arr[i]) < 1e-3 ? '#94a3b8' : '#1c2433');
+      // format: small in scientific, big as decimal
+      const v = arr[i];
+      t.textContent = Math.abs(v) < 1e-3 ? v.toExponential(1) : v.toFixed(2);
+      g.appendChild(t);
+    }
+
+    const sSeq = sumSeq(arr);
+    const sTree = sumTree(arr);
+    const sSplit = sumSplit(arr, 4);
+    const sShuf = sumShuffled(arr);
+    document.getElementById('fp-sum-seq').textContent = sSeq.toPrecision(10);
+    document.getElementById('fp-sum-tree').textContent = sTree.toPrecision(10);
+    document.getElementById('fp-sum-split').textContent = sSplit.toPrecision(10);
+    document.getElementById('fp-sum-shuf').textContent = sShuf.toPrecision(10);
+
+    const vals = [sSeq, sTree, sSplit, sShuf];
+    const mx = Math.max.apply(null, vals);
+    const mn = Math.min.apply(null, vals);
+    const diff = mx - mn;
+    const u = ulp32(mx);
+    const ulps = u > 0 ? (diff / u) : 0;
+    document.getElementById('fp-diff').textContent = ulps.toFixed(1);
+  }
+
+  document.getElementById('fp-resample').addEventListener('click', regen);
+  document.getElementById('fp-bigger').addEventListener('click', () => {
+    N = (N === 16) ? 64 : 16;
+    document.getElementById('fp-bigger').textContent = (N === 16) ? 'N → 64（更大数组）' : 'N → 16（小数组）';
+    regen();
+  });
+  regen();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 08 · TileLang — 写给 GPU 的方言</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch8">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 08 · TileLang</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part2.html">第二部分 · 基础设施</a><span class="sep">/</span>Ch 08</div>
+
+      <article id="ch8" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 08</div>
+        <h2 class="chapter-title">TileLang — 写给 GPU 的方言</h2>
+        <p class="chapter-sub">为什么 V4 这种"几百个细粒度算子"的架构在 PyTorch + ATen 下会被 host 开销吃掉性能，TileLang 是怎么用 SMT 求解器 + host codegen 把 per-invocation 开销从几十微秒压到 1µs 以内，以及为什么"位级可复现"是这次替换最值钱的副产品。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂 TileLang</div>
+          <p class="term-name">TileLang = 一种把 GPU kernel 写成 tile-级 Python DSL 的语言，自带 SMT 求解器、host codegen、位级可复现的 lowering 钉死机制</p>
+          <p>
+            一句话：<strong>把"写 CUDA"变成"写 Python 描述 tile 怎么搬"，编译器负责把 host 代码静态生成、用 Z3 解决索引非线性、用 layout 标注钉死代码生成顺序</strong>。
+            净效果：每次 kernel 调用的 host 端开销从 PyTorch + ATen 的 30–100 µs 压到 &lt; 1 µs，并且生成的 SASS 与手写 CUDA <em>bit-identical</em>。
+          </p>
+          <dl>
+            <dt>ATen（被替代的对象）</dt>
+            <dd>PyTorch 的算子库（"A Tensor library"）。每个 op 走"Python → C++ dispatcher → 算子选择 → CUDA launch"四层。<em>per-call 开销 30–100 µs</em>，对粗粒度算子（大 matmul）无所谓，但 V4 一层有 <em>几百</em> 个细算子（CSA 的 indexer / mHC 的 sum reduce / FP4 dequant…），累计后 host 开销吃掉 30%+ wall-time。</dd>
+
+            <dt>Host 开销 vs Device 开销</dt>
+            <dd><strong>Device</strong>：GPU 真正算的时间；<strong>Host</strong>：CPU 把 kernel 排上队的时间（参数打包、stream 选择、launch 系统调用）。<em>kernel 越小，host 占比越高</em>。1µs 这个数字是 PCIe + ioctl 的物理下限附近 —— TileLang 几乎做到了硬件能给的极限。</dd>
+
+            <dt>DSL（Domain-Specific Language）</dt>
+            <dd>领域专用语言。TileLang 是嵌入 Python 的 DSL：你写 Python，但只能用 TileLang 提供的"tile / shared memory / barrier / reduce"等抽象。<em>没有 numpy / for-loop 自由</em> —— 因为编译器要能静态推理。</dd>
+
+            <dt>Z3 / QF_NIA（编译器里的 SMT 求解器）</dt>
+            <dd>Z3 是微软的 SMT 求解器（Satisfiability Modulo Theories）。<strong>QF_NIA</strong> = "Quantifier-Free Nonlinear Integer Arithmetic" —— 处理无量词、整数、含乘除的算术约束。TileLang 用它判断"<em>这个张量索引 `i*M + j*K + k` 在所有合法 `(i,j,k)` 下是否唯一</em>"等问题，从而决定是否能向量化、能否合并访存。<em>把传统编译器需要"启发式 + fallback"的部分，换成可证明的精确判断</em>。</dd>
+
+            <dt>T.annotate_layout（钉死 lowering）</dt>
+            <dd>TileLang 提供的标注：告诉编译器"这块 shared memory 必须按 `swizzle(8, 64)` 排列、这个 thread 必须负责 idx ∈ [0, 32) 的元素"。<em>把"编译器自由发挥"的部分变成显式约束</em>。代价是写 kernel 时多花心思；收益是<strong>同一段 TileLang 代码每次编译都生成同一份 SASS</strong> → 与手写 CUDA bit-identical。</dd>
+
+            <dt>IEEE-754 严格 vs fast-math</dt>
+            <dd>IEEE-754 严格：浮点遵守标准，<em>结合律不成立</em>但每步可预测；fast-math：编译器可任意重排（如 `(a*b)+c` → `fma(a,b,c)`，把 a+b+c 拆成树形归约），<em>速度↑但结果不可预测</em>。TileLang 默认严格，<strong>opt-in 才用 fast-math</strong>（如 <code>T.__exp</code> 走快速指数）。这是"位级可复现"的根基。</dd>
+
+            <dt>位级可复现（bit-identical reproducibility）</dt>
+            <dd>同一段代码、同一份输入，每次跑都<em>逐 bit 相同</em>。比"数值精度一致"更严格。是 V4 工程哲学的核心：<strong>没有 bit-identity，loss spike 无法复现，调试就是赌博</strong>。Ch 09 会展开。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>当一层网络从 5 个粗算子变成 200 个细算子时，"PyTorch 调度开销" 会突然变成主要瓶颈。TileLang 是 V4 拿来止血的工具：<em>用 DSL 替手写 CUDA，用 SMT 替启发式优化，用 layout 标注替"编译器自由"</em>，以"少一点写代码自由 + 多一点编译期可证明"换 30% wall-time 与位级可调试性。</div>
+        </div>
+
+        <!-- ================== §1 ATen 哪里不够 ================== -->
+        <h3 id="aten">1. 为什么 V4 不能再用 ATen</h3>
+        <p>
+          PyTorch 的 ATen 算子库是给"中等粒度算子"设计的：你写 <code>linear(x, W)</code>，它走 Python → C++ dispatcher → 选择最优 kernel → cudaLaunchKernel。<em>调度路径长，但因为 kernel 本身要算 100 µs+，host 的 30 µs 占比可接受</em>。
+          V4 改变了这个前提：
+        </p>
+        <ul>
+          <li><strong>CSA 的 Lightning Indexer</strong>：每层一次 FP4 QK + top-k，单次 kernel ~50 µs，<em>host 开销和它一个量级</em>；</li>
+          <li><strong>mHC 残差</strong>：每层 8 次小 reduce + 8 次 sum，每次 kernel 1–5 µs，<em>host 开销远大于 device</em>；</li>
+          <li><strong>FP4 dequant</strong>：每个 GEMM 前一次小 kernel，单次 ~3 µs；</li>
+          <li><strong>Sparse attention 反向</strong>：上百个 SM-level 的 reduce kernel。</li>
+        </ul>
+        <p>
+          一层 V4 有 <strong>200+ 个 kernel launch</strong>，按 ATen 的 30 µs 算 host 开销 = 6 ms，而 device 真正算的时间 ~10 ms。<em>host 占了 wall-time 的 30%+</em>。
+        </p>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · host 开销吃掉多少 wall-time</span>
+          假设 V4-Pro 一层 attention：
+          <ul>
+            <li>SWA 主干 GEMM × 4：device 1.2 ms，host 4×30 µs = 0.12 ms（10%）；</li>
+            <li>CSA Indexer + topk + gather：device 0.3 ms，host 6×30 µs = 0.18 ms（<strong>60%</strong>）；</li>
+            <li>mHC 残差：device 0.05 ms，host 16×30 µs = 0.48 ms（<strong>~10×</strong>）；</li>
+          </ul>
+          一层合计：device 1.55 ms，host 0.78 ms → wall-time 2.33 ms，其中 host 占 33%。一个 step 61 层 × 2 forward+backward = <strong>~95 ms 单步浪费在 launch</strong>。换 TileLang 后 host 单次 0.8 µs：61×2×200×0.8µs = ~20 ms → <em>每步省 75 ms</em>，相当于 train throughput +10–15%。
+          <br><br>
+          这<em>纯粹是把 launch 的系统调用成本压下去</em>带来的 free lunch —— 不改算法、不改硬件、不改精度，只换语言。
+        </div>
+
+        <!-- ================== §2 TileLang 在做什么 ================== -->
+        <h3 id="design">2. TileLang 怎么做到 &lt; 1 µs</h3>
+        <p>三件事：</p>
+        <ol>
+          <li><strong>Host codegen</strong>：把 shape 校验、stride 计算、grid/block size 选择全部静态生成成 C++，编译时就钉好。运行时 host 路径只剩"打包参数 + ioctl"。</li>
+          <li><strong>无 dispatcher</strong>：每个 TileLang 函数直接编译为一个 CUDA kernel + 一段 host stub，没有 PyTorch 的 op 注册 / dtype 分发链路。</li>
+          <li><strong>编译产物长存</strong>：编译结果按签名 cache，第二次调用直接走 hot path，不再编译。</li>
+        </ol>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译 · launch 时间预算</div>
+          <p>把一次 kernel 调用的 host 时间拆开：</p>
+          <div class="math-block">
+            $$
+            T_{\text{host}} \;=\; \underbrace{T_{\text{py}}}_{\text{Python 字节码}} + \underbrace{T_{\text{disp}}}_{\text{ATen 选 kernel}} + \underbrace{T_{\text{check}}}_{\text{shape/dtype 校验}} + \underbrace{T_{\text{launch}}}_{\text{cudaLaunchKernel}}
+            $$
+          </div>
+          <ul>
+            <li><strong>$T_{\text{py}}$</strong> ~10 µs：Python 解释器栈帧、参数对象创建。<em>TileLang 把它变成一次 C++ stub 调用</em> ≈ 0.2 µs。</li>
+            <li><strong>$T_{\text{disp}}$</strong> ~5 µs：ATen 按 dtype/device 在哈希表里找实现。<em>TileLang 没 dispatcher</em> = 0。</li>
+            <li><strong>$T_{\text{check}}$</strong> ~5–10 µs：检查 contiguous、stride、broadcast。<em>TileLang 在编译期就把这些条件钉成静态约束</em> ≈ 0。</li>
+            <li><strong>$T_{\text{launch}}$</strong> ~5 µs：CUDA 驱动走 ioctl 进 kernel 队列。<em>无法消除，是物理下限</em>。</li>
+          </ul>
+          <p>所以 ATen 的 30 µs 里有 25 µs 是<em>语言/框架开销</em>，可以全部砍掉，剩下 5 µs 就是 cudaLaunchKernel 本身。1 µs 的承诺 = 0.2 µs Python stub + 0.6 µs launch + 0.2 µs 杂项。</p>
+        </div>
+
+        <!-- ================== §3 SMT 进编译器 ================== -->
+        <h3 id="smt">3. 把 Z3 SMT 搬进编译器：QF_NIA 解决索引非线性</h3>
+        <p>
+          传统 GPU 编译器（NVCC、TVM）面对张量索引时，用<em>启发式</em>判断"两次访存能不能合并"、"循环能不能向量化"。启发式的问题：能处理简单情况（<code>i, i+1</code> 相邻），但碰到 <code>i*M + j*K</code> 这种带乘法的就<strong>退化为保守</strong>（不敢合并），白白浪费带宽。
+        </p>
+        <p>
+          TileLang 把这步换成<em>可证明</em>：用 Z3 求解器对索引表达式建立 QF_NIA 约束，问"<strong>是否存在两个不同 thread 写入同一地址</strong>"。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译 · 索引唯一性的 SMT 编码</div>
+          <p>例子：要判断 <code>idx = i*M + j</code>（$0 \le i < N$, $0 \le j < M$）能否安全向量化（即不同 thread 写不同地址）。SMT 编码：</p>
+          <div class="math-block">
+            $$
+            \exists\, i_1, j_1, i_2, j_2 :\; (i_1, j_1) \ne (i_2, j_2) \;\land\; i_1 M + j_1 = i_2 M + j_2
+            $$
+          </div>
+          <p>翻译成大白话：<strong>"存在两组下标，下标本身不同但映射到的地址相同"</strong> —— 如果存在解 → 有冲突，不能向量化；不存在解 → 安全。</p>
+          <p>对启发式来说这条要靠"<em>看 stride 是不是常数</em>"猜，错了直接 segfault。对 SMT 来说这是<em>10ms 内可证明的判定问题</em>。整个编译过程多花几秒，换来运行时<strong>每个 kernel 自动选最优 layout</strong>，不需要手写 hint。</p>
+        </div>
+
+        <!-- ================== VIZ: ATen vs TileLang 时间分布 ================== -->
+        <div class="viz" id="viz-launch">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 单次 kernel launch 的时间分布对比（拖动 kernel device 时长看 host 占比）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 280" id="launch-svg" xmlns="http://www.w3.org/2000/svg">
+            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">PyTorch + ATen</text>
+            <text x="20" y="148" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">TileLang</text>
+
+            <!-- ATen bar -->
+            <g id="aten-bar"></g>
+            <line x1="20" y1="120" x2="700" y2="120" stroke="#cbd5e1"/>
+            <text x="20" y="138" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">总 wall-time = <tspan id="aten-total">0</tspan> µs · host 占 <tspan id="aten-pct" fill="#dc2626" font-weight="600">0%</tspan></text>
+
+            <!-- TileLang bar -->
+            <g id="tile-bar"></g>
+            <line x1="20" y1="246" x2="700" y2="246" stroke="#cbd5e1"/>
+            <text x="20" y="264" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">总 wall-time = <tspan id="tile-total">0</tspan> µs · host 占 <tspan id="tile-pct" fill="#16a34a" font-weight="600">0%</tspan></text>
+
+            <!-- legend -->
+            <g transform="translate(380, 8)">
+              <rect x="0" y="0" width="14" height="10" fill="#fda4af"/><text x="18" y="9" font-size="10" fill="#475569">Python 字节码</text>
+              <rect x="92" y="0" width="14" height="10" fill="#fbbf24"/><text x="110" y="9" font-size="10" fill="#475569">dispatcher</text>
+              <rect x="178" y="0" width="14" height="10" fill="#fb923c"/><text x="196" y="9" font-size="10" fill="#475569">shape check</text>
+              <rect x="270" y="0" width="14" height="10" fill="#a78bfa"/><text x="288" y="9" font-size="10" fill="#475569">launch</text>
+              <rect x="338" y="0" width="14" height="10" fill="#3b82f6"/><text x="356" y="9" font-size="10" fill="#475569">device</text>
+            </g>
+          </svg>
+          <div class="viz-controls">
+            <label>kernel device 时长
+              <input type="range" id="dev-slider" min="2" max="200" step="2" value="50">
+              <span class="viz-readout"><span id="dev-readout">50</span> µs</span>
+            </label>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：每条横向条形是一次 kernel launch 的"时间预算"。ATen 的红/黄/橙段是<em>语言开销</em>（python 10µs + dispatcher 5µs + check 8µs），紫段是 cudaLaunchKernel（5µs，物理下限），蓝段是真正在 GPU 上算的时间。
+            <br>
+            把 device 滑到 <strong>10 µs 以下</strong>（V4 里 mHC 小算子的真实区间）你会看到 ATen 条形里蓝色不到 1/3 —— 这就是为什么细粒度算子下 host 是主瓶颈。TileLang 把红/黄/橙合到 0.2 µs 以内，紫的 launch 是省不掉的 5 µs，但相对占比一下子降到 50% 以下，<em>device 越大 TileLang 优势越不明显</em>，反过来<strong>device 越小 TileLang 越是救命稻草</strong>。
+          </p>
+        </div>
+
+        <!-- ================== §4 IEEE-754 严格 + bit-identical ================== -->
+        <h3 id="repro">4. 位级可复现：默认严格、显式 opt-in fast-math</h3>
+        <p>
+          浮点加法不满足结合律：$(a+b)+c \ne a+(b+c)$ 在 FP32 下也常出现 1ULP 的差异。一旦编译器自由地把 $a+b+c+d$ 重排成<em>树形归约</em>或<em>SIMD 横向求和</em>，<strong>同一段代码每次运行结果就不一样</strong>。这对调试是灾难。
+        </p>
+        <p>
+          TileLang 默认走 IEEE-754 严格：所有归约保持源码顺序，FMA 不自动融合（除非显式写 <code>T.fma</code>）。需要 fast-math 时<em>必须显式调用</em> <code>T.__exp</code>、<code>T.__div</code> 等。配合 <code>T.annotate_layout</code> 钉死 shared memory 排布，<strong>同一份 TileLang 源码 → 同一份 SASS → 同一字节输出</strong>。这就是 Ch 09 整章的"批不变 + 确定性"赖以成立的语言层基础。
+        </p>
+
+        <div class="callout callout-good">
+          <div class="callout-title">"语言级 bit-identical" 在调试里的实战价值</div>
+          <p>
+            假设训练在第 13417 步出现 loss spike。如果代码不是 bit-identical：你重启复现 → 在第 13420 才 spike，参数已经偏了几步，找不到根因。
+            <br>
+            如果是 bit-identical：你保存 13416 步 checkpoint，重新跑一遍 → <strong>每个 logits 字节相同</strong>，可以在出现 NaN 的那一层、那一个 token 上接 debugger，直接看是哪个 attention head 在哪几步爆掉。这就是 V4 把 1.6T 参数训练做工程化的根本姿态：<em>所有"难以复现的 bug"先用工具变成"必然复现"，再去解</em>。
+          </p>
+        </div>
+
+        <!-- ================== §5 论文图占位 ================== -->
+        <h3 id="figs">5. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">TileLang 编译流程图：Python DSL → IR → SMT 求解 → CUDA C → SASS。配套展示 host stub 与 kernel 的二段产物，以及 layout 注解如何钉死 lowering。</p>
+          <p class="fig-source">来源：Wang et al. 2026 《TileLang: A Tile-level DSL for GPU Kernels》 §3，或 V4 技术报告 §6.2 的简化版。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">实测对比图：同一段 mHC kernel 在 ATen / Triton / TileLang 三种实现下的 launch 时间分布（直方图）。</p>
+          <p class="fig-source">V4 技术报告 §6.2，或 TileLang 论文 Figure 7。</p>
+        </div>
+
+        <h3>本章小结</h3>
+        <ul>
+          <li>V4 的细粒度算子化让 host 开销从"可忽略"变成"占 30% wall-time"，必须换语言止血。</li>
+          <li>TileLang 用 host codegen + 无 dispatcher + 编译 cache 把 per-launch 开销从 30 µs 压到 &lt; 1 µs。</li>
+          <li>Z3 SMT 进编译器解决张量索引的非线性约束，<em>把启发式的保守换成可证明的精确</em>。</li>
+          <li>默认 IEEE-754 严格 + 显式 layout 钉死 → 同源同 SASS 同输出 → Ch09 的 bit-identical 调试由此成立。</li>
+        </ul>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: ATen vs TileLang launch 时间分布
+     ============================================================ -->
+<script>
+(function() {
+  // segments: [py, dispatcher, check, launch, device] in µs
+  const ATEN_SEG = { py: 10, disp: 5, check: 8, launch: 5 };
+  const TILE_SEG = { py: 0.2, disp: 0, check: 0, launch: 0.6 };
+  const COLORS = ['#fda4af', '#fbbf24', '#fb923c', '#a78bfa', '#3b82f6'];
+  const X0 = 20, BAR_H = 28;
+  const ATEN_Y = 36, TILE_Y = 162;
+  // µs → px scale: max possible total µs ~250, want fit in 680px
+  const PX_PER_US = 2.7;
+
+  function drawSeg(g, x, y, durUs, color) {
+    const w = Math.max(0.5, durUs * PX_PER_US);
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', y);
+    r.setAttribute('width', w); r.setAttribute('height', BAR_H);
+    r.setAttribute('fill', color); r.setAttribute('stroke', '#ffffff'); r.setAttribute('stroke-width', '0.5');
+    g.appendChild(r);
+    return x + w;
+  }
+
+  function render(devUs) {
+    document.getElementById('dev-readout').textContent = devUs;
+
+    // ATen
+    const ag = document.getElementById('aten-bar');
+    ag.innerHTML = '';
+    let x = X0;
+    x = drawSeg(ag, x, ATEN_Y, ATEN_SEG.py, COLORS[0]);
+    x = drawSeg(ag, x, ATEN_Y, ATEN_SEG.disp, COLORS[1]);
+    x = drawSeg(ag, x, ATEN_Y, ATEN_SEG.check, COLORS[2]);
+    x = drawSeg(ag, x, ATEN_Y, ATEN_SEG.launch, COLORS[3]);
+    x = drawSeg(ag, x, ATEN_Y, devUs, COLORS[4]);
+    const aHost = ATEN_SEG.py + ATEN_SEG.disp + ATEN_SEG.check + ATEN_SEG.launch;
+    const aTotal = aHost + devUs;
+    document.getElementById('aten-total').textContent = aTotal.toFixed(1);
+    document.getElementById('aten-pct').textContent = (aHost / aTotal * 100).toFixed(0) + '%';
+
+    // TileLang
+    const tg = document.getElementById('tile-bar');
+    tg.innerHTML = '';
+    let tx = X0;
+    tx = drawSeg(tg, tx, TILE_Y, TILE_SEG.py, COLORS[0]);
+    tx = drawSeg(tg, tx, TILE_Y, TILE_SEG.disp, COLORS[1]);
+    tx = drawSeg(tg, tx, TILE_Y, TILE_SEG.check, COLORS[2]);
+    tx = drawSeg(tg, tx, TILE_Y, TILE_SEG.launch, COLORS[3]);
+    tx = drawSeg(tg, tx, TILE_Y, devUs, COLORS[4]);
+    const tHost = TILE_SEG.py + TILE_SEG.disp + TILE_SEG.check + TILE_SEG.launch;
+    const tTotal = tHost + devUs;
+    document.getElementById('tile-total').textContent = tTotal.toFixed(1);
+    document.getElementById('tile-pct').textContent = (tHost / tTotal * 100).toFixed(0) + '%';
+  }
+
+  document.getElementById('dev-slider').addEventListener('input', e => {
+    render(parseInt(e.target.value, 10));
+  });
+  render(50);
+})();
+</script>
+</body>
+</html>

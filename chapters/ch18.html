@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 18 · OPD — 多教师 → 单学生的合一</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch18">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 18 · OPD</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part4.html">第四部分 · 后训练</a><span class="sep">/</span>Ch 18</div>
+
+      <article id="ch18" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第四部分 · 后训练 · 18</div>
+        <h2 class="chapter-title">OPD — 多教师 → 单学生的合一</h2>
+        <p class="chapter-sub">为什么 V4 把 V3 的"混合 RL"整体替成 reverse-KL 蒸馏，"on-policy + reverse KL + 全词表"三件事的组合在数学上意味着什么，以及为什么"forward KL 的 mass-covering"会把多 teacher 拉成 mean of teachers、reverse KL 的 mode-seeking 反而让 student 在每道题上"自然找最强 teacher"。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"OPD"</div>
+          <p class="term-name">OPD = On-Policy Distillation：学生 $\pi_\theta$ 自己 rollout 生成 trajectory，对 N 个 frozen 领域 teacher $\{\pi_{E_i}\}$ 求 reverse KL 加权和作为损失，最小化即"把所有 teacher 的高概率区域吸收过来"</p>
+          <p>
+            一句话：<strong>把 V3 的"混合 RL"整体替成"反向 KL 蒸馏"</strong>。
+            RL 只学 reward 期望（"做对了得多少分"），KL 蒸馏学整个分布（"在每个状态下 teacher 的概率分布是什么形状"）。
+            后者承载的信息量大得多 —— 一条 reward = 1 个标量，一条 logit 分布 = $|V|=128\text{K}$ 个数。OPD 的赌注：<em>分布信息让蒸馏"无损"，多 teacher 合并不再是 reward 加权而是分布选择</em>。
+          </p>
+          <dl>
+            <dt>OPD（On-Policy Distillation）</dt>
+            <dd>本章主角。从学生<em>自己</em>的策略采样 trajectory $y \sim \pi_\theta(\cdot \mid x)$，然后在每个 token 位置算 student 与 N 个 teacher 的 KL 损失。<strong>"on-policy"</strong> 是关键修饰词 —— 区别于 off-policy（用 teacher trajectory 训学生）。</dd>
+
+            <dt>KL Divergence（KL 散度）</dt>
+            <dd>$D_{\text{KL}}(P \| Q) = \sum_x P(x) \log \frac{P(x)}{Q(x)}$。<em>不对称</em>：$D_{\text{KL}}(P\|Q) \ne D_{\text{KL}}(Q\|P)$。这种不对称性不是 bug 而是<strong>设计变量</strong> —— 选 forward 还是 reverse 决定了学生学到的"行为模式"。</dd>
+
+            <dt>Forward KL（mass-covering）</dt>
+            <dd>$D_{\text{KL}}(\pi_E \| \pi_\theta) = \mathbb{E}_{y \sim \pi_E}[\log \pi_E - \log \pi_\theta]$。从 teacher 采样、以 teacher 为锚。<strong>性质</strong>：$\pi_E(y) > 0$ 但 $\pi_\theta(y) \to 0$ 时 loss → ∞ ⇒ <em>学生必须覆盖 teacher 所有概率质量</em>，包括长尾。在多 teacher 场景下被迫"取并集"，成为<em>mean of teachers</em>。</dd>
+
+            <dt>Reverse KL（mode-seeking）</dt>
+            <dd>$D_{\text{KL}}(\pi_\theta \| \pi_E) = \mathbb{E}_{y \sim \pi_\theta}[\log \pi_\theta - \log \pi_E]$。<em>从学生自己采样、以学生为锚</em>。<strong>性质</strong>：$\pi_\theta(y) > 0$ 但 $\pi_E(y) \to 0$ 时 loss → ∞ ⇒ <em>学生不能在 teacher 的低概率区域有概率</em>，只能<strong>把概率集中到 teacher 的某个 mode</strong>。多 teacher 场景下学生学会"在每个 prompt 上选最强 teacher 的 mode"，<em>取交集而非并集</em>。</dd>
+
+            <dt>Mode-Seeking vs Mass-Covering（直觉对比）</dt>
+            <dd>双峰 teacher 分布（左峰右峰各占 50%）时：<strong>forward KL</strong> 的最优 student 是<em>整个分布的均值</em>（中间一个胖单峰，两个峰都覆盖但都不准）；<strong>reverse KL</strong> 的最优 student 是<em>选其中一个峰复刻</em>（贴一个真峰，舍弃另一个）。直觉：forward 是"什么都要"、reverse 是"专精就行"。</dd>
+
+            <dt>On-Policy（在策略上采样）</dt>
+            <dd>损失里的<em>采样分布</em>是 $\pi_\theta$ 自己。每个 step 生成时用当前最新 policy。<strong>对应 reverse KL 的天然搭档</strong> —— $D_{\text{KL}}(\pi_\theta \| \pi_E)$ 的期望就是在 $\pi_\theta$ 上取的，on-policy 让蒙特卡洛估计无偏。</dd>
+
+            <dt>Off-Policy 蒸馏（被否定的对象）</dt>
+            <dd>另一种做法：让 teacher 生成 trajectory $y \sim \pi_E$，学生用 supervised cross-entropy 拟合。<em>问题</em>：学生在<strong>自己永远不会生成的 trajectory</strong> 上被迫学拟合，分布严重偏移；只能学"模仿 teacher 表面"，不能学"在自己出错时 teacher 怎么救"。</dd>
+
+            <dt>Full-Vocabulary OPD（全词表蒸馏）</dt>
+            <dd>每个 token 位置上都拿到 teacher 的<em>完整 logit 分布</em>（$|V| > 100\text{K}$），算精确 KL。<em>对比 token-level 估计</em>：后者只用 $\log(\pi_E(y_t)/\pi_\theta(y_t))$ 作 per-token advantage 塞进 RL framework，丢掉 99.99% 的分布信息。V4 选 full-vocab 是把工程难度上限拉满 —— Ch19 整章就是为了让这件事跑得起。</dd>
+
+            <dt>Mixed RL（被替代的对象）</dt>
+            <dd>V3 末段的训练范式：所有领域 reward 加权求和后跑混合 RL。<em>问题</em>：(1) reward 量纲不一致，被绝对值大的任务主导；(2) reward 只学期望、不学分布形状；(3) 多领域 reward 互相干扰、调参组合爆炸。OPD 替掉它的核心论断：<strong>"既然每个 specialist 已经是该领域最优 policy，直接学 specialist 的<em>分布</em>就够了"</strong>。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>OPD 是 V4 与 V3 的<em>训练范式分水岭</em>。混合 RL → 反向 KL 蒸馏的转变，本质是"reward 期望 → 分布形状"的信息升级；选择 reverse KL + on-policy + 全词表 这三件事的组合，让 N 个领域 specialist 能"按 prompt 选最强 teacher"地合并到一个 student。读完这章你应该能解释为什么 forward KL 不行、为什么 token-level 估计不行、为什么必须 on-policy。</div>
+        </div>
+
+        <!-- ================== §1 范式置换 ================== -->
+        <h3 id="paradigm">1. 为什么不再用混合 RL</h3>
+        <p>
+          V3 的最后一段训练把所有专家 SFT 数据放到一锅，配多种 reward（rule + RM）跑混合任务 RL。这条路在 V4 规模下出现三个症状：
+        </p>
+        <ul>
+          <li><strong>方差爆炸</strong>：多领域 reward 量纲不一致（数学 0/1 vs 写作 0–10），加权和被绝对值大的任务主导，小信号被淹没；</li>
+          <li><strong>分布偏移</strong>：reward 信号稀疏（一条 trajectory 只有最终一个数），long horizon 上学到的策略与单领域 specialist 差距明显；</li>
+          <li><strong>"分布形状"丢失</strong>：reward 只学"期望"，learner 容易在 edge case 上塌缩到 mode 上某个尖峰 —— 答对了但失去多样性。</li>
+        </ul>
+
+        <p>
+          OPD 的回答是：<em>"既然每个 specialist 已经是该领域的最优 policy，直接让 student 学 specialist 的<strong>分布</strong>就够了。"</em> 用蒸馏代替再次 RL，把"reward 加权"换成"分布合并"。
+        </p>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · reward 信号 vs 分布信号</span>
+          单条 trajectory 长度 5000 token：
+          <ul>
+            <li><strong>RL reward</strong>：1 个标量（最终 reward），承载 ~1 byte 信息；</li>
+            <li><strong>token-level KL</strong>：5000 × 1 个 ratio，承载 ~5KB 信息；</li>
+            <li><strong>full-vocab KL</strong>：5000 × 128K 个 logit，承载 ~5MB 信息（FP8 算）；</li>
+          </ul>
+          <strong>从 reward 到 full-vocab，单 trajectory 携带的训练信号涨了 5 个数量级</strong>。RL 之所以慢、需要海量 trajectory，是因为信号太稀疏；OPD 的梯度估计方差小得多，<em>同样收敛精度下数据效率高几十到几百倍</em>。这就是 V4 敢花精力做"trillion teacher × full vocab × multi-domain"的根本动机。
+        </div>
+
+        <!-- ================== §2 OPD 损失公式 ================== -->
+        <h3 id="loss">2. OPD 损失：多教师 reverse KL 加权和</h3>
+
+        <p>给定 N 个 frozen 领域 expert $\{\pi_{E_1}, \dots, \pi_{E_N}\}$ 和领域权重 $\{w_i\}$，学生 $\pi_\theta$ 的 OPD 损失为：</p>
+
+        <div class="math-block">
+          $$
+          \mathcal{L}_{\text{OPD}}(\theta) \;=\; \sum_{i=1}^{N} w_i \cdot \mathbb{E}_{x \sim \mathcal{D}_i,\; y \sim \pi_\theta(\cdot \mid x)} \!\left[\, D_{\text{KL}}\!\big(\pi_\theta(\cdot \mid x, y_{<t}) \,\big\|\, \pi_{E_i}(\cdot \mid x, y_{<t})\big) \,\right]
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条损失从内到外读：</p>
+          <ol>
+            <li><strong>$D_{\text{KL}}(\pi_\theta \| \pi_{E_i})$</strong>：在<em>当前 token 位置</em>，学生分布与第 $i$ 个 teacher 分布的 reverse KL；</li>
+            <li><strong>$y \sim \pi_\theta$</strong>：trajectory 由<strong>学生自己</strong>采样 —— 这是 "on-policy" 的具体含义；</li>
+            <li><strong>$x \sim \mathcal{D}_i$</strong>：prompt 来自第 $i$ 个领域的数据集；</li>
+            <li><strong>$\sum_i w_i \cdots$</strong>：N 个领域的损失加权求和。</li>
+          </ol>
+          <p>关键的隐藏性质：<em>对一个具体 prompt $x$，最相关的 teacher 自然主导梯度</em>。直觉：如果 $x$ 是数学题，数学 teacher $\pi_{E_{\text{math}}}$ 给 sensible 的 logit 分布、其它 teacher 给"乱答"的分布。reverse KL 的 mode-seeking 性质让学生<strong>选 sensible 那个分布的 mode</strong>，自动忽略乱答。这就是"按 prompt 选 teacher"的数学根源 —— 不需要显式路由，是 reverse KL 自带的属性。</p>
+        </div>
+
+        <!-- ================== §3 reverse KL vs forward KL ================== -->
+        <h3 id="reverse-vs-forward">3. 为什么必须 reverse KL：mode-seeking vs mass-covering</h3>
+
+        <p>
+          这是整章最核心的洞察。先看两种 KL 的<em>解析最优</em>：
+        </p>
+
+        <div class="math-block">
+          $$
+          \begin{aligned}
+          \pi_\theta^{\star,\text{fwd}} &amp;= \arg\min_{\pi_\theta} D_{\text{KL}}(\pi_E \| \pi_\theta) &amp;&amp;= \pi_E \;\;\text{（须覆盖全部 mass）} \\
+          \pi_\theta^{\star,\text{rev}} &amp;= \arg\min_{\pi_\theta} D_{\text{KL}}(\pi_\theta \| \pi_E) &amp;&amp;= \pi_E \;\;\text{（也是它，但容量受限时塌到 mode）}
+          \end{aligned}
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 容量受限时两者发散</div>
+          <p>关键不在"无限容量下都收敛到 $\pi_E$"，而在<em>容量受限</em>（学生模型表达能力有限）时两者的近似行为：</p>
+          <ol>
+            <li><strong>forward KL（mass-covering）</strong>：$\pi_E(y) > 0$ 处 $\pi_\theta(y)$ 必须 $> 0$ 否则 loss = +∞。学生被迫<em>覆盖 teacher 所有概率质量</em>，即使是低概率长尾。容量受限时 → <strong>分布"摊平"</strong>，多 teacher 合并 → mean of teachers；</li>
+            <li><strong>reverse KL（mode-seeking）</strong>：$\pi_\theta(y) > 0$ 处 $\pi_E(y)$ 必须 $> 0$ 否则 loss = +∞（反过来）。学生<em>不能进入 teacher 的低概率区域</em>，但允许放弃 teacher 的某些高概率区域。容量受限时 → <strong>分布"聚焦"</strong>，多 teacher 合并 → 在每个 prompt 上选一个 teacher 的 mode；</li>
+          </ol>
+          <p>对 V4 这种"<em>把 N 个领域 specialist 合并到一个 student</em>"的目标，<strong>mode-seeking 是想要的</strong>。每个 prompt 上让最强 teacher 主导，舍弃弱 teacher 的"乱答"长尾，正是<em>选择性吸收</em>。<br>反之 forward KL 的 mass-covering 会强制让 student 在每个 prompt 上同时模仿 N 个 teacher 的分布，失败案例：数学 teacher 算出 $42$、写作 teacher 写故事，student 被迫两者都覆盖 → 输出"42 在故事里出现"的奇怪混合。</p>
+        </div>
+
+        <!-- ================== VIZ: 1D 双峰分布上的 reverse / forward ================== -->
+        <div class="viz" id="viz-kl">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 1D 双峰 teacher 上 reverse / forward KL 的最优 student（容量限制为单峰高斯）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 320" id="kl-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- axes -->
+            <line x1="60" y1="280" x2="700" y2="280" stroke="#1c2433" stroke-width="1"/>
+            <line x1="60" y1="30" x2="60" y2="280" stroke="#1c2433" stroke-width="1"/>
+
+            <!-- gridlines -->
+            <line x1="60" y1="220" x2="700" y2="220" stroke="#e5e7eb"/>
+            <line x1="60" y1="160" x2="700" y2="160" stroke="#e5e7eb"/>
+            <line x1="60" y1="100" x2="700" y2="100" stroke="#e5e7eb"/>
+            <line x1="60" y1="40"  x2="700" y2="40"  stroke="#e5e7eb"/>
+
+            <!-- teacher distribution (red, filled) -->
+            <path id="kl-teacher" fill="rgba(220,38,38,0.10)" stroke="#dc2626" stroke-width="2"/>
+
+            <!-- forward-KL student (yellow, mass-covering) -->
+            <path id="kl-fwd" fill="none" stroke="#fbbf24" stroke-width="2" stroke-dasharray="6,3"/>
+
+            <!-- reverse-KL student (green, mode-seeking) -->
+            <path id="kl-rev" fill="none" stroke="#16a34a" stroke-width="2.2"/>
+
+            <!-- legend -->
+            <g transform="translate(440, 40)">
+              <line x1="0" y1="6" x2="20" y2="6" stroke="#dc2626" stroke-width="2"/>
+              <text x="26" y="10" font-size="11" fill="#1c2433">teacher 双峰 $\pi_E$</text>
+              <line x1="0" y1="24" x2="20" y2="24" stroke="#fbbf24" stroke-width="2" stroke-dasharray="6,3"/>
+              <text x="26" y="28" font-size="11" fill="#1c2433">forward KL student（mass-covering）</text>
+              <line x1="0" y1="42" x2="20" y2="42" stroke="#16a34a" stroke-width="2.2"/>
+              <text x="26" y="46" font-size="11" fill="#1c2433">reverse KL student（mode-seeking）</text>
+            </g>
+
+            <!-- x-axis label -->
+            <text x="375" y="306" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="Inter">输出空间 $y$（如 token 位置上的 logit）</text>
+
+            <!-- readouts -->
+            <text x="80" y="20" font-size="11" fill="#1c2433">峰间距 = <tspan id="kl-gap" font-family="JetBrains Mono">3.0</tspan> · forward KL 输出形状："<tspan id="kl-fwd-shape" fill="#fbbf24" font-weight="600">胖均值</tspan>" · reverse KL 输出形状："<tspan id="kl-rev-shape" fill="#16a34a" font-weight="600">单峰</tspan>"</text>
+          </svg>
+          <div class="viz-controls">
+            <label>双峰间距（学科冲突程度）
+              <input type="range" id="kl-slider" min="0" max="80" step="1" value="35" style="width:240px">
+              <span class="viz-readout" id="kl-readout">3.0σ</span>
+            </label>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：红色填充曲线是 teacher 的真实双峰分布（两个 mode 代表两个 teacher 的强项）。黄虚线是 forward KL 训出的最优单峰 student —— <em>胖且骑在两峰中间</em>，两峰都覆盖但都不准（mass-covering）。绿实线是 reverse KL 的最优单峰 student —— <em>选其中一个峰精确复刻</em>（mode-seeking）。
+            <br>
+            把"双峰间距"拉到 <strong>5σ 以上</strong>看：黄线变得越来越平、覆盖范围越来越宽（被迫覆盖两峰间的山谷）；绿线始终贴在<em>左峰</em>上不动。<strong>这就是 V4 选 reverse KL 的根本原因</strong> —— 多 teacher 间冲突越大，forward 越塌成无意义平均，reverse 越坚定地选最强 mode。
+          </p>
+        </div>
+
+        <!-- ================== §4 on-policy 的必要性 ================== -->
+        <h3 id="on-policy">4. 为什么必须 on-policy</h3>
+        <p>
+          光选 reverse KL 还不够。损失里的期望 $\mathbb{E}_{y \sim \pi_\theta}[\cdots]$ 必须从<strong>学生自己当前的策略</strong>采样 —— 这就是 "on-policy"。如果用 teacher 采样（off-policy 蒸馏），会出两个问题：
+        </p>
+
+        <ol>
+          <li><strong>分布偏移（distribution shift）</strong>：teacher rollout 走的是 teacher 自己擅长的路径；学生在<em>自己永远不会走</em>的路径上被强迫学拟合，<em>训完上线时学生根本到不了那些位置</em>，蒸馏白做；</li>
+          <li><strong>错误恢复（error recovery）丢失</strong>：on-policy 让学生从自己的错误位置出发，看 teacher 在那些位置上的分布是什么 —— <em>"我犯错了，正确老师该怎么救"</em>。off-policy 永远看不到学生的错误，等于训了个"模仿 teacher 顺利答题"的伪 student，遇到自己出错就抓瞎。</li>
+        </ol>
+
+        <div class="callout callout-warn">
+          <div class="callout-title">on-policy 的工程代价</div>
+          <p>
+            On-policy 要求每个 train step 都要先用<em>当前最新 policy</em> rollout 一批 trajectory，再算 KL 损失。这相当于"训练 + 推理交错"，比纯监督学习贵得多。Ch19 的"WAL Rollout + Million-token RL"整节就是为了让 on-policy rollout 能在 1.6T 规模 + 1M context 下跑起来 —— 没有那一节，OPD 是 PPT。
+          </p>
+        </div>
+
+        <!-- ================== §5 全词表 vs token-level 估计 ================== -->
+        <h3 id="full-vocab">5. 为什么要做"全词表"，不退化到 token-level</h3>
+        <p>
+          一种工程偷懒做法是把 OPD 退化成 token-level RL：每个 token 位置只取学生与 teacher 的<em>那一个 token 的 log 比值</em>作为 advantage：
+        </p>
+
+        <div class="math-block">
+          $$
+          A_t^{\text{token}} \;=\; \log \frac{\pi_E(y_t \mid x, y_{<t})}{\pi_\theta(y_t \mid x, y_{<t})}
+          $$
+        </div>
+
+        <p>把它当 RL advantage 塞进 GRPO loop，省掉算全词表 logit 的麻烦。论文给出三条否定理由：</p>
+
+        <ul>
+          <li><strong>梯度方差极高</strong>：单 token 的 ratio 是 1 个噪声大的标量，长序列累乘后方差爆炸；</li>
+          <li><strong>没真正利用 teacher 的<em>分布</em>信息</strong>：teacher 在 $y_t$ 上给的不仅是"$y_t$ 的概率"，更重要的是"<em>除 $y_t$ 之外其它 token 的概率</em>"—— 这才是判断 teacher "有多确定"的关键。token-level 完全丢掉这部分；</li>
+          <li><strong>等价 RL 的局限</strong>：token-level 蒸馏数学上就是 KL 的<em>蒙特卡洛单样本估计</em>，再塞进 RL 框架。这是"复用 RL loop"的便利，不是分布学习。</li>
+        </ul>
+
+        <p>
+          V4 选保留<strong>完整 logit 分布</strong>（$|V| > 100\text{K}$ 全词表），算精确 KL：
+        </p>
+
+        <div class="math-block">
+          $$
+          D_{\text{KL}}(\pi_\theta \| \pi_E) \;=\; \sum_{v=1}^{|V|} \pi_\theta(v) \log \frac{\pi_\theta(v)}{\pi_E(v)} \quad \text{（每 token 位置都算一次）}
+          $$
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 全词表的工程账</span>
+          单 step 训练里：
+          <ul>
+            <li>batch = 256 prompt × seq = 8K token = $2 \times 10^6$ 位置；</li>
+            <li>每位置全词表 logit FP8 = $128\text{K} \times 1\text{ B} = 128\text{ KB}$；</li>
+            <li>10 个 teacher 同框 = $2 \times 10^6 \times 128\text{ KB} \times 10 \approx \mathbf{2.6\text{ TB}}$ logit；</li>
+          </ul>
+          单 step 一个 mini-batch 的<em>纯 logit 张量</em>就 2.6 TB，远超任何 GPU 集群的总显存。<strong>不可能"装下"全词表 logit</strong>，必须靠 Ch19 的"不实例化 logits + 中央存储 + teacher 排序 batching" 把它<em>从来不在同一时刻</em>全摆在 GPU 上。这就是为什么 V4 单独用一章讲工程基建。
+        </div>
+
+        <!-- ================== §6 与 specialist 的接力 ================== -->
+        <h3 id="handoff">6. 与 specialist 的接力</h3>
+        <ul>
+          <li>每个 specialist 已经在 Ch16 走完 SFT + GRPO，是<em>该领域最强的</em>；</li>
+          <li>OPD 把 N 个 specialist 当 frozen teacher，<strong>不再更新它们的权重</strong>；</li>
+          <li>student 即"未来发布的 V4-Pro / V4-Flash"本体，从 Pro/Flash-Base 出发；</li>
+          <li>训练目标：student 在<em>所有领域</em>都能 ≥ 对应 specialist 的能力 + 跨领域更强的泛化。</li>
+        </ul>
+
+        <div class="callout callout-good">
+          <div class="callout-title">直觉对比 · mixed RL vs OPD</div>
+          <p>
+            mixed RL 像让一个学生同时上 10 节不同老师的课，每个老师只给"对错"打分；
+            <br>
+            OPD 像让 10 个老师批改学生<em>自己交上来的作业</em>，每份作业每位老师都给出<strong>完整的解题分布</strong>（"你这题我会怎么想，每一步可能选什么 token"），学生在每道题上自然地参考"对这种题最有发言权"的那位老师 —— mode-seeking 让"在数学题上听数学老师、在写作题上听写作老师"自动成立。
+            <br>
+            前者是 reward summing，后者是 distribution selecting。OPD 的"选"不是显式 router，而是 reverse KL 数学上自带的<strong>mode-seeking 性质</strong>。
+          </p>
+        </div>
+
+        <!-- ================== §7 论文图占位 ================== -->
+        <h3 id="figs">7. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch18/01</span>
+          <p class="fig-want">需要：V4 论文 §4.3 OPD 概念图 —— 学生 on-policy rollout → N 个 frozen teacher 同时算 logit → reverse KL 加权和 → 反向更新 student。配套 forward / reverse KL 的双峰对比示意。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.3，Figure 8 / 概念图（待补）</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch18/02</span>
+          <p class="fig-want">需要：OPD 训练曲线（loss vs step）+ 对应阶段的 student benchmark 提升曲线，与单纯 mixed RL 的 baseline 对比。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.3 / 附录 D（待补）</p>
+        </div>
+
+        <h3 id="summary">8. 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>OPD 把 V3 的"reward 期望"训练范式升级成 "<em>分布形状</em>"训练范式 —— <strong>reverse KL 的 mode-seeking 让多 teacher 合并不再是 mean of teachers，而是在每个 prompt 上选最强 teacher 的 mode；on-policy 让学生从自己的错误位置出发学习"如何被救"；全词表让 teacher 的整个分布信息无损传递</strong>。三件事缺一不可，工程代价由 Ch19 承担。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: 1D 双峰 teacher 上 forward / reverse KL 最优 student
+     ============================================================ -->
+<script>
+(function() {
+  // x range: -6..6, mapped to pixel 60..700
+  // y range: 0..0.5 density, mapped to pixel 280..40
+  const X0 = 60, X1 = 700, X_MIN = -6, X_MAX = 6;
+  const Y0 = 280, Y1 = 40, Y_MAX = 0.5;
+
+  function xToPx(x) { return X0 + (x - X_MIN) / (X_MAX - X_MIN) * (X1 - X0); }
+  function yToPx(y) { return Y0 - Math.min(y, Y_MAX) / Y_MAX * (Y0 - Y1); }
+
+  function gauss(x, mu, sigma) {
+    return Math.exp(-0.5 * Math.pow((x - mu) / sigma, 2)) / (sigma * Math.sqrt(2 * Math.PI));
+  }
+
+  // Teacher: bimodal mixture of two gaussians at -gap/2 and +gap/2 with sigma=0.6
+  function teacher(x, gap) {
+    const sig = 0.6;
+    return 0.5 * gauss(x, -gap/2, sig) + 0.5 * gauss(x, +gap/2, sig);
+  }
+
+  // Optimal forward-KL student (single gaussian fitting teacher) — analytical:
+  // moment matching → mean=0, var = 0.36 + (gap/2)^2
+  function fwdKL(x, gap) {
+    const mu = 0;
+    const variance = 0.36 + (gap/2) * (gap/2);
+    const sigma = Math.sqrt(variance);
+    return gauss(x, mu, sigma);
+  }
+
+  // Optimal reverse-KL student under single gaussian — picks one mode (left mode here)
+  // for visualization, vary slightly: just gauss(x, -gap/2, 0.6)
+  function revKL(x, gap) {
+    const sig = 0.6;
+    return gauss(x, -gap/2, sig);
+  }
+
+  function buildPath(fn, gap) {
+    let d = '';
+    for (let i = 0; i <= 240; i++) {
+      const r = i / 240;
+      const x = X_MIN + r * (X_MAX - X_MIN);
+      const y = fn(x, gap);
+      const px = xToPx(x), py = yToPx(y);
+      d += (i === 0 ? 'M' : 'L') + px.toFixed(1) + ',' + py.toFixed(1) + ' ';
+    }
+    return d;
+  }
+  function buildArea(fn, gap) {
+    let d = 'M' + xToPx(X_MIN).toFixed(1) + ',' + yToPx(0).toFixed(1) + ' ';
+    for (let i = 0; i <= 240; i++) {
+      const r = i / 240;
+      const x = X_MIN + r * (X_MAX - X_MIN);
+      const y = fn(x, gap);
+      const px = xToPx(x), py = yToPx(y);
+      d += 'L' + px.toFixed(1) + ',' + py.toFixed(1) + ' ';
+    }
+    d += 'L' + xToPx(X_MAX).toFixed(1) + ',' + yToPx(0).toFixed(1) + ' Z';
+    return d;
+  }
+
+  function update(s) {
+    // s 0..80 → gap 0..8 (sigma units)
+    const gap = (s / 80) * 8;
+    document.getElementById('kl-readout').textContent = gap.toFixed(1) + 'σ';
+    document.getElementById('kl-gap').textContent = gap.toFixed(1);
+    document.getElementById('kl-teacher').setAttribute('d', buildArea(teacher, gap));
+    document.getElementById('kl-fwd').setAttribute('d', buildPath(fwdKL, gap));
+    document.getElementById('kl-rev').setAttribute('d', buildPath(revKL, gap));
+
+    // descriptive labels
+    if (gap > 3.5) {
+      document.getElementById('kl-fwd-shape').textContent = '宽且平（覆盖两峰，山谷处也有概率）';
+      document.getElementById('kl-rev-shape').textContent = '左峰复刻（精确但只学一个 mode）';
+    } else {
+      document.getElementById('kl-fwd-shape').textContent = '中央单峰';
+      document.getElementById('kl-rev-shape').textContent = '左峰单峰';
+    }
+  }
+
+  document.getElementById('kl-slider').addEventListener('input', e => {
+    update(parseInt(e.target.value, 10));
+  });
+  update(35);
+})();
+</script>
+</body>
+</html>

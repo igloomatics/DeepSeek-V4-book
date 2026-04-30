@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 06 · Muon — 矩阵参数的指南针</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch6">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 06 · Muon</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part1.html">第一部分 · 架构</a><span class="sep">/</span>Ch 06</div>
+
+      <article id="ch6" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第一部分 · 架构 · 06</div>
+        <h2 class="chapter-title">Muon — 矩阵参数的指南针</h2>
+        <p class="chapter-sub">为什么 AdamW 在大矩阵参数上"偏科"，Muon 怎么用 Newton–Schulz 一招治本，以及为什么 V4 还要把它改成 Hybrid 两段式。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂 Muon</div>
+          <p class="term-name">Muon = Matrix-aware update via Orthonormalization（让更新矩阵的奇异值全是 1）</p>
+          <p>
+            一句话：<strong>把每步更新矩阵 $M$ 的奇异值全部抹成 1，只留方向、扔掉幅度</strong>。
+            这样无论梯度的"主方向"多猛，最终落到权重上的更新都是各方向同权 —— 治掉了 AdamW 在大矩阵参数上"主方向独大"的偏科病。
+            技术核心是用 <strong>Newton–Schulz 5 次多项式迭代</strong> 替代 SVD，10 步固定迭代就能完成，FLOPs 开销 ~5%。
+          </p>
+          <dl>
+            <dt>AdamW（被替代的对象）</dt>
+            <dd>主流优化器。更新规则<em>逐元素</em>：每个 entry $W_{ij}$ 单独除以自己的二阶矩 $\sqrt{v_{ij}}$。<em>把矩阵参数当 $nm$ 个独立标量</em>，看不见矩阵的"形状"，于是各向异性的梯度被原样投到权重上。</dd>
+
+            <dt>Polar 分解（Muon 想要的目标）</dt>
+            <dd>对任意矩阵 $M = U\Sigma V^T$，Polar 分解 $\mathrm{Polar}(M) = UV^T$ —— <em>奇异方向不变，奇异值全替换成 1</em>。这是几何上离 $M$ 最近的"部分等距"矩阵。每方向同等量级更新，治偏科。</dd>
+
+            <dt>Newton–Schulz（NS）迭代</dt>
+            <dd>用矩阵多项式 $M \leftarrow aM + b(MM^T)M + c(MM^T)^2 M$ 反复套，把奇异值往 1 上推。本质是<em>对每个 $\sigma$ 独立施加一个标量五次多项式</em> $p(\sigma) = a\sigma + b\sigma^3 + c\sigma^5$。$U, V$ 自始至终不变。<em>避免 SVD 的 $O(n^3)$ 代价</em>。</dd>
+
+            <dt>Hybrid 两段式（V4 的工程改进）</dt>
+            <dd>前 8 步用<em>激进系数</em> $(3.4445, -4.7750, 2.0315)$ 把"远离 1 的奇异值"快速抓回 1 附近；后 2 步切回<em>标准系数</em> $(2, -1.5, 0.5)$ 在 1 邻域做二阶收敛精修。<strong>10 步固定 = 编译期常数</strong>，对 TileLang kernel / CUDA graph 友好。</dd>
+
+            <dt>Nesterov 动量</dt>
+            <dd>$N_t = \mu M_t + G_t$（先按 momentum 走一步再用当前梯度修正）。比标准动量多一阶前瞻信息，长期收敛更快。Muon 论文标配。</dd>
+
+            <dt>RMS 重缩放因子 $\sqrt{\max(n,m)}\cdot\gamma$</dt>
+            <dd>NS 输出的 Frobenius 范数 $= \sqrt{\min(n,m)}$ —— <em>矩阵越扁、范数越小</em>。乘 $\sqrt{\max(n,m)}$ 抹平 shape 依赖，再乘 $\gamma\approx 0.2$ 调到与 AdamW 同档 lr。<strong>跨层一个 lr 通用</strong>。</dd>
+
+            <dt>QK-Clip（被扔掉的补丁）</dt>
+            <dd>V3 时代的稳定性补丁：把 $QK^T/\sqrt{d_k}$ 强制 clamp 到 $[-c, c]$ 防 softmax 溢出。V4 在 attention 内对 Q/K 各加一次 RMSNorm 后，$|q\cdot k|\le d_h$ 自然有界，<em>QK-Clip 的整段 if-else 直接删掉</em> —— 这就是工程哲学："能根因消除就不要再加补丁"。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>AdamW 把矩阵摊平当 vector，看不见"形状"；Muon 把每步更新矩阵 polar 化让所有方向同权。NS 是 polar 的便宜近似，Hybrid 让 10 步固定迭代落到精度。代价 ~5% FLOPs，回报是稳定性 + 一行 if-else 的删除。</div>
+        </div>
+
+        <!-- ================== §1 AdamW 的病 ================== -->
+        <h3 id="motivation">1. 先看 AdamW 哪里不够</h3>
+        <p>
+          要理解 Muon 为什么必要，得先看 AdamW 在<strong>矩阵参数</strong>上犯了什么病。Transformer 里的 Linear 层、Q/K/V 投影、FFN up/down，都是 <code>(n, m)</code> 维矩阵 $W$。AdamW 的更新规则是<em>逐元素</em>的：
+        </p>
+        <div class="math-block">
+          $$
+          W_{ij} \leftarrow W_{ij} - \eta \cdot \frac{m_{ij}}{\sqrt{v_{ij}} + \epsilon}
+          $$
+        </div>
+        <p>
+          其中 $m_{ij}$ 是梯度一阶矩，$v_{ij}$ 是二阶矩。换句话说 —— AdamW <strong>把矩阵摊平当成 $n\times m$ 个独立标量</strong>来调，<em>完全不知道这些数排列在一起其实是个矩阵</em>。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条 AdamW 更新做的事，对每个矩阵 entry 都是<strong>"先看历史平均梯度方向 $m$，再除以这个 entry 的历史梯度大小 $\sqrt{v}$，最后乘学习率"</strong>：</p>
+          <ul>
+            <li><strong>$m_{ij}$ 是平滑后的梯度</strong>：相当于"这个位置最近 $\sim 1/(1-\beta_1)$ 步的平均下降方向"；</li>
+            <li><strong>$\sqrt{v_{ij}}$ 是该 entry 的"梯度幅度"</strong>：经常梯度大的 entry 自动取小步、罕见梯度大的取大步 —— <em>逐 entry 自适应 lr</em>；</li>
+            <li><strong>$\epsilon$</strong>：防 0 除。</li>
+          </ul>
+          <p>问题不出在哪个 entry —— 而是<strong>整个矩阵</strong>的形状信息从公式里消失了。$\sqrt{v_{ij}}$ 只看 entry $(i,j)$ 自己的历史，<em>看不见同一行/列其它 entry 在共同贡献某个奇异方向</em>。这就是接下来要展开的"主方向独大"问题。</p>
+        </div>
+
+        <p>这看起来无害，但在大模型里会出事。把梯度矩阵 $G$ 做奇异值分解：</p>
+        <div class="math-block">
+          $$
+          G = U \, \Sigma \, V^{T}, \qquad \Sigma = \mathrm{diag}(\sigma_1, \sigma_2, \ldots, \sigma_r)
+          $$
+        </div>
+        <ul>
+          <li>$U$ 的列向量：梯度在<strong>输出空间</strong>的主方向；</li>
+          <li>$V$ 的列向量：梯度在<strong>输入空间</strong>的主方向；</li>
+          <li>$\sigma_i$：第 $i$ 对方向上的"幅度"，$\sigma_1 \gg \sigma_r$ 是常态。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 梯度谱有多偏</span>
+          实测在 LLM 训练中，Transformer 的梯度奇异值：
+          <ul>
+            <li>$\sigma_1$（最强方向）通常在 $10^{-1}$ 量级；</li>
+            <li>$\sigma_r$（最弱方向，$r=\min(n,m)$）通常在 $10^{-4} \sim 10^{-3}$ 量级；</li>
+            <li><strong>比例 $\sigma_1/\sigma_r \approx 10^2 \sim 10^3$</strong>。</li>
+          </ul>
+          AdamW 的 $\sqrt{v_{ij}}$ 归一化只在<em>逐元素</em>层面起作用 —— 它能压住单个 entry 的尖峰，<strong>但压不住"整个主方向独大"</strong>。结果：更新沿 $\sigma_1$ 方向"过冲"，沿 $\sigma_r$ 方向几乎不动 → 矩阵谱越走越偏，某些 attention head / FFN 通道开始"塌陷"（singular value 趋零，等同于死神经元）。
+        </div>
+
+        <div class="callout callout-warn">
+          <div class="callout-title">一句话概括 AdamW 的病</div>
+          <p>
+            AdamW 把矩阵参数当 vector，<strong>看不见矩阵的"形状"</strong>，于是各向异性的梯度被原样投到权重上，奇异值谱越走越歪 —— 这是稳定性问题的根源之一。要靠 grad clip / lr warmup / QK-Clip 等一堆补丁才能稳。
+          </p>
+        </div>
+
+        <!-- ================== §2 Muon 想干什么 ================== -->
+        <h3 id="muon-idea">2. Muon 的几何直觉：让更新成为"近似正交矩阵"</h3>
+        <p>
+          Muon 的核心思想一句话：<strong>把更新矩阵 $M$ 的奇异值全部强行抹成 1，只留方向、扔掉幅度</strong>。这等价于求 $M$ 的 <em>polar 分解</em>：
+        </p>
+        <div class="math-block">
+          $$
+          M = U\,\Sigma\,V^{T} \quad\Longrightarrow\quad \mathrm{Polar}(M) = U V^{T}
+          $$
+        </div>
+        <p>$U V^T$ 在数学上叫"离 $M$ 最近的部分等距"，几何上的意义是：</p>
+        <ul>
+          <li>它和 $M$ 共享所有奇异方向（$U$、$V$ 不变）；</li>
+          <li>但所有 $\sigma_i$ 都被替换成 1 —— 每个方向都得到<strong>同等量级的更新</strong>。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>Polar 分解 $UV^T$ 这一步翻成大白话就是<strong>"保留方向，抹掉强弱"</strong>：</p>
+          <ul>
+            <li><strong>$U$ 和 $V$ 是方向</strong>：分别说明"梯度在输出空间偏向哪些方向"和"在输入空间偏向哪些方向"；</li>
+            <li><strong>$\Sigma$ 是强弱</strong>：每个方向上有多大的"动量"；</li>
+            <li><strong>把 $\Sigma$ 替换成 $I$（全 1）</strong>：方向保留、强弱抹平 —— 强方向不再过冲、弱方向不再被忽视。</li>
+          </ul>
+          <p>对 AdamW 病灶的对应关系：AdamW 治不了"主方向独大"，是因为它只看每个 entry；Polar 直接<em>从奇异值层面动手</em>，把"独大"那一项 $\sigma_1$ 直接拍回 1，等于在源头切掉了过冲源。</p>
+        </div>
+
+        <p>
+          这正好对症 §1 那个病：既然 AdamW 治不了"主方向独大"，Muon 就<em>从源头让更新各方向同权</em>。剩下的问题只有一个 —— 怎么<strong>不做 SVD</strong> 也能算出 $UV^T$？因为对每层每步都做 SVD 在 LLM 规模上是不现实的（$O(\min(n,m)^2 \cdot \max(n,m))$）。
+        </p>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 为什么 SVD 不可承担</span>
+          V4-Pro 一个 FFN 层 up/down 投影矩阵约 $7168 \times 28672$。SVD 复杂度 $\approx \min(n,m)^2 \cdot \max(n,m) = 7168^2 \times 28672 \approx 1.5 \times 10^{12}$ FLOPs。
+          <br>
+          全模型 ~600 个 2D 参数 × 每步 SVD = $9 \times 10^{14}$ FLOPs/step，比 forward+backward 总和（约 $5 \times 10^{14}$）还多。<strong>每步训练光做 SVD 就翻倍开销</strong>，不可接受。
+          <br><br>
+          NS 迭代代替方案：每步 5 次 matmul × 10 步 = 50 matmul，每个 matmul $\sim n m \cdot \min(n,m)$。总开销 $\sim 50 \times 28672 \times 7168 \times 7168 \approx 7 \times 10^{13}$ FLOPs。<strong>~5% 的 forward 开销，可承担</strong>。
+        </div>
+
+        <!-- ================== VIZ: SVD 几何 + Polar ================== -->
+        <div class="viz" id="viz-svd">
+          <div class="viz-head">
+            <div class="viz-title">Demo · SVD 是什么、Polar 怎么把椭圆挤回圆</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 360" id="svd-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- ===== Left panel: 2D geometry ===== -->
+            <rect x="20" y="30" width="320" height="320" fill="#fafbfd" stroke="#e5e7eb"/>
+
+            <!-- gridlines (1 unit = 60px, origin at 180,190; visible range x: -2.67..2.67, y: -2.67..2.67) -->
+            <line x1="20"  y1="190" x2="340" y2="190" stroke="#cbd5e1"/>
+            <line x1="180" y1="30"  x2="180" y2="350" stroke="#cbd5e1"/>
+            <line x1="60"  y1="30" x2="60"  y2="350" stroke="#e5e7eb"/>
+            <line x1="120" y1="30" x2="120" y2="350" stroke="#e5e7eb"/>
+            <line x1="240" y1="30" x2="240" y2="350" stroke="#e5e7eb"/>
+            <line x1="300" y1="30" x2="300" y2="350" stroke="#e5e7eb"/>
+            <line x1="20" y1="70"  x2="340" y2="70"  stroke="#e5e7eb"/>
+            <line x1="20" y1="130" x2="340" y2="130" stroke="#e5e7eb"/>
+            <line x1="20" y1="250" x2="340" y2="250" stroke="#e5e7eb"/>
+            <line x1="20" y1="310" x2="340" y2="310" stroke="#e5e7eb"/>
+
+            <!-- input unit circle (blue dashed) -->
+            <circle cx="180" cy="190" r="60" fill="none" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="3,3"/>
+
+            <!-- target unit circle (green = Polar(M)·input result) -->
+            <circle cx="180" cy="190" r="60" fill="none" stroke="#16a34a" stroke-width="1.5" opacity="0.7"/>
+
+            <!-- ellipse (red, dynamic) -->
+            <path id="svd-ellipse" fill="rgba(220,38,38,0.08)" stroke="#dc2626" stroke-width="2"/>
+
+            <!-- σ axes: red lines from origin along U columns, length σ_i -->
+            <line id="svd-axis-1" stroke="#dc2626" stroke-width="2"/>
+            <line id="svd-axis-2" stroke="#dc2626" stroke-width="2"/>
+            <text id="svd-sigma1-label" font-size="11" fill="#dc2626" font-family="JetBrains Mono" font-weight="600"></text>
+            <text id="svd-sigma2-label" font-size="11" fill="#dc2626" font-family="JetBrains Mono" font-weight="600"></text>
+
+            <!-- coord labels -->
+            <text x="333" y="186" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">x</text>
+            <text x="184" y="38" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">y</text>
+
+            <!-- legend -->
+            <rect x="30" y="42" width="174" height="60" fill="#ffffff" stroke="#e5e7eb" rx="3"/>
+            <line x1="40" y1="58" x2="62" y2="58" stroke="#3b82f6" stroke-dasharray="3,3" stroke-width="1.5"/>
+            <text x="68" y="61" font-size="10" fill="#1c2433">输入：单位圆</text>
+            <line x1="40" y1="76" x2="62" y2="76" stroke="#dc2626" stroke-width="2"/>
+            <text x="68" y="79" font-size="10" fill="#1c2433">M·(圆) = 红椭圆</text>
+            <line x1="40" y1="94" x2="62" y2="94" stroke="#16a34a" stroke-width="1.5"/>
+            <text x="68" y="97" font-size="10" fill="#1c2433">Polar(M)·(圆) = 绿单位圆</text>
+
+            <!-- ===== Right panel: matrix + σ axis + description ===== -->
+            <text x="380" y="50" font-size="13" fill="#1c2433" font-family="Inter" font-weight="600">M = U Σ Vᵀ （实时数值）</text>
+
+            <!-- 2x2 matrix display -->
+            <text x="384" y="84" font-size="20" fill="#1c2433" font-family="serif">[</text>
+            <text x="402" y="80" font-size="13" fill="#475569" font-family="JetBrains Mono" id="svd-m00">0.000</text>
+            <text x="464" y="80" font-size="13" fill="#475569" font-family="JetBrains Mono" id="svd-m01">0.000</text>
+            <text x="520" y="84" font-size="20" fill="#1c2433" font-family="serif">]</text>
+            <text x="384" y="108" font-size="20" fill="#1c2433" font-family="serif">[</text>
+            <text x="402" y="104" font-size="13" fill="#475569" font-family="JetBrains Mono" id="svd-m10">0.000</text>
+            <text x="464" y="104" font-size="13" fill="#475569" font-family="JetBrains Mono" id="svd-m11">0.000</text>
+            <text x="520" y="108" font-size="20" fill="#1c2433" font-family="serif">]</text>
+
+            <!-- σ values -->
+            <text x="380" y="148" font-size="12" fill="#1c2433">σ₁ = <tspan id="svd-sigma1-num" fill="#dc2626" font-family="JetBrains Mono" font-weight="600">0.000</tspan></text>
+            <text x="380" y="166" font-size="12" fill="#1c2433">σ₂ = <tspan id="svd-sigma2-num" fill="#dc2626" font-family="JetBrains Mono" font-weight="600">0.000</tspan></text>
+            <text x="380" y="184" font-size="12" fill="#1c2433">谱比 σ₁/σ₂ = <tspan id="svd-ratio-num" fill="#1c2433" font-family="JetBrains Mono" font-weight="600">0.00</tspan></text>
+
+            <!-- σ number line -->
+            <text x="380" y="222" font-size="12" fill="#1c2433" font-weight="600">奇异值数轴：</text>
+            <line x1="380" y1="248" x2="700" y2="248" stroke="#1c2433" stroke-width="1.5"/>
+            <line x1="380" y1="243" x2="380" y2="253" stroke="#1c2433" stroke-width="1.5"/>
+            <line x1="540" y1="234" x2="540" y2="262" stroke="#16a34a" stroke-width="2"/>
+            <line x1="700" y1="243" x2="700" y2="253" stroke="#1c2433" stroke-width="1.5"/>
+            <text x="380" y="270" font-size="10" fill="#6b7280" font-family="JetBrains Mono" text-anchor="middle">0</text>
+            <text x="540" y="270" font-size="10" fill="#16a34a" font-family="JetBrains Mono" text-anchor="middle" font-weight="600">1 (target)</text>
+            <text x="700" y="270" font-size="10" fill="#6b7280" font-family="JetBrains Mono" text-anchor="middle">2</text>
+
+            <circle id="svd-sigma1-marker" cy="248" r="6" fill="#dc2626" stroke="#ffffff" stroke-width="1.5"/>
+            <circle id="svd-sigma2-marker" cy="248" r="6" fill="#dc2626" stroke="#ffffff" stroke-width="1.5"/>
+
+            <!-- description -->
+            <text x="380" y="304" font-size="10.5" fill="#475569">M 把蓝色单位圆变成红色椭圆 —— <tspan font-weight="600">两个半轴 = σ₁, σ₂</tspan></text>
+            <text x="380" y="320" font-size="10.5" fill="#475569">；半轴方向 = U 的两列（红线）。NS 每步只缩放 σ，</text>
+            <text x="380" y="336" font-size="10.5" fill="#475569"><tspan font-weight="600">U/V 永远不变</tspan>，红线方向锁死，最终 σ→1 椭圆变圆。</text>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="svd-reset">重置（σ₁=0.95, σ₂=0.18）</button>
+            <button class="viz-btn" id="svd-step-agg">↗ 激进 NS 一步</button>
+            <button class="viz-btn" id="svd-step-std">→ 标准 NS 一步</button>
+            <button class="viz-btn" id="svd-run-hybrid">⏵ Hybrid 跑完 10 步</button>
+            <span class="viz-readout">step <span id="svd-step-label">0</span></span>
+          </div>
+          <p class="viz-caption">
+            <strong>SVD 是什么</strong>：任意矩阵 $M = U\Sigma V^T$ 把单位圆<em>线性变换</em>成椭圆 —— 椭圆的两个半轴长度<strong>就是 $\sigma_1, \sigma_2$</strong>，半轴方向<strong>就是 $U$ 的两列</strong>。所以"奇异值"不是抽象概念，它是<em>椭圆有多扁</em>的几何度量；$\sigma_1/\sigma_2$ 越大，椭圆越扁。
+            <br>
+            <strong>Polar 的几何意义</strong>：$\mathrm{Polar}(M) = UV^T$ 把所有 $\sigma$ 替换成 1 = <em>把椭圆挤回单位圆</em>（绿色）。方向（$U, V$ 决定的旋转）保留，但拉伸抹除 —— 这就是"奇异值归 1"的几何含义。
+            <br>
+            <strong>NS 为什么只动 σ</strong>：把迭代 $M_{k+1} = aM + b\,MM^TM + c\,(MM^T)^2 M$ 写在 SVD 坐标里就是 $U(a\Sigma + b\Sigma^3 + c\Sigma^5)V^T$ —— $U, V$ 永远不动。表现在图里：<strong>红线方向永远不变，只有长度在缩放</strong>。
+            <br>
+            <strong>玩法</strong>：按"Hybrid 跑完 10 步"看红椭圆从又扁又长逐渐胀大，σ 数轴上两个红点向中间的 target=1 收拢。8 步激进会有几次过冲（红椭圆短暂胖一下越过绿圆），最后 2 步标准 NS 二阶收敛把它精确钉死在单位圆上。
+          </p>
+        </div>
+
+        <!-- ================== §3 NS 迭代 + Demo ================== -->
+        <h3 id="ns">3. Newton–Schulz：用 5 次 matmul 近似 polar</h3>
+        <p>
+          Newton–Schulz（NS）迭代是把<em>SVD 计算</em>换成<em>矩阵多项式</em>的经典手法。一次 NS 迭代写为：
+        </p>
+        <div class="math-block">
+          $$
+          M_{k+1} = a M_k + b\,(M_k M_k^{T}) M_k + c\,(M_k M_k^{T})^2 M_k
+          $$
+        </div>
+        <p>关键观察：把这个迭代<em>对角化</em>到 $M$ 的奇异空间里 —— $\sigma$ 就独立地按下面这个标量多项式演化：</p>
+        <div class="math-block">
+          $$
+          p(\sigma) = a\sigma + b\sigma^3 + c\sigma^5
+          $$
+        </div>
+        <p>
+          也就是说，每次 NS 迭代的本质是<strong>对每个 $\sigma_i$ 独立地施加同一个五次多项式</strong>，希望迭代足够多次后 $\sigma_i \to 1$。$U$、$V$ 自始至终不变 —— 这正是 polar 分解所需的。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条 NS 迭代为什么能"只改奇异值不改方向"？</p>
+          <ol>
+            <li><strong>$M M^T M$ 项</strong>：写在奇异空间就是 $U\Sigma V^T \cdot V\Sigma U^T \cdot U\Sigma V^T = U\Sigma^3 V^T$ —— $U, V$ 完全不变，<em>只是奇异值变成 $\sigma^3$</em>；</li>
+            <li><strong>$(MM^T)^2 M$ 项</strong>：同理变成 $U\Sigma^5 V^T$；</li>
+            <li><strong>整体合起来</strong>：$M_{k+1} = U\,(a\Sigma + b\Sigma^3 + c\Sigma^5)\,V^T$。这就证明了：$U, V$ 永远不动，每个 $\sigma_i$ 独立按 $p(\sigma)=a\sigma+b\sigma^3+c\sigma^5$ 走。</li>
+          </ol>
+          <p>所以选系数 $(a, b, c)$ 的目标变得极清晰：<strong>找一个五次多项式 $p$，让区间 $(0, \sigma_{\max}]$ 上每个 $x$ 反复套 $p$ 后都收敛到 1</strong>。下面的 demo 直接画出两组系数的 $p(x)$ 曲线。</p>
+        </div>
+
+        <p>选择系数 $(a,b,c)$ 的目标就一句话：让 $p(x)$ 在 $x \in (0, \sigma_{\max}]$ 上稳定地把所有点拉向 1。两套经典选择：</p>
+        <div class="config-table">
+          <table>
+            <thead>
+              <tr><th>系数</th><th>(a, b, c)</th><th>$p(x)$ 性质</th><th>问题</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>标准 NS</strong></td>
+                <td>(2, −1.5, 0.5)</td>
+                <td>在 $x = 1$ 附近<em>二阶收敛</em>（误差平方下降）</td>
+                <td>$\sigma$ 远离 1（如 0.05）时收敛极慢，需要几十步</td>
+              </tr>
+              <tr>
+                <td><strong>激进 NS</strong></td>
+                <td>(3.4445, −4.7750, 2.0315)</td>
+                <td>在 $x \in (0, 1)$ 上"抓得很猛"，几步把小 $\sigma$ 拉到 1 附近</td>
+                <td>在 $x \approx 1$ 附近会<em>过冲</em>（$p(1) > 1$），多次迭代后开始振荡</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- ================== VIZ: NS 多项式 + 奇异值演化 ================== -->
+        <div class="viz" id="viz-ns">
+          <div class="viz-head">
+            <div class="viz-title">Demo · NS 多项式怎么把奇异值拉到 1</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 360" id="ns-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- plot area: x ∈ [0, 1.5] mapped to [60, 660]; y ∈ [-0.2, 1.5] mapped to [310, 30] -->
+            <rect x="60" y="30" width="600" height="280" fill="#fafbfd" stroke="#e5e7eb"/>
+
+            <!-- horizontal grid -->
+            <line x1="60" y1="63"  x2="660" y2="63"  stroke="#e5e7eb"/>
+            <line x1="60" y1="113" x2="660" y2="113" stroke="#cbd5e1" stroke-dasharray="3,3"/> <!-- y=1 target line -->
+            <line x1="60" y1="163" x2="660" y2="163" stroke="#e5e7eb"/>
+            <line x1="60" y1="213" x2="660" y2="213" stroke="#e5e7eb"/>
+            <line x1="60" y1="263" x2="660" y2="263" stroke="#e5e7eb"/>
+            <line x1="60" y1="280" x2="660" y2="280" stroke="#1c2433"/> <!-- y=0 axis -->
+            <line x1="60" y1="310" x2="660" y2="310" stroke="#e5e7eb"/>
+
+            <!-- vertical grid -->
+            <line x1="60"  y1="30" x2="60"  y2="310" stroke="#1c2433"/>
+            <line x1="260" y1="30" x2="260" y2="310" stroke="#e5e7eb"/>
+            <line x1="460" y1="30" x2="460" y2="310" stroke="#cbd5e1" stroke-dasharray="3,3"/> <!-- x=1 target -->
+            <line x1="660" y1="30" x2="660" y2="310" stroke="#e5e7eb"/>
+
+            <!-- y axis labels -->
+            <text x="56" y="33"  text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">1.5</text>
+            <text x="56" y="116" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">1.0</text>
+            <text x="56" y="216" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0.4</text>
+            <text x="56" y="283" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0</text>
+
+            <!-- x axis labels -->
+            <text x="60"  y="328" text-anchor="middle" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0</text>
+            <text x="260" y="328" text-anchor="middle" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0.5</text>
+            <text x="460" y="328" text-anchor="middle" font-size="10" fill="#6b7280" font-family="JetBrains Mono">1.0</text>
+            <text x="660" y="328" text-anchor="middle" font-size="10" fill="#6b7280" font-family="JetBrains Mono">1.5</text>
+
+            <!-- axis titles -->
+            <text x="360" y="350" text-anchor="middle" font-size="11" fill="#1c2433">$\sigma$（奇异值）</text>
+            <text x="14" y="170" text-anchor="middle" font-size="11" fill="#1c2433" transform="rotate(-90 14 170)">$p(\sigma)$</text>
+
+            <!-- target line label -->
+            <text x="652" y="110" text-anchor="end" font-size="9" fill="#94a3b8" font-style="italic">target: σ=1, p(σ)=1</text>
+
+            <!-- identity line p(x) = x (gray dashed) -->
+            <path id="ns-identity" d="" fill="none" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4,3"/>
+
+            <!-- aggressive curve -->
+            <path id="ns-curve-agg" d="" fill="none" stroke="#dc2626" stroke-width="2"/>
+
+            <!-- standard curve -->
+            <path id="ns-curve-std" d="" fill="none" stroke="#16a34a" stroke-width="2"/>
+
+            <!-- 20 sigma dots on x-axis -->
+            <g id="ns-dots"></g>
+
+            <!-- legend -->
+            <rect x="490" y="38" width="166" height="58" fill="#ffffff" stroke="#e5e7eb" rx="4"/>
+            <line x1="500" y1="54" x2="524" y2="54" stroke="#dc2626" stroke-width="2"/>
+            <text x="530" y="57" font-size="11" fill="#1c2433">激进 NS（前 8 步）</text>
+            <line x1="500" y1="74" x2="524" y2="74" stroke="#16a34a" stroke-width="2"/>
+            <text x="530" y="77" font-size="11" fill="#1c2433">标准 NS（后 2 步）</text>
+            <line x1="500" y1="91" x2="524" y2="91" stroke="#cbd5e1" stroke-dasharray="3,2"/>
+            <text x="530" y="94" font-size="11" fill="#1c2433">$y=x$（不变）</text>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="ns-step-agg">↗ 激进 1 步</button>
+            <button class="viz-btn" id="ns-step-std">→ 标准 1 步</button>
+            <button class="viz-btn" id="ns-run-hybrid">⏵ Hybrid 跑完 10 步</button>
+            <button class="viz-btn" id="ns-reset">重置</button>
+            <span class="viz-readout">step <span id="ns-step-label">0</span></span>
+            <span class="viz-readout" id="ns-range-readout">σ 范围 …</span>
+          </div>
+          <p class="viz-caption">
+            蓝点是 20 个奇异值 $\sigma_i$（初始随机分布在 $[0.05, 1.0]$）。每按"激进 1 步"应用一次红色多项式，每按"标准 1 步"应用一次绿色多项式。
+            <strong>观察 1</strong>：激进多项式在 $\sigma$ 较小（如 0.1-0.5）时<em>抓得猛</em>，几步就能把它们拉到 1 附近；但红线在 $\sigma=1$ 附近高于 1，反复套会<em>过冲</em>。
+            <strong>观察 2</strong>：标准多项式在 $\sigma\approx 1$ 附近紧贴 $y=1$，<em>已经聚拢的奇异值会被精修到 $1\pm 10^{-6}$</em>，但 $\sigma=0.1$ 处它几乎只是恒等线，慢得离谱。
+            <strong>"Hybrid 跑完 10 步"</strong>：8 红 + 2 绿 = 所有 $\sigma$ 都精确收到 1。这就是 V4 选 Hybrid 的图像直觉。
+          </p>
+        </div>
+
+        <!-- ================== §4 Hybrid 工程 ================== -->
+        <h3 id="hybrid">4. 为什么 V4 要做 "Hybrid 两段式 10 步"</h3>
+        <p>这是 V4 相对原 Muon 论文的关键工程改进。把上面两套系数<em>串联</em>：</p>
+        <ol>
+          <li><strong>前 8 步用激进系数</strong> —— 把<em>所有奇异值快速拉到 1 的邻域</em>。激进多项式的过冲问题不要紧，因为"远处 $\sigma$"还差得远，当前根本到不了过冲区。</li>
+          <li><strong>后 2 步切回标准系数</strong> —— 此时所有 $\sigma$ 已经聚到 $\approx 1$ 附近，标准 NS 二阶收敛<em>极快</em>，2 步就能把它们钉在 $1 \pm 10^{-6}$。</li>
+        </ol>
+
+        <div class="callout callout-info">
+          <div class="callout-title">类比：粗调 + 精修</div>
+          <p>
+            激进系数像<em>大锤</em>，能把奇异值的"远端"快速敲到 1 附近，但敲过头会反弹；标准系数像<em>螺丝刀</em>，只在 1 的邻域里管用，但一拧就到位。
+            把两个工具<strong>按序使用</strong>，正好能把单段会失败的两端问题都覆盖住。
+          </p>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 收敛精度</span>
+          假设初始 $\sigma_{\min} = 0.05$（梯度的最弱方向）：
+          <ul>
+            <li><strong>纯激进 30 步</strong>：第 5 步 $\sigma$ 已到 $\sim 1.05$（轻微过冲），之后开始振荡，10 步后 $\sigma \in [0.94, 1.08]$ 反复；</li>
+            <li><strong>纯标准 30 步</strong>：第 1 步 $p(0.05) \approx 0.10$，第 2 步 $\approx 0.20$，第 5 步 $\approx 0.55$，第 10 步 $\approx 0.92$，第 20 步才 $\approx 0.999$ —— <em>慢</em>；</li>
+            <li><strong>Hybrid 8 + 2</strong>：激进 8 步把 $\sigma$ 推到 $\sim 0.998$（已在标准的二阶收敛区）；标准 2 步把 $\sigma$ 钉到 $1 \pm 10^{-6}$。</li>
+          </ul>
+          所以 V4 取 10 步固定 = "粗调 8 + 精修 2" 是收敛与稳定的双赢点。
+        </div>
+
+        <p>
+          这套组合的工程收益是：用<strong>固定 10 次迭代</strong>就能保证 polar 近似的精度，不需要再为不同层、不同 step 调"该迭代多少次"。常数 10 也意味着 NS 这一步的 FLOPs 在编译期就确定，对 TileLang kernel 与 CUDA graph 友好。
+        </p>
+
+        <!-- ================== §5 完整算法 ================== -->
+        <h3 id="full">5. 完整算法：每个符号到底是什么</h3>
+
+        <div class="algo">
+          <div class="algo-title">Algorithm 1 · Muon Optimizer (V4 Hybrid)</div>
+          <div class="algo-inputs">
+            <strong>Inputs:</strong> 损失 $L$，初始权重 $W_0$，学习率 $\eta$，动量 $\mu = 0.95$，衰减 $\lambda = 0.1$，缩放 $\gamma \approx 0.2$
+          </div>
+          <ol class="algo-body">
+            <li>Initialize $M_0 \leftarrow 0$；$t \leftarrow 0$</li>
+            <li><span class="algo-kw">while</span> 未收敛 <span class="algo-kw">do</span></li>
+            <li class="ind-1">$t \leftarrow t + 1$</li>
+            <li class="ind-1"><span class="algo-kw">for each</span> 2D 参数矩阵 $W \in \mathbb{R}^{n \times m}$ <span class="algo-kw">do</span></li>
+            <li class="ind-2">$G_t \leftarrow \nabla L\!\left(W_{t-1}\right)$ <span class="algo-cmt">▷ 当前 step 的原始梯度</span></li>
+            <li class="ind-2">$M_t \leftarrow \mu\, M_{t-1} + G_t$ <span class="algo-cmt">▷ 一阶动量（与 AdamW $\beta_1$ 同位）</span></li>
+            <li class="ind-2">$N_t \leftarrow \mu\, M_t + G_t$ <span class="algo-cmt">▷ Nesterov 提前一步</span></li>
+            <li class="ind-2">$X \leftarrow N_t \,/\, \|N_t\|_F$ <span class="algo-cmt">▷ 缩到 NS 收敛域内</span></li>
+            <li class="ind-2"><span class="algo-kw">for</span> $k = 1$ <span class="algo-kw">to</span> $8$ <span class="algo-kw">do</span> <span class="algo-cmt">▷ 第 1 段：激进 NS 粗调</span></li>
+            <li class="ind-3">$X \leftarrow 3.4445\, X - 4.7750\, (XX^{T})X + 2.0315\, (XX^{T})^{2}X$</li>
+            <li class="ind-2"><span class="algo-kw">end for</span></li>
+            <li class="ind-2"><span class="algo-kw">for</span> $k = 1$ <span class="algo-kw">to</span> $2$ <span class="algo-kw">do</span> <span class="algo-cmt">▷ 第 2 段：标准 NS 精修</span></li>
+            <li class="ind-3">$X \leftarrow 2\, X - 1.5\, (XX^{T})X + 0.5\, (XX^{T})^{2}X$</li>
+            <li class="ind-2"><span class="algo-kw">end for</span></li>
+            <li class="ind-2">$O_t \leftarrow X \cdot \sqrt{\max(n,m)} \cdot \gamma$ <span class="algo-cmt">▷ RMS 重缩放，抹平 shape 依赖</span></li>
+            <li class="ind-2">$W_t \leftarrow (1 - \eta\lambda)\, W_{t-1} - \eta\, O_t$ <span class="algo-cmt">▷ 解耦 weight decay + 步进</span></li>
+            <li class="ind-1"><span class="algo-kw">end for</span></li>
+            <li><span class="algo-kw">end while</span></li>
+            <li><span class="algo-kw">return</span> $W_t$</li>
+          </ol>
+        </div>
+
+        <figure class="paper-fig">
+          <img src="../figures/ch06/01.png" alt="DeepSeek-V4 论文 Algorithm 1 · Muon Optimizer 原始伪代码">
+          <figcaption>
+            图 6-1 · <strong>论文原版 Algorithm 1</strong>。与上面这张表格对比着看：<em>Compute gradients</em> 行 = $G_t$；<em>Accumulate momentum buffer</em> 行 = $M_t$；<em>HybridNewtonSchulz(μM_t + G_t)</em> 一行就把 Nesterov 前瞻 + 8 激进 + 2 标准 NS 全打包进去；<em>Rescale the update RMS</em> 行 = $\sqrt{\max(n,m)}\cdot\gamma$；最后 <em>Perform weight decay and update</em> 行 = $(1-\eta\lambda)W_{t-1} - \eta O_t$。论文写得极简洁是因为它<em>把 NS 当黑盒</em>；上面这张表把它展开到 step 粒度。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 Algorithm 1（§3.2 Muon Optimizer）。</span>
+          </figcaption>
+        </figure>
+
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>含义</th><th>典型值 / 来源</th></tr></thead>
+            <tbody>
+              <tr><td>$G_t$</td><td>第 $t$ 步的原始梯度矩阵</td><td>反向传播得到</td></tr>
+              <tr><td>$\mu$</td><td>动量系数 —— 越大越重视历史方向，越平滑</td><td>0.95（与 AdamW $\beta_1$ 同位）</td></tr>
+              <tr><td>$M_t$</td><td>动量平滑后的"历史趋势梯度"</td><td>—</td></tr>
+              <tr><td>$N_t$</td><td>Nesterov 形式：在 $M_t$ 基础上再加一份当前梯度，等价于"提前一步看"</td><td>—</td></tr>
+              <tr><td>$O'_t$</td><td>NS 输出，奇异值已经全是 1，但矩阵 Frobenius norm = $\sqrt{\min(n,m)}$</td><td>—</td></tr>
+              <tr><td>$\sqrt{\max(n,m)}$</td><td>RMS 重缩放因子，让 $O_t$ 的"平均元素大小"与 AdamW 量级一致</td><td>由层 shape 决定</td></tr>
+              <tr><td>$\gamma$</td><td>额外缩放（论文里一般取 0.2~0.3），用来把 lr 调到与 AdamW 同档</td><td>≈ 0.2</td></tr>
+              <tr><td>$\eta$</td><td>学习率</td><td>跟 AdamW 同量级，不需重新调</td></tr>
+              <tr><td>$\lambda$</td><td>weight decay 系数</td><td>0.1（同 AdamW）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>整个 Muon 一步算下来，可以分四段读：</p>
+          <ol>
+            <li><strong>动量 + Nesterov</strong>（第 6-7 行）：$M_t$ 是历史平滑梯度，$N_t$ 是再加一份当前梯度的"前瞻版"；</li>
+            <li><strong>归一化进入 NS 收敛域</strong>（第 8 行）：除以 $\|N_t\|_F$ 让所有奇异值落进 $(0, 1]$，这是 NS 多项式的安全工作区；</li>
+            <li><strong>NS 10 步</strong>（第 9-14 行）：8 步激进粗调 + 2 步标准精修，输出 $X$ 的所有奇异值都精确等于 1，矩阵 $\approx UV^T$；</li>
+            <li><strong>RMS 重缩放 + weight decay</strong>（第 15-16 行）：把 $X$ 乘 $\sqrt{\max(n,m)}\cdot\gamma$ 调到与 AdamW 同档量级，再做"先 decay 后步进"的解耦更新。</li>
+          </ol>
+          <p>对比 AdamW 整段公式只有 1 行（$W \leftarrow W - \eta m / \sqrt{v}$），Muon 多了 NS 10 步——但<em>每步只是 5 次 matmul</em>，且和 forward 共享相同的 Tile/Kernel 实现，CUDA Graph 上 amortize 后是 ~5% 开销。</p>
+        </div>
+
+        <p><strong>为什么要乘 $\sqrt{\max(n,m)}\cdot\gamma$？</strong> 因为 NS 把奇异值全压到 1，所以 $\|O'_t\|_F = \sqrt{\min(n,m)}$ —— <em>矩阵越扁，Frobenius 范数越小</em>。如果直接拿 $O'_t$ 当更新，宽矩阵的步长就会偏小、扁矩阵反而偏大。乘 $\sqrt{\max(n,m)}$ 把这个 shape 依赖抹平，再用 $\gamma$ 调到合适量级 —— 这样同一个 $\eta$ 可以跨层复用。</p>
+
+        <div class="numex">
+          <span class="numex-tag">具体例子 · 抹平 shape 依赖</span>
+          两个不同形状的层：
+          <ul>
+            <li>层 A：$1024 \times 1024$ (方阵)，NS 后 $\|X\|_F = \sqrt{1024} = 32$；</li>
+            <li>层 B：$256 \times 4096$ (扁矩阵)，NS 后 $\|X\|_F = \sqrt{256} = 16$（注意是 $\sqrt{\min}$）；</li>
+          </ul>
+          直接更新 $W \leftarrow W - \eta X$：层 A 的更新比层 B 大 2×。<em>同一个 lr 在不同 shape 的层上效果不一致</em>。
+          <br>
+          乘 $\sqrt{\max(n,m)}$：层 A 乘 $\sqrt{1024}=32$，输出范数变 $32 \times 32 = 1024$；层 B 乘 $\sqrt{4096}=64$，输出范数变 $16 \times 64 = 1024$。<strong>两层对齐</strong>，跨层一个 $\eta$ 就够。
+        </div>
+
+        <p><strong>为什么用 Nesterov？</strong>因为 $N_t = \mu M_t + G_t$ 等价于"先按 momentum 走一步，再用当前梯度修正"，比标准 momentum 多一阶前瞻信息，长期收敛更快。这是 Muon 论文里就有的标配，V4 沿用。</p>
+
+        <!-- ================== §6 QK-Clip 删除 ================== -->
+        <h3 id="qk-clip">6. 顺手扔掉 QK-Clip：根因消除胜过补丁</h3>
+        <p>
+          V3 里有一个"挽救 attention 数值稳定"的补丁叫 <strong>QK-Clip</strong>：每步前向把 $QK^{T}/\sqrt{d_k}$ 的 logits 强制 clamp 到 $[-c, c]$，防止 softmax 上溢出。它治的不是病因，是<em>病的表现</em>。病因是：Muon 把 W 各方向同权更新后，乘以输入仍可能产生<strong>大幅 query / key 向量</strong>，再做 $Q K^T$ 时点积爆掉。
+        </p>
+        <p>
+          V4 的解法是<em>从源头堵</em>：在 attention 内部直接对 Q、K 各做一次 RMSNorm，使
+        </p>
+        <div class="math-block">
+          $$
+          \|q_i\|_2 \approx \sqrt{d_h},\quad \|k_j\|_2 \approx \sqrt{d_h}
+          \;\Longrightarrow\; |q_i \cdot k_j| \le d_h \;\Longrightarrow\; \text{logits 天然有界}
+          $$
+        </div>
+        <p>
+          所以 QK-Clip 整条 if-else 路径可以直接删掉。这不是写法精简 —— 它是 V4 的工程哲学：<strong>能用根因消除就不要再加补丁</strong>。一个补丁少一份调参负担、少一个炸点、少一行 kernel 分支。
+        </p>
+
+        <!-- ================== §7 代价 ================== -->
+        <h3 id="cost">7. 代价 / 还没解决的问题</h3>
+        <ul>
+          <li><strong>NS 的 FLOPs 开销</strong>：每个 2D 参数每步多 10 次 matmul（若 $W$ 为 $n\times m$，等量级是 $10\,nm\cdot\min(n,m)$）。在 V4-Pro 规模上，这部分相比 forward+backward 大约多 3~5%。可接受，但<em>不是免费</em>。</li>
+          <li><strong>不适用于 1D 参数</strong>：embedding 表（虽是 2D，但行间语义无关，做 polar 没意义）、RMSNorm 的 scale、prediction head、mHC 静态偏置等，仍走 AdamW —— V4 主体参数是 Muon，但<em>整个模型并不是单一优化器</em>。</li>
+          <li><strong>超参没有"自动归一"</strong>：Muon 把<em>更新方向</em>归一化了，但 $\eta$、$\mu$、$\lambda$ 仍要按数据 / 模型 scale 调；它解决的是"AdamW 的方向偏"，不是"超参不需调"。</li>
+          <li><strong>对极小 batch / 极不稳数据敏感</strong>：当 $G_t$ 本身因 batch 太小而高方差时，NS 后的"方向"也会高方差，反而比 AdamW 更糙。所以 Muon 适合<em>大 batch、稳定 dataset</em>，与 V4 的 32T 预训练设定恰好匹配。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>
+            <strong>AdamW 不知道矩阵的形状，Muon 把所有奇异值抹成 1 来强制各向同性更新；NS 是 polar 的便宜近似，Hybrid 两段式让 10 步固定迭代就能落到精度。代价是 ~5% FLOPs，回报是稳定性 + 可以扔掉 QK-Clip 这种补丁。</strong>
+          </p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: NS polynomial curves + sigma evolution
+     ============================================================ -->
+<script>
+(function() {
+  // plot transform: x ∈ [0, 1.5] → [60, 660] (600 wide), y ∈ [-0.2, 1.5] → [310, 30] (280 tall)
+  // Actually we want y=0 at y_pixel=280 (per gridlines: y=0 is at the "1c2433" line at 280)
+  // Map: y_value = 0 → y_pixel = 280; y_value = 1.5 → y_pixel = 30.
+  // Slope: dy_pixel / dy_value = (30 - 280) / (1.5 - 0) = -250/1.5 = -166.67
+  // So y_pixel = 280 - y_value * 166.67
+  const X0 = 60, X1 = 660, XV0 = 0, XV1 = 1.5;
+  const Y_ZERO_PX = 280, Y_VAL_TO_PX = 166.67;
+
+  function xToPx(v) { return X0 + (v - XV0) / (XV1 - XV0) * (X1 - X0); }
+  function yToPx(v) { return Y_ZERO_PX - v * Y_VAL_TO_PX; }
+
+  const A_AGG = 3.4445, B_AGG = -4.7750, C_AGG = 2.0315;
+  const A_STD = 2.0,    B_STD = -1.5,    C_STD = 0.5;
+
+  function polyAgg(s) { return A_AGG*s + B_AGG*s*s*s + C_AGG*s*s*s*s*s; }
+  function polyStd(s) { return A_STD*s + B_STD*s*s*s + C_STD*s*s*s*s*s; }
+
+  // build curve paths
+  function buildPath(fn, sMin, sMax, nSteps) {
+    let d = '';
+    for (let i = 0; i <= nSteps; i++) {
+      const s = sMin + (sMax - sMin) * (i / nSteps);
+      const v = fn(s);
+      const x = xToPx(s);
+      const y = yToPx(Math.max(-0.2, Math.min(1.5, v)));
+      d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    }
+    return d;
+  }
+
+  document.getElementById('ns-curve-agg').setAttribute('d', buildPath(polyAgg, 0, 1.4, 200));
+  document.getElementById('ns-curve-std').setAttribute('d', buildPath(polyStd, 0, 1.4, 200));
+  document.getElementById('ns-identity').setAttribute('d',
+    'M' + xToPx(0).toFixed(1) + ',' + yToPx(0).toFixed(1) + ' ' +
+    'L' + xToPx(1.5).toFixed(1) + ',' + yToPx(1.5).toFixed(1));
+
+  // 20 sigma values, initially random in [0.05, 1.0], stored in array
+  const N_DOTS = 20;
+  let sigmas;
+  let stepCount;
+
+  function reset() {
+    sigmas = [];
+    // spread across [0.05, 1.0] roughly evenly with some randomness
+    for (let i = 0; i < N_DOTS; i++) {
+      const t = i / (N_DOTS - 1);
+      const base = 0.05 + 0.95 * t;
+      const jitter = (Math.random() - 0.5) * 0.08;
+      sigmas.push(Math.max(0.02, Math.min(1.0, base + jitter)));
+    }
+    stepCount = 0;
+    render();
+  }
+
+  function applyStep(fn) {
+    sigmas = sigmas.map(s => fn(s));
+    stepCount++;
+    render();
+  }
+
+  function render() {
+    const g = document.getElementById('ns-dots');
+    g.innerHTML = '';
+    for (let i = 0; i < sigmas.length; i++) {
+      const s = sigmas[i];
+      const cx = xToPx(s);
+      // dot on x-axis (y=0)
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('cx', cx);
+      c.setAttribute('cy', Y_ZERO_PX);
+      c.setAttribute('r', '4');
+      c.setAttribute('fill', '#3b82f6');
+      c.setAttribute('opacity', '0.85');
+      c.setAttribute('stroke', '#ffffff');
+      c.setAttribute('stroke-width', '1');
+      g.appendChild(c);
+    }
+    document.getElementById('ns-step-label').textContent = stepCount;
+    const minS = Math.min.apply(null, sigmas).toFixed(3);
+    const maxS = Math.max.apply(null, sigmas).toFixed(3);
+    document.getElementById('ns-range-readout').textContent = 'σ 范围 [' + minS + ', ' + maxS + ']';
+  }
+
+  document.getElementById('ns-step-agg').addEventListener('click', () => applyStep(polyAgg));
+  document.getElementById('ns-step-std').addEventListener('click', () => applyStep(polyStd));
+  document.getElementById('ns-reset').addEventListener('click', reset);
+  document.getElementById('ns-run-hybrid').addEventListener('click', () => {
+    let i = 0;
+    const total = 10;
+    const interval = setInterval(() => {
+      if (i < 8) applyStep(polyAgg);
+      else applyStep(polyStd);
+      i++;
+      if (i >= total) clearInterval(interval);
+    }, 250);
+  });
+
+  reset();
+})();
+</script>
+
+<!-- ============================================================
+     VIZ: SVD 几何（椭圆 → 单位圆）
+     ============================================================ -->
+<script>
+(function() {
+  // SVG coords: origin at (180, 190), 1 unit = 60 px, y inverted
+  const OX = 180, OY = 190, UNIT = 60;
+  function wx(x) { return OX + x * UNIT; }
+  function wy(y) { return OY - y * UNIT; }
+
+  // Fix U, V as rotation matrices (so M = U·diag(σ)·Vᵀ is well-defined)
+  const ANG_U = 0.55;   // ~31.5°
+  const ANG_V = -0.40;  // ~-22.9°
+  const cU = Math.cos(ANG_U), sU = Math.sin(ANG_U);
+  const cV = Math.cos(ANG_V), sV = Math.sin(ANG_V);
+  // U = [[cU, -sU], [sU, cU]],  V = [[cV, -sV], [sV, cV]]
+
+  const SIGMA_INIT = [0.95, 0.18];
+  const A_AGG = 3.4445, B_AGG = -4.7750, C_AGG = 2.0315;
+  const A_STD = 2.0,    B_STD = -1.5,    C_STD = 0.5;
+  const pAgg = s => A_AGG*s + B_AGG*s*s*s + C_AGG*s*s*s*s*s;
+  const pStd = s => A_STD*s + B_STD*s*s*s + C_STD*s*s*s*s*s;
+
+  let sigmas, stepCount, hybridTimer = null;
+
+  // M = U · diag(σ) · Vᵀ, returns 2×2 array
+  function buildM(s) {
+    // U·diag(σ): col i of U scaled by σ_i
+    const Us0 = [cU * s[0], sU * s[0]];     // U·diag(σ) col 0
+    const Us1 = [-sU * s[1], cU * s[1]];    // col 1
+    // multiply by Vᵀ: M[i][j] = Σ_k (UΣ)[i][k] · V[j][k]
+    // V row j = (V[j][0], V[j][1]); V[0]=[cV,-sV], V[1]=[sV,cV]
+    const m00 = Us0[0]*cV  + Us1[0]*sV;
+    const m01 = Us0[0]*(-sV) + Us1[0]*cV;
+    const m10 = Us0[1]*cV  + Us1[1]*sV;
+    const m11 = Us0[1]*(-sV) + Us1[1]*cV;
+    return [[m00, m01], [m10, m11]];
+  }
+
+  function reset() {
+    if (hybridTimer) { clearInterval(hybridTimer); hybridTimer = null; }
+    sigmas = SIGMA_INIT.slice();
+    stepCount = 0;
+    render();
+  }
+
+  function applyStep(fn) {
+    if (hybridTimer) { clearInterval(hybridTimer); hybridTimer = null; }
+    sigmas = sigmas.map(fn);
+    stepCount++;
+    render();
+  }
+
+  function render() {
+    const M = buildM(sigmas);
+    // ellipse path: M · (cos θ, sin θ)  for θ ∈ [0, 2π]
+    const N = 96;
+    let d = '';
+    for (let i = 0; i <= N; i++) {
+      const t = (i / N) * Math.PI * 2;
+      const ct = Math.cos(t), st = Math.sin(t);
+      const px = M[0][0]*ct + M[0][1]*st;
+      const py = M[1][0]*ct + M[1][1]*st;
+      d += (i === 0 ? 'M' : 'L') + wx(px).toFixed(1) + ',' + wy(py).toFixed(1) + ' ';
+    }
+    d += 'Z';
+    document.getElementById('svd-ellipse').setAttribute('d', d);
+
+    // σ axes = U columns scaled by σ_i, drawn from origin
+    const a1x = cU * sigmas[0], a1y = sU * sigmas[0];
+    const a2x = -sU * sigmas[1], a2y = cU * sigmas[1];
+    const axis1 = document.getElementById('svd-axis-1');
+    axis1.setAttribute('x1', wx(0)); axis1.setAttribute('y1', wy(0));
+    axis1.setAttribute('x2', wx(a1x)); axis1.setAttribute('y2', wy(a1y));
+    const axis2 = document.getElementById('svd-axis-2');
+    axis2.setAttribute('x1', wx(0)); axis2.setAttribute('y1', wy(0));
+    axis2.setAttribute('x2', wx(a2x)); axis2.setAttribute('y2', wy(a2y));
+
+    // σ labels at axis tips
+    const lab1 = document.getElementById('svd-sigma1-label');
+    lab1.setAttribute('x', wx(a1x * 1.08 + 0.05));
+    lab1.setAttribute('y', wy(a1y * 1.08));
+    lab1.textContent = 'σ₁=' + sigmas[0].toFixed(2);
+    const lab2 = document.getElementById('svd-sigma2-label');
+    lab2.setAttribute('x', wx(a2x * 1.08 - 0.45));
+    lab2.setAttribute('y', wy(a2y * 1.08 + 0.18));
+    lab2.textContent = 'σ₂=' + sigmas[1].toFixed(2);
+
+    // matrix display
+    document.getElementById('svd-m00').textContent = M[0][0].toFixed(3);
+    document.getElementById('svd-m01').textContent = M[0][1].toFixed(3);
+    document.getElementById('svd-m10').textContent = M[1][0].toFixed(3);
+    document.getElementById('svd-m11').textContent = M[1][1].toFixed(3);
+
+    // σ scalar readouts
+    document.getElementById('svd-sigma1-num').textContent = sigmas[0].toFixed(3);
+    document.getElementById('svd-sigma2-num').textContent = sigmas[1].toFixed(3);
+    const ratio = sigmas[1] > 1e-6 ? (sigmas[0] / sigmas[1]) : Infinity;
+    document.getElementById('svd-ratio-num').textContent = isFinite(ratio) ? ratio.toFixed(2) : '∞';
+
+    // σ number line markers: x=380 (σ=0) to x=700 (σ=2), span 160 px / unit
+    function sigToX(s) { return 380 + Math.max(0, Math.min(2, s)) * 160; }
+    document.getElementById('svd-sigma1-marker').setAttribute('cx', sigToX(sigmas[0]));
+    document.getElementById('svd-sigma2-marker').setAttribute('cx', sigToX(sigmas[1]));
+
+    document.getElementById('svd-step-label').textContent = stepCount;
+  }
+
+  document.getElementById('svd-reset').addEventListener('click', reset);
+  document.getElementById('svd-step-agg').addEventListener('click', () => applyStep(pAgg));
+  document.getElementById('svd-step-std').addEventListener('click', () => applyStep(pStd));
+  document.getElementById('svd-run-hybrid').addEventListener('click', () => {
+    if (hybridTimer) return;
+    sigmas = SIGMA_INIT.slice();
+    stepCount = 0;
+    render();
+    let i = 0;
+    hybridTimer = setInterval(() => {
+      const fn = (i < 8) ? pAgg : pStd;
+      sigmas = sigmas.map(fn);
+      stepCount++;
+      render();
+      i++;
+      if (i >= 10) { clearInterval(hybridTimer); hybridTimer = null; }
+    }, 320);
+  });
+
+  reset();
+})();
+</script>
+</body>
+</html>

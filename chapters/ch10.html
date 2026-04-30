@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 10 · FP4 QAT — 显存的最后一刀</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch10">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 10 · FP4 QAT</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part2.html">第二部分 · 基础设施</a><span class="sep">/</span>Ch 10</div>
+
+      <article id="ch10" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 10</div>
+        <h2 class="chapter-title">FP4 QAT — 显存的最后一刀</h2>
+        <p class="chapter-sub">为什么 V4 敢把 MoE 专家权重和 CSA Indexer QK 路径降到 FP4，"FP4 → FP8 反量化无损"是怎么靠 sub-block scale 嵌套做到的，以及训练用模拟 FP4 / 推理用真 FP4 是怎么做到 bit-identical。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂 FP4 QAT</div>
+          <p class="term-name">FP4 QAT = 量化感知训练（Quantization-Aware Training），把 MoE 专家权重存成 4-bit 浮点，forward 在 FP8 下算，反向梯度用直通估计回灌到 FP32 master 权重</p>
+          <p>
+            一句话：<strong>用 4 bit 存权重（每个数 16 个码点），forward 把 4 bit dequant 到 FP8 算 GEMM，backward 梯度直接打回 FP32 master</strong>。
+            关键工程发现：FP4 sub-block (1×32) 和 FP8 量化块 (128×128) 的 scale 比值<em>正好</em>落在 FP8 E4M3 的动态范围内，因此 dequant 完全无损 —— 训练时模拟 FP4 与推理时真 FP4 字节相同。
+            收益：MoE 权重显存 ÷ 4，推理 throughput +1.5×。
+          </p>
+          <dl>
+            <dt>FP4 (E2M1)</dt>
+            <dd>4 bit 浮点：1 sign + 2 exponent + 1 mantissa。<em>16 个可表示值</em>：±0, ±0.5, ±1, ±1.5, ±2, ±3, ±4, ±6（含特殊编码）。动态范围窄（max 6.0，min 0.5），所以必须配 scale 才能表达广动态权重。</dd>
+
+            <dt>FP8 (E4M3)</dt>
+            <dd>8 bit 浮点：1+4+3。<em>动态范围 ~448</em>，常用于 forward GEMM 输入/输出。V4 GEMM 的内部精度。</dd>
+
+            <dt>QAT（Quantization-Aware Training）</dt>
+            <dd>训练时就<em>模拟量化</em>：每步 forward 前把权重量化再反量化（fake quant），让模型自己学到量化噪声下的稳定参数。<em>对比 PTQ（Post-Training Quant）</em>：PTQ 训完才量，质量损失大；QAT 训中量，质量几乎无损。</dd>
+
+            <dt>FP32 Master 权重</dt>
+            <dd>每个参数还有一份 FP32 副本作为<em>梯度累加目标</em>。FP4 仅是"前向使用的视图"。这样小梯度不会被 FP4 的 0.5 步长吞掉。代价：每个参数多 4 字节内存；收益：训练稳定。</dd>
+
+            <dt>STE（Straight-Through Estimator · 直通估计）</dt>
+            <dd>量化 $Q(\cdot)$ 的导数处处为 0（阶梯函数），梯度无法回传。STE 的 trick：<em>反向时假装 $\partial Q / \partial w = 1$</em>，把梯度直接穿过量化算子。粗暴但有效，是所有 QAT 的根基。</dd>
+
+            <dt>Sub-block 嵌套 scale</dt>
+            <dd>V4 的核心 trick：FP4 用 1×32 的小块，每块共享一个 FP8 scale；FP8 用 128×128 的大块，每块共享一个 FP32 scale。<strong>FP4 块的 FP8 scale 落在 FP8 E4M3 范围内</strong> → 反量化时 scale 本身能精确表达 → 整个嵌套不引入舍入误差。</dd>
+
+            <dt>STE 等价：梯度打到 FP8 权重</dt>
+            <dd>V4 的具体实现：forward 用 FP8 反量化的权重，backward 把梯度直接累加到 FP8 中间表示（不是 FP4）。然后再把 FP8 累加结果同步回 FP32 master。<em>这等价于对 FP4 量化算子的 STE</em>，但实现更高效。</dd>
+
+            <dt>Indexer FP4 + BF16 score</dt>
+            <dd>CSA 的 Lightning Indexer 也走 FP4：QK 投影用 FP4 权重，indexer score $I_{t,s}$ 由 FP32 降到 BF16。实测<strong>top-k selector 提速 2×、99.7% recall 保留</strong>。这是把 FP4 推到注意力路径的勇敢一步。</dd>
+
+            <dt>真 FP4 推理 vs 模拟 FP4 训练</dt>
+            <dd>训练时硬件可能没原生 FP4 GEMM，于是<em>用 FP8 模拟</em>（dequant 到 FP8 再算）；推理硬件（Hopper FP4 / Blackwell）有原生 FP4 GEMM，<em>权重直接以 FP4 存盘</em>。因为 sub-block 嵌套无损，<strong>两者输出 bit-identical</strong>。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>FP4 不是简单的"再降两 bit"，而是<em>用 sub-block scale 嵌套换无损 dequant</em>，让训练和推理跨硬件 bit-identical。MoE 权重砍 4 倍显存、Indexer 减半延迟，是 V4 在万亿参数时代仍能放进 8×H100 单机的关键。</div>
+        </div>
+
+        <!-- ================== §1 为什么要做到 FP4 ================== -->
+        <h3 id="motivation">1. 万亿参数的显存账</h3>
+        <p>
+          V4-Pro 1.6T 参数的存储压力极端：
+        </p>
+        <div class="numex">
+          <span class="numex-tag">数值演练 · MoE 权重显存账</span>
+          1.6T 参数中 MoE 占 ~1.4T（384 个 expert × ~3.6B 每个）。各精度下的显存：
+          <ul>
+            <li><strong>BF16</strong>: 1.4T × 2 B = <em>2.8 TB</em>，需要 35× 80GB H100 仅装权重；</li>
+            <li><strong>FP8</strong>: 1.4T × 1 B = <em>1.4 TB</em>，需要 18× H100；</li>
+            <li><strong>FP4</strong>: 1.4T × 0.5 B = <em>700 GB</em>，<strong>9× H100 即可装下</strong>，配合 MoE only-load-active-experts 可以推到单节点 8 卡部署。</li>
+          </ul>
+          <em>每减一个 bit 都要从模型质量里抠</em>，4 bit 是目前业界推理常用下限。但训练阶段降 bit 历来失败 —— FP8 训练已经险，FP4 训练 V4 是首次大规模成功。
+        </div>
+
+        <p>
+          除了显存，FP4 GEMM 在新硬件（Hopper Tensor Core FP4、Blackwell）上吞吐是 FP8 的 2×，<strong>推理 throughput +1.5–2×</strong>。这是把 FP4 推上量化感知训练的另一动力。
+        </p>
+
+        <!-- ================== §2 FP4 表是什么 ================== -->
+        <h3 id="fp4-table">2. FP4 (E2M1) 长什么样</h3>
+        <p>
+          FP4 只有 16 个可表示值。E2M1 的标准编码：
+        </p>
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译 · FP4 E2M1 编码</div>
+          <p>4 bit 编码 = sign(1) + exponent(2) + mantissa(1)：</p>
+          <div class="math-block">
+            $$
+            v = (-1)^{s} \cdot 2^{e-1} \cdot (1 + m/2), \quad e \in \{1,2,3\},\;\; m \in \{0, 1\}
+            $$
+          </div>
+          <p>当 $e = 0$ 时是 subnormal，$v = (-1)^s \cdot 2^{-1} \cdot (m/2)$ —— 含 ±0, ±0.5。</p>
+          <p>16 个值的具体清单：<strong>$\{0, \pm 0.5, \pm 1, \pm 1.5, \pm 2, \pm 3, \pm 4, \pm 6\}$</strong>。
+          <br>
+          注意：<em>没有 5</em>（exp 跳跃）、<em>有两个零</em>（±0）、最大值 6.0。<strong>动态范围 6 / 0.5 = 12</strong>，远窄于 FP8 (动态范围 ~890)。所以不配 scale 直接表达不了 LLM 权重 —— 必须 sub-block scaling。</p>
+        </div>
+
+        <!-- ================== VIZ: FP4 量化网格 ================== -->
+        <div class="viz" id="viz-fp4">
+          <div class="viz-head">
+            <div class="viz-title">Demo · FP4 (E2M1) 16 个码点 + 动态加 scale 看一组真实权重落在哪儿</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 320" id="fp4-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- code-point row -->
+            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">FP4 (E2M1) 的 16 个码点（横轴是值）</text>
+            <line x1="20" y1="60" x2="700" y2="60" stroke="#1c2433"/>
+            <g id="fp4-points"></g>
+
+            <!-- second row: weights with scale -->
+            <text x="20" y="120" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">一个 1×32 sub-block 的权重（蓝点）+ scale 后的 FP4 量化（红点）</text>
+            <line x1="20" y1="180" x2="700" y2="180" stroke="#1c2433"/>
+            <g id="fp4-weights"></g>
+
+            <!-- legend / readout -->
+            <text x="20" y="218" font-size="11" fill="#1c2433" font-weight="600">scale s = <tspan id="fp4-scale" fill="#dc2626" font-family="JetBrains Mono">0.000</tspan> · max|w| = <tspan id="fp4-maxw" font-family="JetBrains Mono">0.000</tspan></text>
+            <text x="20" y="238" font-size="11" fill="#1c2433" font-weight="600">量化误差 RMSE = <tspan id="fp4-rmse" fill="#dc2626" font-family="JetBrains Mono">0.000</tspan></text>
+            <text x="20" y="262" font-size="10.5" fill="#475569">scale s 选 max|w|/6 让最大值映射到 ±6（FP4 最大码）。</text>
+            <text x="20" y="278" font-size="10.5" fill="#475569">蓝点 = 原 FP32 权重；红点 = round 到最近 FP4 码点 × s 后的近似值。</text>
+            <text x="20" y="294" font-size="10.5" fill="#475569">"重抽权重"换一组分布；"切到长尾"测异常值压垮 scale 的情形。</text>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="fp4-resample">🎲 重抽 32 个权重（高斯）</button>
+            <button class="viz-btn" id="fp4-tail">长尾分布（含极端值）</button>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：上轴是 FP4 16 个固定码点 —— 你能直观看到它们<em>非均匀</em>分布（小值密、大值稀，浮点的本性）。下轴是一个 sub-block 内 32 个真实权重；蓝→红 = 量化前→量化后。
+            <br>
+            点"长尾分布"看到一旦某个权重远大于其他（如 0.95 vs 其余 0.05），<strong>scale 被它单挑撑大</strong>，所有小权重一起塌进 0 附近的码点 —— 这就是<em>异常值 outlier</em> 问题，QAT 训练时模型自己学着不让权重出现长尾，所以训完的模型对 FP4 友好。
+          </p>
+        </div>
+
+        <!-- ================== §3 sub-block 嵌套 scale ================== -->
+        <h3 id="sub-block">3. 关键 trick：sub-block 嵌套 scale</h3>
+        <p>
+          FP4 动态范围太窄，不能用 per-tensor 单一 scale（异常值会压垮所有正常权重）。常见做法 per-channel 或 per-group。V4 走更细：
+        </p>
+        <ul>
+          <li><strong>FP4 sub-block</strong>：每 1×32 个权重共享一个 scale，这个 scale 用 <em>FP8 E4M3</em> 存；</li>
+          <li><strong>FP8 大块</strong>：每 128×128 个权重（含 4 行 × 128 列 = 16 个 FP4 sub-block）共享一个 <em>FP32 主 scale</em>；</li>
+          <li><strong>反量化</strong>：$w_{\text{FP8}} = \text{FP4}(w) \cdot s_{\text{FP8 sub}} \cdot s_{\text{FP32 主}}$。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译 · 为什么 FP4 → FP8 反量化无损</div>
+          <p>关键观察：FP4 sub-block 的 scale 比例是<em>相邻几行权重最大值之比</em>，实测落在 $[2^{-7}, 2^{7}]$ 内（最多 2^7 = 128 倍差）。FP8 E4M3 的动态范围是<strong>~448</strong>（exp 4 bit, max ~$2^{8}$），刚好覆盖。</p>
+          <div class="math-block">
+            $$
+            \underbrace{2^{-7}}_{\text{最小 scale 比}} \;\le\; s_{\text{FP8 sub}} \;\le\; \underbrace{2^{7}}_{\text{最大 scale 比}} \;\subset\; [2^{-9}, 2^{8}] \;\;(\text{FP8 E4M3 范围})
+            $$
+          </div>
+          <ul>
+            <li><strong>scale 本身能精确存</strong>：不舍入；</li>
+            <li><strong>FP4 → FP8 dequant = 整数索引 × 精确 scale</strong>：每个 FP4 码点本身在 FP8 中也精确表达（FP4 的码点都是 FP8 的子集）；</li>
+            <li><strong>整体无损</strong>：dequant 后的 FP8 值 = 量化前的 FP4 视图原值，<em>没有第二次舍入</em>。</li>
+          </ul>
+          <p>这是工程精算 —— 并不是 FP4 量化本身无损（它当然损失），而是 FP4 这个<em>低精度视图</em>"展开成 FP8"这一步无损。模型质量损失全部发生在<strong>"FP32 → FP4"那一次量化</strong>，QAT 让模型自己学着接受这个噪声。</p>
+        </div>
+
+        <!-- ================== §4 训练循环 ================== -->
+        <h3 id="train">4. QAT 训练循环</h3>
+        <p>每步训练做的事：</p>
+        <ol>
+          <li><strong>Forward</strong>：从 FP32 master 权重量化到 FP4（fake quant），dequant 到 FP8 输入 GEMM；</li>
+          <li><strong>Backward</strong>：梯度对<em>FP8 表示的权重</em>求导，等价 STE（绕过量化算子的 0 导数）；</li>
+          <li><strong>Update</strong>：梯度累加到 FP32 master；</li>
+          <li><strong>下一步</strong>：再次从 master 重新量化。</li>
+        </ol>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译 · STE 的核心</div>
+          <p>正常链式法则在量化算子 $Q$ 处会断：</p>
+          <div class="math-block">
+            $$
+            \frac{\partial L}{\partial w} = \frac{\partial L}{\partial Q(w)} \cdot \underbrace{\frac{\partial Q(w)}{\partial w}}_{= 0\text{ a.e.}}
+            $$
+          </div>
+          <p>$Q$ 是阶梯函数，处处导数为 0，梯度直接挂掉。STE 的 hack：<strong>反向时假装 $\partial Q / \partial w = 1$</strong>，让梯度<em>原样穿过</em>量化算子。等价于：</p>
+          <div class="math-block">
+            $$
+            \nabla_w L \approx \nabla_{Q(w)} L \cdot \mathbb{1}
+            $$
+          </div>
+          <p>这条粗暴假设在数学上不严格，但在 QAT 实践中<em>非常稳定</em>：因为 $Q(w) - w$ 量级小（$\le$ 半个码点间隔），梯度近似几乎一致；模型学几个 batch 后会自动靠近"量化友好"的权重。STE 是从 BinaryNet (2016) 一路继承下来的工程技。</p>
+        </div>
+
+        <!-- ================== §5 Indexer FP4 ================== -->
+        <h3 id="indexer">5. CSA Indexer 的 FP4 路径</h3>
+        <p>
+          Ch04 的 CSA Lightning Indexer 是 V4 长上下文的命脉。每层一次 indexer 调用，每次要算<em>整个 prefix 与当前 query 的</em> $QK^T$，然后选 top-k。FP4 化的关键：
+        </p>
+        <ul>
+          <li><strong>Indexer Q/K 投影权重</strong>：FP4 存储 + FP8 计算；</li>
+          <li><strong>Indexer score $I_{t,s}$</strong>：原本 FP32 累加，降到 BF16；</li>
+          <li><strong>top-k selector</strong>：BF16 排序，相对 FP32 提速 2×。</li>
+        </ul>
+        <p>
+          实测<strong>recall@k 99.7%</strong> —— 即和 FP32 indexer 选出来的 top-k 重合 99.7%。剩下 0.3% 的差异是 "BF16 score 排序产生的<em>边界 token 翻号</em>"，由于 sparse attention 本身对 top-k 边缘不敏感，下游 logits 损失忽略不计。
+        </p>
+
+        <h3 id="figs">6. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">FP4 QAT 信号链图：FP32 master → FP4 quant → FP8 dequant → forward GEMM → output；backward 梯度 STE 回到 FP32 master 的箭头。</p>
+          <p class="fig-source">V4 技术报告 §6.4，Figure 9 或附录 C。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">Sub-block scale 嵌套示意：128×128 FP8 块切分为 16 个 1×32 FP4 sub-block，每层 scale 标注。</p>
+          <p class="fig-source">V4 技术报告 §6.4。</p>
+        </div>
+
+        <h3>本章小结</h3>
+        <ul>
+          <li>1.6T MoE 权重在 BF16 下 2.8 TB，FP4 砍到 700 GB，<strong>单节点 8×H100 可装</strong>。</li>
+          <li>FP4 (E2M1) 只有 16 个码点、动态范围 12，必须 sub-block 嵌套 scale。</li>
+          <li>FP4 sub-block (1×32) + FP8 块 (128×128) 的 scale 比例落在 FP8 E4M3 范围内 → <strong>FP4→FP8 反量化无损</strong>。</li>
+          <li>STE 让 QAT 训练通过量化算子，反向把梯度打回 FP32 master。</li>
+          <li>Indexer 的 FP4 + BF16 score 让 top-k selector 2× 提速 + 99.7% recall。</li>
+          <li>"训练用模拟 FP4、推理用真 FP4"两侧 bit-identical，靠的就是上面这套嵌套精算。</li>
+        </ul>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: FP4 量化网格 + 一组权重的量化效果
+     ============================================================ -->
+<script>
+(function() {
+  // FP4 E2M1 16 code points
+  const FP4_CODES = [-6, -4, -3, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 3, 4, 6, 0];  // last 0 is duplicate (for ±0)
+  const UNIQUE_CODES = [-6, -4, -3, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 3, 4, 6];
+
+  // x mapping: value v ∈ [-1.05, 1.05] → x ∈ [40, 700] (line 1 normalized 0..1 of scaled value, will map differently)
+  // For top row (FP4 codes raw, range -6..6), map -7..7 → 40..700
+  function vToXFP4(v) {
+    return 40 + (v + 7) / 14 * 660;
+  }
+  // For bottom row (weights with scale s, mapping in normalized space), use same mapping after dividing by s
+  function vToXScaled(v, s) {
+    // v already a real weight; divide by s gives normalized (in FP4 space)
+    const norm = v / s;
+    return 40 + (norm + 7) / 14 * 660;
+  }
+
+  function gaussianSample() {
+    // Box-Muller
+    const u1 = Math.random(), u2 = Math.random();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  }
+
+  let weights = [];
+  let mode = 'gaussian';
+
+  function genWeights() {
+    weights = [];
+    if (mode === 'gaussian') {
+      for (let i = 0; i < 32; i++) weights.push(0.05 * gaussianSample());
+    } else {
+      // long-tail: most small, one or two extremes
+      for (let i = 0; i < 30; i++) weights.push(0.02 * gaussianSample());
+      weights.push(0.5 + Math.random() * 0.4);
+      weights.push(-(0.4 + Math.random() * 0.3));
+    }
+    render();
+  }
+
+  function quantizeFP4(w, s) {
+    // map w/s to nearest UNIQUE_CODES
+    const norm = w / s;
+    let best = UNIQUE_CODES[0], bestD = Infinity;
+    for (const c of UNIQUE_CODES) {
+      const d = Math.abs(c - norm);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best * s;
+  }
+
+  function render() {
+    // top row: 16 FP4 code points
+    const topG = document.getElementById('fp4-points');
+    topG.innerHTML = '';
+    for (const c of UNIQUE_CODES) {
+      const x = vToXFP4(c);
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', x); dot.setAttribute('cy', 60); dot.setAttribute('r', 4);
+      dot.setAttribute('fill', '#3b82f6'); dot.setAttribute('stroke', '#ffffff'); dot.setAttribute('stroke-width', '1');
+      topG.appendChild(dot);
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', x); t.setAttribute('y', 80);
+      t.setAttribute('font-size', '9'); t.setAttribute('font-family', 'JetBrains Mono');
+      t.setAttribute('text-anchor', 'middle'); t.setAttribute('fill', '#475569');
+      t.textContent = c.toString();
+      topG.appendChild(t);
+    }
+
+    // tick marks at -6, 0, +6
+    [-6, -4, -2, 0, 2, 4, 6].forEach(v => {
+      const x = vToXFP4(v);
+      const tk = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      tk.setAttribute('x1', x); tk.setAttribute('x2', x);
+      tk.setAttribute('y1', 56); tk.setAttribute('y2', 64);
+      tk.setAttribute('stroke', '#1c2433'); tk.setAttribute('stroke-width', '0.5');
+      topG.appendChild(tk);
+    });
+
+    // bottom row: weights and quantized
+    const maxW = Math.max.apply(null, weights.map(Math.abs));
+    const s = maxW / 6;  // scale so max maps to ±6
+    document.getElementById('fp4-scale').textContent = s.toFixed(4);
+    document.getElementById('fp4-maxw').textContent = maxW.toFixed(4);
+
+    const botG = document.getElementById('fp4-weights');
+    botG.innerHTML = '';
+
+    // tick marks (in scaled space, show -6..6 grid for reference)
+    [-6, -4, -2, 0, 2, 4, 6].forEach(v => {
+      const x = 40 + (v + 7) / 14 * 660;
+      const tk = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      tk.setAttribute('x1', x); tk.setAttribute('x2', x);
+      tk.setAttribute('y1', 176); tk.setAttribute('y2', 184);
+      tk.setAttribute('stroke', '#cbd5e1'); tk.setAttribute('stroke-width', '0.5');
+      botG.appendChild(tk);
+    });
+
+    let sse = 0;
+    for (const w of weights) {
+      const xOrig = vToXScaled(w, s);
+      const wq = quantizeFP4(w, s);
+      const xQ = vToXScaled(wq, s);
+      sse += (w - wq) * (w - wq);
+
+      const blue = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      blue.setAttribute('cx', xOrig); blue.setAttribute('cy', 162); blue.setAttribute('r', 3);
+      blue.setAttribute('fill', '#3b82f6'); blue.setAttribute('opacity', '0.85');
+      botG.appendChild(blue);
+
+      const red = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      red.setAttribute('cx', xQ); red.setAttribute('cy', 198); red.setAttribute('r', 3);
+      red.setAttribute('fill', '#dc2626');
+      botG.appendChild(red);
+
+      // connecting line
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', xOrig); ln.setAttribute('x2', xQ);
+      ln.setAttribute('y1', 162); ln.setAttribute('y2', 198);
+      ln.setAttribute('stroke', '#9ca3af'); ln.setAttribute('stroke-width', '0.4');
+      ln.setAttribute('opacity', '0.6');
+      botG.appendChild(ln);
+    }
+
+    const rmse = Math.sqrt(sse / weights.length);
+    document.getElementById('fp4-rmse').textContent = rmse.toFixed(4);
+  }
+
+  document.getElementById('fp4-resample').addEventListener('click', () => {
+    mode = 'gaussian';
+    genWeights();
+  });
+  document.getElementById('fp4-tail').addEventListener('click', () => {
+    mode = 'tail';
+    genWeights();
+  });
+  genWeights();
+})();
+</script>
+</body>
+</html>

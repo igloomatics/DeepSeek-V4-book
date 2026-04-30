@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>附录 A · 评测结果</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-base="" data-page="appendix_a">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">附录 A · 评测结果</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="index.html">封面</a><span class="sep">/</span>附录 A</div>
+
+      <article id="appendix_a" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>附录 · A</div>
+        <h2 class="chapter-title">评测结果 — Benchmark 跑分与真实任务胜率</h2>
+        <p class="chapter-sub">把 V4 与闭源旗舰 / 前代模型放进同一坐标系：知识 / 推理 / Agent / 长上下文 / 真实任务，五条战线一次列齐。所有引用的表格 / 图都标注论文具体 <em>章节 + 页码</em>，方便读者翻原文核对。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"V4 评测的五条战线"</div>
+          <p class="term-name">五条战线 = 知识 / 推理 / Agent / 长上下文 / 真实任务；前四条由 standard benchmark 衡量，最后一条由内部盲评 + 工程师问卷衡量</p>
+          <p>
+            一句话：<strong>把 standard benchmark 的"客观分数"和真实使用的"主观胜率"分开看</strong>。
+            前者是<em>能力上限</em>（V4 是否在 SOTA 半径内），后者是<em>体感下限</em>（V4 是否真好用）。论文 §5.3 + §5.4 分别承担这两件事。
+          </p>
+          <dl>
+            <dt>Reasoning Effort（推理强度）</dt>
+            <dd>同一模型用不同长度 thinking chain 解题。V4 训练成三档：<strong>Non-think</strong> / <strong>High</strong> / <strong>Max</strong>（详见 Ch16），对应 RL 阶段不同 length penalty + context window。<em>所有 V4 评测都标了档位</em>，比如 "DS-V4-Pro Max"。</dd>
+
+            <dt>Pass@k / Pass@1</dt>
+            <dd>k 次采样里至少 1 次答对的概率（k=1 即一发命中率）。代码 / 数学 benchmark 标准指标。Pass@8 比 Pass@1 严格许多 —— 8 次都不许答对才算失败，但成本也是 8×。</dd>
+
+            <dt>Pass Rate（DeepSeek 内部 Code Agent 评测）</dt>
+            <dd>论文 §5.4.4 的"Code Agent"任务通过率：从 50+ 工程师真实工单筛选 ~200 任务，人工评分后保留 30 任务作为评测集，跑通就计 pass。<em>不是 Pass@1，是单次跑通率</em>，因为每个任务可能涉及多文件 + 多步执行，重采样意义不大。</dd>
+
+            <dt>MRCR（Multi-Round Coreference Resolution）</dt>
+            <dd>1M 长上下文核心 benchmark：在 8K~1M context 下做 8-needle 多指代解析。指标 MMR (mean reciprocal rank) 越高越好。<em>对长上下文是命门测试</em>，因为指代关系跨段引用，必须真正"看到"远端 token 才能答对。</dd>
+
+            <dt>HLE (Humanity's Last Exam)</dt>
+            <dd>2025 年推出的"前沿研究水平"高难度测试，覆盖数学 / 物理 / 化学 / 生物 / 历史 / 法律。<em>对 reasoning effort 极敏感</em>：Non-think 几乎全错，Max 模式下 V4-Pro 拿到 ~38%。</dd>
+
+            <dt>Putnam Practical / Frontier Regime（论文 Figure 8, p. 40）</dt>
+            <dd>形式化数学的双轨设计：<strong>Practical</strong>（Putnam-200 Pass@8 + 最小工具 + 受限采样，测"工程友好"上限）和 <strong>Frontier</strong>（Putnam-2025 hybrid formal-informal + 大算力，测"理论可达"上限）。两轨同评，反映模型在<em>受限</em>与<em>放开</em>两种条件下的能力分布。</dd>
+
+            <dt>Codeforces Rating（Elo）</dt>
+            <dd>实时编程竞赛 Elo 评级，与人类选手在同一池里排位。V4-Pro Max 拿到 <strong>3206</strong>（论文 Table 6, p. 38），相当于<em>人类前 23 名</em>，是首个在 Codeforces 上压过 GPT-5.4 与 Gemini-3.1-Pro 的开源模型。</dd>
+
+            <dt>SimpleQA-Verified</dt>
+            <dd>简单事实问答的精确匹配版本（每答必须精确，无 partial credit）。<em>对幻觉极敏感</em>：模型不知道就乱答的话，分数会塌。是"知识储量"的金标准之一。</dd>
+
+            <dt>Agentic Search vs RAG（论文 §5.4.2, p. 42）</dt>
+            <dd><strong>RAG</strong>：retrieval 一次后把结果喂给模型；<strong>Agentic Search</strong>：模型可<em>迭代</em>调用 search/fetch 工具直到满意。前者对应 Non-think 模式、后者对应 Think 模式。<em>Agentic 版总成本仅<strong>略高</strong>于 RAG，但复杂任务提升显著</em>（Table 9 vs Table 11）。</dd>
+
+            <dt>真实任务 / Real-World Task（论文 §5.4, p. 41-44）</dt>
+            <dd>论文专门构造的<em>非 benchmark</em> 评测：中文写作、搜索、白领任务、Code Agent 四类，由专业标注员或工程师做盲评 / 问卷，衡量 standard benchmark 不覆盖的体感维度（风格、礼貌、格式、上下文记忆）。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>本附录把 V4 报告 §5.3-§5.4（p. 36-44）的所有评测数据按"<em>能力上限 + 体感下限</em>"重新组织，每个表 / 图都明确标到论文章节 + 页码，方便读者翻原文核对。读完应能回答："V4 在哪条战线 SOTA、哪条战线落后多少、哪些短板还在"三个问题。</div>
+        </div>
+
+        <!-- ================== A.1 ================== -->
+        <h2 style="margin-top:48px; padding-bottom:8px; border-bottom:2px solid var(--accent);">A.1 Benchmark 跑分（论文 §5.3, p. 36-41）</h2>
+
+        <div class="callout callout-info">
+          <div class="callout-title">关键定位（V4-Pro-Max 概览）</div>
+          <ul>
+            <li><strong>知识</strong>（论文 Table 6, p. 38）：SimpleQA-Verified 上比 GPT-5.4-xHigh、K2.6-Thinking 高 20+ 分，仍落后 Gemini-3.1-Pro-High（57.9 vs 75.6）。</li>
+            <li><strong>推理</strong>（论文 Table 6, p. 38 + Figure 10, p. 41）：HMMT/IMO/Apex 接近 GPT-5.4，落后 SOTA 约 3-6 个月（论文 §5.3.2 自评）。</li>
+            <li><strong>Agent</strong>（论文 Table 6, p. 38 + Table 8, p. 44）：内部 Code Agent 评测中超越 Sonnet 4.5、接近 Opus 4.5；Codeforces Elo <strong>3206</strong>。</li>
+            <li><strong>长上下文</strong>（论文 Figure 9, p. 40）：MRCR 1M 上 83.5（Gemini-3.1-Pro 76.3，Opus 4.6 92.9）；CorpusQA 1M 上 62.0。</li>
+            <li><strong>形式化数学</strong>（论文 Figure 8, p. 40）：Putnam-2025 在 hybrid formal-informal 设置下拿下完美 <strong>120/120</strong>。</li>
+          </ul>
+        </div>
+
+        <h3 id="effort-curve">1. 三档 reasoning effort 的代价曲线（论文 Figure 10, p. 41）</h3>
+        <p>
+          论文 Figure 10（p. 41）的 HLE 与 TerminalBench 2.0 曲线：Non-think → Think High → Think Max 三档 token 成本接近线性，但 Pass@1 增量显著。这条曲线说明三件事：
+        </p>
+        <ul>
+          <li><strong>Max 不是简单加更多 think token</strong>，而是 RL 阶段降低长度惩罚 + 增大上下文窗口（Ch16 §4 详述：context 8K / 128K / 384K 对应三档）；</li>
+          <li>同一 reasoning budget 下，V4 的 token 利用率高于 V3.2-Speciale（论文 Figure 10 中 V3.2-Speciale 的 None/High 点位明显低于 V4 同等档）；</li>
+          <li>Flash-Max 与 Pro-Max 在简单任务上几乎重合，复杂任务（如 Apex / HLE）才显著拉开。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 为什么 Pass@1 随 token 增加是"凹"形而非线性</div>
+          <p>设单 token 解题贡献的边际信息为 $\Delta I(t)$，则总解题概率 $P(\text{pass}) \approx 1 - \exp\!\big(\!-\!\sum_t \Delta I(t)\big)$：</p>
+          <ol>
+            <li>低 budget 下：每个 think token 都做<em>新工作</em>（探索新分支），$\Delta I$ 大；</li>
+            <li>高 budget 下：模型已经把主要 lemma 推完，剩下 token 在<em>验证 / 重述</em>，$\Delta I$ 衰减；</li>
+            <li>所以 Pass@1 随 budget 是<strong>对数饱和</strong>形，不是线性 —— 这就是 Figure 10 曲线的形状根源。</li>
+          </ol>
+          <p>实际意义：<em>很难任务下"再加 token" 仍有收益</em>（Max 比 High 贵 2× 但精度仍能涨 2–3 分）；<em>简单任务上 Max 浪费</em>（多花 60K token 涨不到 1 分）。这就是为什么 V4 把三档训成三个 checkpoint 而非用同一 checkpoint 配不同 budget。</p>
+        </div>
+
+        <h3 id="mrcr">2. MRCR 1M 衰减曲线（论文 Figure 9, p. 40）</h3>
+        <p>
+          论文 Figure 9（p. 40）展示 V4 在 MRCR 8-needle 任务上从 8K 到 1M 的衰减。Pro-Max 在 8K~128K 区间稳定在 0.85+，<strong>256K 后明显下滑，1M 时降至 0.59</strong>（Flash-Max 同长度从 0.87 衰减到 0.49）。
+        </p>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · MRCR 衰减点位</span>
+          论文 Figure 9（p. 40）数据点（V4-Pro-Max）：
+          <ul>
+            <li>8K → 32K：0.90 → 0.94（峰值），<em>仍在涨，因为更多 context 让指代消歧更容易</em>；</li>
+            <li>32K → 128K：0.94 → 0.92，平稳；</li>
+            <li>128K → 256K：0.92 → 0.82，<em>开始衰减</em>；</li>
+            <li>256K → 1M：0.82 → 0.59，<strong>急降 23 个百分点</strong>。</li>
+          </ul>
+          这说明 V4 的"<em>1M 可用</em>"是真的（59% 仍远高于 baseline 25%），但<em>1M 下的能力已不是 128K 下那种"几乎无衰减"的表现</em>。论文 §6（p. 44）conclusion 明确说要继续投入这块。
+        </div>
+
+        <h3 id="putnam">3. 形式化数学：Putnam 双轨制（论文 Figure 8, p. 40）</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>设置（论文 Figure 8）</th><th>含义</th><th>V4-Flash-Max</th><th>对照</th></tr></thead>
+            <tbody>
+              <tr><td>Practical Regime</td><td>Putnam-200 Pass@8，最小工具与有限采样</td><td><strong>81.0</strong></td><td>Seed-2.0-Prover 35.5 / Gemini-3-Pro 26.5</td></tr>
+              <tr><td>Frontier Regime</td><td>Putnam-2025 hybrid formal-informal + 大算力</td><td><strong>120/120</strong></td><td>Aristotle 100/120 / Axiom 120/120</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>双轨制说明 V4 既能在<strong>受限工具/采样</strong>下打满（Practical 81.0 远超开源 prover），又能在<strong>大算力</strong>下与最强 prover 持平（Frontier 完美 120/120 与 Axiom 并列）。</p>
+
+        <h3 id="comparison">4. 与闭源旗舰对比（论文 Table 6, p. 38）</h3>
+        <p>论文 Table 6（p. 38，本附录节选 Pro-Max 对比 vs 闭源旗舰）：</p>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>Benchmark</th><th>Opus-4.6 Max</th><th>GPT-5.4 xHigh</th><th>Gemini-3.1-Pro High</th><th>DS-V4-Pro Max</th></tr></thead>
+            <tbody>
+              <tr><td>MMLU-Pro (EM)</td><td>89.1</td><td>87.5</td><td><strong>91.0</strong></td><td>87.5</td></tr>
+              <tr><td>SimpleQA-Verified (Pass@1)</td><td>46.2</td><td>45.3</td><td><strong>75.6</strong></td><td>57.9</td></tr>
+              <tr><td>GPQA Diamond (Pass@1)</td><td>91.3</td><td>93.0</td><td><strong>94.3</strong></td><td>90.1</td></tr>
+              <tr><td>HLE (Pass@1)</td><td>40.0</td><td>39.8</td><td><strong>44.4</strong></td><td>37.7</td></tr>
+              <tr><td>LiveCodeBench (Pass@1)</td><td>88.8</td><td>—</td><td>91.7</td><td><strong>93.5</strong></td></tr>
+              <tr><td>Codeforces (Rating)</td><td>—</td><td>3168</td><td>3052</td><td><strong>3206</strong></td></tr>
+              <tr><td>HMMT 2026 Feb (Pass@1)</td><td>96.2</td><td><strong>97.7</strong></td><td>94.7</td><td>95.2</td></tr>
+              <tr><td>Apex Shortlist (Pass@1)</td><td>85.9</td><td>78.1</td><td>89.1</td><td><strong>90.2</strong></td></tr>
+              <tr><td>SWE Verified (Resolved)</td><td><strong>80.8</strong></td><td>—</td><td>80.6</td><td>80.6</td></tr>
+              <tr><td>MRCR 1M (MMR)</td><td><strong>92.9</strong></td><td>—</td><td>76.3</td><td>83.5</td></tr>
+              <tr><td>BrowseComp (Pass@1)</td><td>83.7</td><td>82.7</td><td><strong>85.9</strong></td><td>83.4</td></tr>
+              <tr><td>HLE w/ tools (Pass@1)</td><td><strong>53.1</strong></td><td>52.0</td><td>51.6</td><td>48.2</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-warn">
+          <div class="callout-title">怎么读这张表</div>
+          <p>
+            V4-Pro 是<em>第一份在 Codeforces / LiveCodeBench / Apex Shortlist 上压过闭源旗舰</em>的开源模型；知识类（MMLU-Pro / SimpleQA / GPQA / HLE）落后 Gemini-3.1-Pro 与 GPT-5.4；长上下文 1M 仍未追上 Opus 4.6（83.5 vs 92.9）。论文 §5.3.2（p. 38）自评：开源模型相对前沿闭源仍有约 <em>3-6 个月差距</em>。
+          </p>
+        </div>
+
+        <h3 id="modes">5. V4 自身三档对比（论文 Table 7, p. 39）</h3>
+        <p>同款 Flash / Pro 在 Non-Think / High / Max 三档下的全 benchmark 表现，论文 Table 7（p. 39）。最显著的"档位拉大"出现在<em>知识与推理</em>类：</p>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>Benchmark</th><th>Pro Non-Think</th><th>Pro High</th><th>Pro Max</th><th>从 Non→Max 提升</th></tr></thead>
+            <tbody>
+              <tr><td>SimpleQA-Verified</td><td>45.0</td><td>46.2</td><td>57.9</td><td>+12.9</td></tr>
+              <tr><td>HLE (Pass@1)</td><td>7.7</td><td>34.5</td><td>37.7</td><td><strong>+30.0</strong></td></tr>
+              <tr><td>Codeforces Rating</td><td>—</td><td>2919</td><td>3206</td><td>+287</td></tr>
+              <tr><td>HMMT 2026 Feb</td><td>31.7</td><td>94.0</td><td>95.2</td><td><strong>+63.5</strong></td></tr>
+              <tr><td>Apex Shortlist</td><td>9.2</td><td>85.5</td><td>90.2</td><td><strong>+81.0</strong></td></tr>
+              <tr><td>MRCR 1M (MMR)</td><td>44.7</td><td>83.3</td><td>83.5</td><td>+38.8</td></tr>
+              <tr><td>SWE Verified</td><td>73.6</td><td>79.4</td><td>80.6</td><td>+7.0</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          推理类（HMMT / Apex / HLE）从 Non-think 到 Max 提升 30-80 分；知识 / 工程类（SimpleQA / SWE）提升 7-13 分。这与 Ch16 §4 demo 的"<em>三档曲线在难任务上才显著分化</em>"完全吻合。
+        </p>
+
+        <!-- ================== A.2 ================== -->
+        <h2 style="margin-top:64px; padding-bottom:8px; border-bottom:2px solid var(--accent);">A.2 真实任务胜率（论文 §5.4, p. 41-44）</h2>
+
+        <div class="callout callout-info">
+          <div class="callout-title">为什么要单列"真实世界"</div>
+          <p>
+            标准 benchmark 在准确率上能拉开排名，但用户体感里"是否好用"还包括<strong>风格、礼貌、格式、上下文记忆、工具协调</strong>。论文 §5.4（p. 41-44）专门构造了 4 类<em>非 benchmark</em> 评测来覆盖这些维度。
+          </p>
+        </div>
+
+        <h3 id="cn-writing">1. 中文写作（论文 §5.4.1, p. 41-42）</h3>
+        <p>对比基线 Gemini-3.1-Pro，DeepSeek-V4-Pro 表现：</p>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>维度</th><th>胜率</th><th>论文出处</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>Functional Writing 综合胜率</td><td><strong>62.7% vs 34.1%</strong></td><td>Table 12（§5.4.1, p. 41）</td><td>Gemini 在中文场景下偏好 override user 显式要求，V4 更"听话"</td></tr>
+              <tr><td>Creative Instruction Following</td><td><strong>60.0%</strong></td><td>Table 13（§5.4.1, p. 41）</td><td>边际优势</td></tr>
+              <tr><td>Creative Writing Quality</td><td><strong>77.5%</strong></td><td>Table 13（§5.4.1, p. 41）</td><td>显著优势</td></tr>
+              <tr><td>vs Opus 4.5（最难子集）</td><td><em>45.9% vs 52.0%</em></td><td>Table 14（§5.4.1, p. 41）</td><td>高复杂度 / 多轮约束下 Opus 仍领先</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="search">2. 搜索：RAG 与 Agentic Search 的双轨（论文 §5.4.2, p. 42）</h3>
+        <p>DeepSeek Chat 的两种搜索模式分别对应两种 reasoning 模式：</p>
+        <ul>
+          <li><strong>Non-think 模式 → RAG</strong>：传统 retrieval-augmented；论文 Table 11（§5.4.2, p. 42）报告 V4-Pro 全面优于 V3.2，单值搜索与"规划+策略"任务上提升最大；</li>
+          <li><strong>Think 模式 → Agentic Search</strong>：模型可<em>迭代</em>调用 search/fetch 工具，按"thinking budget"安排；论文 Table 9（§5.4.2, p. 42）显示总成本仅比 RAG <strong>略高</strong>（Table 10, §5.4.2, p. 42 给出成本对比），但复杂任务提升显著。</li>
+        </ul>
+
+        <h3 id="white-collar">3. 白领任务（论文 §5.4.3, p. 42-43）</h3>
+        <p>30 个高级 Chinese Professional Workflows，覆盖金融、教育、法律、科技等 13 行业，由专业标注员对 V4-Pro-Max vs Opus-4.6-Max 做盲评。论文 Figure 11（§5.4.3, p. 43）提供胜负平分布：</p>
+
+        <div class="config-table">
+          <table>
+            <thead><tr><th>子类（论文 Figure 11, p. 43）</th><th>胜</th><th>平</th><th>负</th><th>非负率</th></tr></thead>
+            <tbody>
+              <tr><td>分析类（analysis）</td><td>55%</td><td>8%</td><td>37%</td><td>63%</td></tr>
+              <tr><td>生成类（generation）</td><td>52%</td><td>10%</td><td>38%</td><td>62%</td></tr>
+              <tr><td>编辑类（editing）</td><td>47%</td><td>18%</td><td>35%</td><td>65%</td></tr>
+              <tr><td><strong>综合（overall）</strong></td><td><strong>53%</strong></td><td>10%</td><td>37%</td><td><strong>63%</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          论文 Figure 12（§5.4.3, p. 43）按四个维度做明细评分：V4-Pro-Max 在 <strong>Task Completion</strong>（98.32 vs 96.68）与 <strong>Content Quality</strong>（83.32 vs 78.00）占优；<strong>Instruction Following</strong>（87.76 vs 88.68）略输 Opus；<strong>Formatting Aesthetics</strong>（76.68 vs 72.68）整体仍有提升空间，论文明确指出 slide-style 视觉设计偏弱（Figures 13-15, §5.4.3, p. 43 给出真实输出样张）。
+        </p>
+
+        <h3 id="code-agent">4. Code Agent（论文 §5.4.4, p. 44, Table 8）</h3>
+        <p>
+          论文从内部 50+ 工程师真实工单里筛选 ~200 个任务，覆盖 PyTorch / CUDA / Rust / C++ 的 feature / bugfix / refactor / 诊断；人工评分后保留 30 个作为评测集（Table 8, §5.4.4, p. 44）。
+        </p>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>模型</th><th>Pass Rate (%)</th></tr></thead>
+            <tbody>
+              <tr><td>Haiku 4.5</td><td>13</td></tr>
+              <tr><td>Sonnet 4.5</td><td>47</td></tr>
+              <tr><td><strong>DeepSeek-V4-Pro-Max</strong></td><td><strong>67</strong></td></tr>
+              <tr><td>Opus 4.5</td><td>70</td></tr>
+              <tr><td>Opus 4.5 Thinking</td><td>73</td></tr>
+              <tr><td>Opus 4.6 Thinking</td><td><strong>80</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          论文 §5.4.4（p. 44）报告：内部问卷（N=85 工程师）显示 <strong>52%</strong> 表示愿意把 V4-Pro 作为日常默认编码模型，<strong>39%</strong> 倾向支持，<strong>&lt; 9%</strong> 反对。
+        </p>
+
+        <!-- ================== VIZ: 五条战线雷达 ================== -->
+        <div class="viz" id="viz-radar">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 五条战线上 V4-Pro-Max 与四款闭源旗舰的相对位置（点切换基线）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 380" id="bench-svg" xmlns="http://www.w3.org/2000/svg">
+            <g id="bench-radar"></g>
+            <text x="450" y="36" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">对比模型：<tspan id="bench-baseline-name" fill="#71a4e1">Gemini-3.1-Pro High</tspan></text>
+            <text x="450" y="60" font-size="11" fill="#475569" font-family="Inter">数据来源：论文 Table 6（§5.3.2, p. 38）</text>
+
+            <g id="bench-readouts"></g>
+
+            <!-- legend -->
+            <g transform="translate(450, 240)">
+              <rect x="0" y="0" width="14" height="10" fill="#dc2626" opacity="0.55"/>
+              <text x="18" y="9" font-size="10" fill="#475569">DeepSeek-V4-Pro-Max</text>
+              <rect x="0" y="18" width="14" height="10" fill="#71a4e1" opacity="0.55"/>
+              <text x="18" y="27" font-size="10" fill="#475569">闭源对手（按钮切换）</text>
+            </g>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="bench-vs-gemini">vs Gemini-3.1-Pro High</button>
+            <button class="viz-btn" id="bench-vs-gpt5">vs GPT-5.4 xHigh</button>
+            <button class="viz-btn" id="bench-vs-opus">vs Opus-4.6 Max</button>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：雷达图五轴是五条战线 —— <em>知识 / 推理 / 长上下文 / 编码 / Agent 工具</em>。每轴数据是该战线上最具代表性 benchmark 的标准化分数（来自论文 Table 6, p. 38；MRCR 来自 Figure 9, p. 40）。
+            <br>
+            切换不同对手按钮看：vs Gemini，V4 在编码大幅领先、知识落后；vs GPT-5.4，V4 推理基本持平、编码领先；vs Opus 4.6，V4 编码持平 / 略胜、长上下文落后约 9 分。<strong>三条战线上的领先程度差异</strong>正好对应论文 §5.3.2（p. 38）"3-6 个月差距"的非均匀分布。
+          </p>
+        </div>
+
+        <div class="callout callout-warn">
+          <div class="callout-title">真实任务里 V4 的短板（论文 §5.4.4 末段, p. 44）</div>
+          <ul>
+            <li>偶尔出现 trivial mistakes（小错误、低级 bug）；</li>
+            <li>对模糊 prompt 的"过度推理"—— 容易把简单任务做成复杂任务；</li>
+            <li>slide / 视觉版面设计能力一般（论文 Figures 13-15, p. 43）；</li>
+            <li>条件复杂的多轮 instruction following 仍弱于 Opus 4.5（论文 Table 14, p. 41 显示最难子集胜率 45.9% vs 52.0%）。</li>
+          </ul>
+        </div>
+
+        <h3 id="figs-todo">A.3 论文图占位（待补真实图）</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/01</span>
+          <p class="fig-want">需要：论文 Figure 1（p. 1）—— 左图 V4-Pro-Max 与 Opus-4.6-Max / GPT-5.4 / Gemini-3.1-Pro 在 7 个核心 benchmark 上的柱状对比；右图 V4 与 V3.2 的 single-token FLOPs 与累积 KV cache 随序列长度变化曲线（V4-Pro 比 V3.2 低 3.7×、KV cache 小 9.5×）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 1（p. 1）。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/02</span>
+          <p class="fig-want">需要：论文 Figure 8（p. 40）—— Putnam 双轨 Practical / Frontier 的水平柱状对比，含 Seed-1.5/2.0-Prover / Gemini-3-Pro / Aristotle / Axiom / DeepSeek-V4-Flash-Max 的具体得分。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 8（§5.3.2, p. 40）。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/03</span>
+          <p class="fig-want">需要：论文 Figure 9（p. 40）—— V4-Pro-Max 与 V4-Flash-Max 在 MRCR 8-needle 任务上的衰减曲线（8K → 1M），显示 128K 后明显下滑、1M 时降至 0.59 / 0.49。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 9（§5.3.2, p. 40）。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/04</span>
+          <p class="fig-want">需要：论文 Figure 10（p. 41）—— HLE 与 TerminalBench 2.0 在 Non-think / High / Max 三档下的精度-token 散点，含 V4-Pro / V4-Flash / V3.2 三模型。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 10（§5.3.2, p. 41）。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/05</span>
+          <p class="fig-want">需要：论文 Figure 11（p. 43）+ Figure 12（p. 43）—— 白领任务胜负平分布（analysis / generation / editing / overall）+ 四维度 Task Completion / Instruction Following / Content Quality / Formatting Aesthetics 的明细分。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 11 + Figure 12（§5.4.3, p. 43）。</p>
+        </div>
+
+        <h3 id="summary">A.4 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>V4-Pro-Max 是<strong>第一份在 Codeforces / LiveCodeBench / Apex Shortlist 上压过闭源旗舰的开源模型</strong>，知识类落后 Gemini-3.1-Pro 约 18 分（SimpleQA-Verified）、长上下文 1M 落后 Opus 4.6 约 9 分（MRCR）；论文 §5.3.2（p. 38）自评开源相对前沿闭源仍有 <em>3-6 个月差距</em>。真实任务（§5.4, p. 41-44）里 V4 在中文写作 / 编码 Agent 上对 Opus 4.5 显著占优，多轮复杂 Instruction Following 与视觉版面设计仍是短板。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="app.js"></script>
+
+<!-- ============================================================
+     VIZ: 五战线雷达图 vs 不同闭源旗舰
+     ============================================================ -->
+<script>
+(function() {
+  const CX = 220, CY = 200, R = 140;
+  // 5 axes
+  const AXES = [
+    { name: '知识',     angle: -Math.PI / 2 },              // top
+    { name: '推理',     angle: -Math.PI / 2 + 2*Math.PI/5 },
+    { name: '编码',     angle: -Math.PI / 2 + 4*Math.PI/5 },
+    { name: 'Agent',    angle: -Math.PI / 2 + 6*Math.PI/5 },
+    { name: '长上下文', angle: -Math.PI / 2 + 8*Math.PI/5 },
+  ];
+
+  // Normalized scores 0..100 (Table 6, p. 38; MRCR from Figure 9, p. 40)
+  // [knowledge, reasoning, coding, agent, longctx]
+  const MODELS = {
+    v4pro:   { name: 'DeepSeek-V4-Pro-Max', scores: [57.9, 90.2, 93.5, 80.6, 83.5], color: '#dc2626' },
+    gemini:  { name: 'Gemini-3.1-Pro High', scores: [75.6, 89.1, 91.7, 80.6, 76.3], color: '#71a4e1' },
+    gpt5:    { name: 'GPT-5.4 xHigh',       scores: [45.3, 78.1, 90.0, 75.1, 60.0], color: '#71a4e1' },
+    opus:    { name: 'Opus-4.6 Max',        scores: [46.2, 85.9, 88.8, 80.8, 92.9], color: '#71a4e1' },
+  };
+
+  function polarToXY(angle, r) {
+    return [CX + Math.cos(angle) * r, CY + Math.sin(angle) * r];
+  }
+
+  function buildShape(scores) {
+    let d = '';
+    for (let i = 0; i < AXES.length; i++) {
+      const r = (scores[i] / 100) * R;
+      const [x, y] = polarToXY(AXES[i].angle, r);
+      d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    }
+    return d + 'Z';
+  }
+
+  function render(baselineKey) {
+    const g = document.getElementById('bench-radar');
+    g.innerHTML = '';
+
+    // grid: 5 concentric pentagons
+    for (let level = 1; level <= 5; level++) {
+      const r = (level / 5) * R;
+      let d = '';
+      for (let i = 0; i < AXES.length; i++) {
+        const [x, y] = polarToXY(AXES[i].angle, r);
+        d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+      }
+      d += 'Z';
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      p.setAttribute('d', d);
+      p.setAttribute('fill', 'none');
+      p.setAttribute('stroke', level === 5 ? '#cbd5e1' : '#e5e7eb');
+      p.setAttribute('stroke-width', '0.7');
+      g.appendChild(p);
+    }
+
+    // axes + labels
+    AXES.forEach((a, i) => {
+      const [x, y] = polarToXY(a.angle, R);
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', CX); ln.setAttribute('y1', CY);
+      ln.setAttribute('x2', x); ln.setAttribute('y2', y);
+      ln.setAttribute('stroke', '#cbd5e1');
+      ln.setAttribute('stroke-width', '0.7');
+      g.appendChild(ln);
+      const [lx, ly] = polarToXY(a.angle, R + 22);
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lbl.setAttribute('x', lx);
+      lbl.setAttribute('y', ly + 4);
+      lbl.setAttribute('font-size', '11');
+      lbl.setAttribute('fill', '#1c2433');
+      lbl.setAttribute('font-weight', '600');
+      lbl.setAttribute('font-family', 'Inter');
+      lbl.setAttribute('text-anchor', 'middle');
+      lbl.textContent = a.name;
+      g.appendChild(lbl);
+    });
+
+    // baseline shape
+    const bl = MODELS[baselineKey];
+    const blPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    blPath.setAttribute('d', buildShape(bl.scores));
+    blPath.setAttribute('fill', '#71a4e1');
+    blPath.setAttribute('fill-opacity', '0.22');
+    blPath.setAttribute('stroke', '#71a4e1');
+    blPath.setAttribute('stroke-width', '2');
+    g.appendChild(blPath);
+
+    // V4 shape on top
+    const v4Path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    v4Path.setAttribute('d', buildShape(MODELS.v4pro.scores));
+    v4Path.setAttribute('fill', '#dc2626');
+    v4Path.setAttribute('fill-opacity', '0.25');
+    v4Path.setAttribute('stroke', '#dc2626');
+    v4Path.setAttribute('stroke-width', '2.5');
+    g.appendChild(v4Path);
+
+    // baseline name update
+    document.getElementById('bench-baseline-name').textContent = bl.name;
+
+    // readouts (per-axis numbers)
+    const rg = document.getElementById('bench-readouts');
+    rg.innerHTML = '';
+    AXES.forEach((a, i) => {
+      const y = 88 + i * 22;
+      const v4v = MODELS.v4pro.scores[i].toFixed(1);
+      const blv = bl.scores[i].toFixed(1);
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', 450); t.setAttribute('y', y);
+      t.setAttribute('font-size', '11');
+      t.setAttribute('font-family', 'Inter');
+      t.setAttribute('fill', '#1c2433');
+      const v4Color = parseFloat(v4v) >= parseFloat(blv) ? '#dc2626' : '#94a3b8';
+      const blColor = parseFloat(blv) >= parseFloat(v4v) ? '#71a4e1' : '#94a3b8';
+      t.innerHTML = `<tspan>${a.name}：</tspan><tspan x="510" font-family="JetBrains Mono" fill="${v4Color}" font-weight="600">${v4v}</tspan><tspan> vs </tspan><tspan font-family="JetBrains Mono" fill="${blColor}" font-weight="600">${blv}</tspan>`;
+      rg.appendChild(t);
+    });
+  }
+
+  document.getElementById('bench-vs-gemini').addEventListener('click', () => render('gemini'));
+  document.getElementById('bench-vs-gpt5').addEventListener('click', () => render('gpt5'));
+  document.getElementById('bench-vs-opus').addEventListener('click', () => render('opus'));
+  render('gemini');
+})();
+</script>
+</body>
+</html>

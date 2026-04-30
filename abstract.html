@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>摘要与全景 — DeepSeek-V4 架构深度剖析</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-base="" data-page="abstract">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">摘要与全景</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="index.html">封面</a><span class="sep">/</span>摘要与全景</div>
+
+      <article id="abstract" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>OVERVIEW · 章节零</div>
+        <h2 class="chapter-title">摘要与架构全景</h2>
+        <p class="chapter-sub">在百万 token 上下文成为前置条件之后，整张架构表都得重画。这一章把 V4 的全部主线一次说清。</p>
+
+        <p class="lead">
+          DeepSeek-V4 是 DeepSeek 系列的下一代 MoE 模型，预览版本同时发布
+          <strong>V4-Pro（1.6T / 49B 激活）</strong>与 <strong>V4-Flash（284B / 13B 激活）</strong>，
+          二者均原生支持 <strong>1M tokens</strong> 上下文。它的目标只有一个：
+          <em>让百万级长上下文从奢侈品变成日用品</em>。
+        </p>
+        <p>
+          要做到这一点，V4 在三条战线同时下手 ——
+          <strong>注意力（CSA + HCA 混合）</strong>、
+          <strong>残差通路（mHC，流形约束的 Hyper-Connection）</strong>、
+          <strong>优化器（Muon + Hybrid Newton–Schulz）</strong>，
+          外加 <em>FP4 量化感知训练</em>、<em>批不变确定性内核</em>、<em>多教师全词表 OPD 蒸馏</em> 等一整套基础设施。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">报告级数字 · 一眼看穿</div>
+          <ul>
+            <li>1M token 场景下，V4-Pro 仅用 V3.2 的 <strong>27% 单 token FLOPs</strong> 与 <strong>10% KV cache</strong>。</li>
+            <li>V4-Flash 进一步压到 <strong>10% FLOPs / 7% KV</strong>，相对 BF16-GQA8 baseline 更是降到约 <strong>2%</strong>。</li>
+            <li>V4-Pro-Max 在 SimpleQA-Verified 上比同档开源模型高 <strong>20+ 个百分点</strong>，逼近 Gemini-3.1-Pro。</li>
+            <li>Putnam-2025 形式化推理，DeepSeek-V4 拿下 <strong>120/120</strong>，证明完美。</li>
+          </ul>
+        </div>
+
+        <h3>整体架构示意</h3>
+        <div class="diagram-wrap">
+          <div class="mermaid">
+flowchart TB
+  Tokens["Input Tokens"] --> Emb["Embedding"]
+  Emb --> BlockIn(["Transformer Block × L"])
+  subgraph TB1 ["每一层 Transformer Block"]
+    direction LR
+    R1(("Residual / mHC")) -- preMix --> Attn["CSA / HCA<br/>混合注意力"]
+    Attn -- postMix --> R1
+    R1 -- preMix --> MoE["DeepSeekMoE<br/>FFN 层"]
+    MoE -- postMix --> R1
+  end
+  BlockIn --> TB1
+  TB1 --> Head["LM Head"]
+  TB1 --> MTP["MTP Modules"]
+  Head --> LMLoss["LM Loss"]
+  MTP --> MTPLoss["MTP Loss"]
+
+  classDef hot fill:#71a4e1,stroke:#71a4e1,color:#fff
+  class Attn,MoE hot
+          </div>
+        </div>
+        <p class="caption">图 0-1 · 复刻论文 Figure 2。注意力层与 FFN 层之间，残差通路被 mHC 取代了普通残差连接。</p>
+
+        <h3 style="margin-top:48px;">局限与未来方向</h3>
+        <p>预览版不是终点。论文 Conclusion 给出了 DeepSeek 团队自己写下的"To-do"，正好对应 V4 当前的几条短板：</p>
+        <ul>
+          <li><strong>架构复杂度</strong>：为了控制风险保留了不少"已验证 trick"，未来要做减法、追求 elegant；</li>
+          <li><strong>稳定性理论</strong>：Anticipatory Routing 与 SwiGLU Clamping 的内部机制仍是黑箱，需要深入研究；</li>
+          <li><strong>更稀疏的 embedding</strong>：CCSE 等方向（Cheng 2026）的引入；</li>
+          <li><strong>低延迟长上下文</strong>：让 1M 真正走入交互式部署，而不只是离线批处理；</li>
+          <li><strong>长程多轮 agent</strong>：继续打磨 long-horizon、多 round tool-use；</li>
+          <li><strong>多模态</strong>：明确写在 to-do 中，下一代会带；</li>
+          <li><strong>更好的数据合成与策展</strong>：持续投入。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">一句话定位</div>
+          <p>
+            V4 是一份<strong>"为百万 token 而设计"</strong>的全栈预览版：架构改了、内核改了、训练流程改了、推理流程改了、KV 体系改了 —— 而不是某个单点 trick 的胜利。
+            它给开源世界的礼物是：<em>把长上下文从"成本异常项"变成"日常默认项"</em>。
+          </p>
+        </div>
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

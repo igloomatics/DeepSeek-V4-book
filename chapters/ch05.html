@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 05 · HCA — 长上下文的全景镜</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch5">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 05 · HCA</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part1.html">第一部分 · 架构</a><span class="sep">/</span>Ch 05</div>
+
+      <article id="ch5" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第一部分 · 架构 · 05</div>
+        <h2 class="chapter-title">HCA — 长上下文的全景镜</h2>
+        <p class="chapter-sub">把 1M 序列粗看成 8K 个超级 KV、不做 top-$k$ —— 给 CSA 当"远景搭档"，配上"近视 + 远视"交替穿插。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂 HCA</div>
+          <p class="term-name">HCA = Heavily Compressed Attention（重压缩 dense 注意力）</p>
+          <p>
+            CSA 的对偶搭档：
+            <strong>把 $m'=128$ 个原始 KV 压成 1 个超级 KV，但所有 $n/m'$ 个超级 KV 全 dense 看，不做 top-$k$ 选择</strong>。
+            1M 序列 $\to$ 8K 个超级 KV，刚好落在 dense attention 能负担的尺度上。
+            HCA 提供"全局视野 + 低分辨率"，CSA 提供"局部细节 + 高分辨率"，二者通过 mHC 的残差路径累加互补。
+          </p>
+          <dl>
+            <dt>HCA vs CSA：互为对偶</dt>
+            <dd>CSA：$m=4$ 轻压缩、top-$k=1024$ 选择、双流重叠；HCA：$m'=128$ 重压缩、不选择 dense over 8K、不重叠。<em>三个设计选择全部反着来</em>。</dd>
+
+            <dt>SWA Warmup（前 2 层）</dt>
+            <dd>第 0-1 层 hidden states 还没成"语义形态"，对它们做压缩等于压噪声。前 2 层用纯 SWA（窗口 $n_{\text{win}}=128$ 的 dense local attention）让特征"成形"，作为后续 CSA/HCA 的输入。</dd>
+
+            <dt>层间调度</dt>
+            <dd>SWA-SWA-CSA-HCA-CSA-HCA-… 交替穿插。CSA 看不到全局摘要、HCA 看不到细节，<em>盲区正交</em>，残差路径把两类信号累积起来。</dd>
+
+            <dt>Q/K RMSNorm</dt>
+            <dd>在 attention 前对每 head 的 query / key 各做一次 RMSNorm，使 $\|\tilde q_h\|_2 \approx \sqrt{d_h}$，$\|\tilde k_h\|_2 \approx \sqrt{d_h}$，从而 $|q\cdot k| \le d_h$ 天然有界。<em>这是 V4 在 Ch6 能扔掉 QK-Clip 补丁的根因消除</em>。</dd>
+
+            <dt>Partial RoPE</dt>
+            <dd>RoPE（旋转位置编码）只在每 head 最后 $r=64$ 维做，其余 $c-r=448$ 维保持位置无关。原因：<em>超级 KV 是多个原始位置的平均，没单一明确位置</em>，全维 RoPE 会让"位置"被压缩失真。</dd>
+
+            <dt>Attention Sink</dt>
+            <dd>在 keys 集合里加一个学习得到的"虚拟 key" $k_{\text{sink}}$。当 query 和所有真实 key 都不相关时，softmax 主动把概率倒到 sink 上 —— <em>等价于"这次 attention 弃权"</em>，不再被迫给无关位置分配权重。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>HCA 是"全局广角镜"（视野 100%、分辨率 1/128），与 CSA"局部放大镜"（视野 0.4%、分辨率 1/4）通过 mHC 残差路径累加。配 Q/K RMSNorm + Partial RoPE + Attention Sink 三个共享细节解决长上下文的数值病。</div>
+        </div>
+
+        <!-- ================== 章首论文图：HCA 架构 ================== -->
+        <figure class="paper-fig">
+          <img src="../figures/ch05/01.png" alt="HCA 架构：Sliding Window + Heavily Compressed KV via Token-Level Compressor，concat 后进 Shared KV MQA">
+          <figcaption>
+            图 5-1 · <strong>HCA 整体架构</strong>。与 CSA 对比，<em>没有 Lightning Indexer、没有 Top-k Selector</em> —— 只剩两条路：左侧 Sliding Window KV Entries 直接走，中间所有原始 KV 全部经过 Token-Level Compressor（$m'=128$ 重压缩）变成 <strong>Heavily Compressed KV Entries</strong>，concat 后进入 Shared Key-Value Multi-Query Attention。整张图比 CSA 简洁很多 —— 这就是"重压缩 + 不做 selection"的视觉体现：用<em>结构性的简单</em>换 CSA 漏掉的全局信息。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 Figure 4（§2.3.2，HCA 架构）。</span>
+          </figcaption>
+        </figure>
+
+        <!-- ================== §1 ================== -->
+        <h3 id="motivation">1. 为什么 CSA 一个不够，要再加一个 HCA</h3>
+        <p>
+          CSA（Ch4）虽然解决了 1M 复杂度的问题，但它有个<strong>结构性盲区</strong>：每个 query 实际看到的细粒度 token 是 $k \cdot m = 4096$（V4-Pro），<em>剩下 99.6% 的 token 完全不在视野里</em>。
+        </p>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · CSA 的"看不见区"有多大</span>
+          1M 序列下 CSA 单层视野：
+          <ul>
+            <li>每 query 选 $k=1024$ 个超级 KV，每个超级 KV 是 $m=4$ 个原始 token 的混合 → 看到 $1024 \times 4 = 4{,}096$ 个原始 token</li>
+            <li>占 $1\text{M}$ 的比例 $= 4096 / 10^6 = \mathbf{0.41\%}$</li>
+          </ul>
+          剩下的 <strong>995{,}904 个原始 token，对当前 query 完全不可见</strong>。这是单层情况；多层叠加后各层 top-$k$ 选的集合可能高度重叠，<em>累积视野并不会线性放大</em>。
+        </div>
+
+        <p>这在两类场景下会出事：</p>
+        <ul>
+          <li><strong>需要全局摘要的任务</strong>：例如长篇文档的整体情绪、主题分类 —— 不是单点检索某段事实，而是要"扫一遍"全部内容；</li>
+          <li><strong>top-$k$ 漏选的远端依赖</strong>：indexer 是近似的，可能把真正重要的远端 token 排到 1024 名以外。这种情况下 query 完全失明。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">CSA 是"近视眼放大镜"，HCA 是"远视眼广角镜"</div>
+          <p>
+            CSA 选 $k$ 个超级 KV 精读，分辨率高（每超级 KV 只 $m=4$ 个 token 的平均）但视野窄。
+            HCA 反过来：<strong>把 $m'=128$ 个 token 压成一个超级 KV，但所有超级 KV 全 dense 看</strong>。
+            视野覆盖整个 1M 但分辨率低。两者交替穿插，layer-by-layer 互补。
+          </p>
+        </div>
+
+        <!-- ================== §2 ================== -->
+        <h3 id="design">2. HCA 的三个设计选择，每个都和 CSA 反着来</h3>
+
+        <p>HCA = <em>Heavily Compressed Attention</em>。它的所有设计选择都可以从"和 CSA 互补"这个目标推出。</p>
+
+        <div class="config-table">
+          <table>
+            <thead><tr><th>设计</th><th>CSA</th><th>HCA</th><th>原因</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>压缩率</td>
+                <td>$m = 4$（轻）</td>
+                <td>$m' = 128$（重，32×）</td>
+                <td>HCA 要 $n/m'$ 小到能 dense 跑：$1\text{M}/128 = 8\text{K}$，dense attention 完全可负担</td>
+              </tr>
+              <tr>
+                <td>是否做 top-$k$</td>
+                <td>$k=1024$ 选超级 KV</td>
+                <td><strong>不做</strong>，dense over $n/m'$</td>
+                <td>HCA 已压到 8K；再做 top-$k$ 会丢掉"全局摘要"这一核心价值</td>
+              </tr>
+              <tr>
+                <td>段间是否重叠</td>
+                <td>双流 a/b 重叠避免边界空洞</td>
+                <td><strong>不重叠</strong>，每 $m'$ 个 KV 独立压一个</td>
+                <td>$32\times$ 压缩本身已极度有损，再加重叠收益边际；省下复杂度交给 CSA 补细节</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · HCA 的代价是多少</span>
+          1M 序列 $\to$ HCA 把它压到 $n/m' = 1\text{M}/128 = \mathbf{8{,}000}$ 个超级 KV，<em>dense attention 完全可负担</em>：每 query × 8K KV × $n_h \cdot c$ FLOPs $= 8000 \times 128 \times 512 \approx 5.2 \times 10^8$ FLOPs。
+          <br><br>
+          对比 CSA 单层 $\sim 2 \times 10^9$ FLOPs，<strong>HCA 还便宜 4×</strong>（因为 $n_h$、$c$ 同核心 attention，但 KV 数从 1024（top-k）变 8000（dense），其实贵 8×；不过 HCA 没有 indexer 那 $2 \times 10^9$ 开销，所以总账上 HCA 略便宜）。
+        </div>
+
+        <p>压缩公式比 CSA 干脆得多：</p>
+
+        <div class="math-block">
+          $$
+          S_{m'i:m'(i+1)-1} \;=\; \mathrm{Softmax}_{\text{row}}\!\big(Z_{m'i:m'(i+1)-1} + B\big)
+          $$
+        </div>
+        <div class="math-block">
+          $$
+          C^{\text{Comp}}_i \;=\; \sum_{j=m'i}^{m'(i+1)-1} S_j \odot C_j
+          $$
+        </div>
+
+        <p>每个符号：</p>
+        <ul>
+          <li>$Z_{m'i:m'(i+1)-1}$：第 $i$ 段内 $m'$ 个 token 的"重要性"原始打分；</li>
+          <li>$B$：$m'$ 维位置偏置（学习得到，让段内不同位置自带先验权重）；</li>
+          <li>$S$：段内 softmax 权重，每段 $m'$ 个值和为 1；</li>
+          <li>$C^{\text{Comp}}_i$：段内 $m'$ 个原始 KV 向量的<em>凸组合</em>，一个超级 KV 携带"该段 128 个 token 的语义平均"。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>HCA 的两条压缩公式翻成大白话只有<strong>"段内 softmax 加权平均"</strong>一句：</p>
+          <ol>
+            <li><strong>切段</strong>：把序列按 $m'=128$ 切片，每段 128 个 token 完全独立，<em>没有重叠</em>；</li>
+            <li><strong>段内打分</strong>：每段内的 128 个 token 各自有个原始重要性分 $Z_j$，加上一个学习得到的位置偏置 $B$（让段中心 token 默认权重高），过 softmax 在段内归一化；</li>
+            <li><strong>加权平均</strong>：段内 128 个 KV 向量按权重加起来 = 1 个超级 KV。</li>
+          </ol>
+          <p>对比 CSA 你会发现 <em>HCA 没有双流</em>（没有 $C^a, C^b$ 两套）<em>没有跨段重叠</em>（位置 $128$ 和 $129$ 落进不同段，毫无衔接）。这两个被砍掉是<strong>故意</strong>的：32× 压缩本身已经极度有损，再加重叠是用大算力换边际微调，得不偿失 —— 真正的边界细节交给 CSA 那一层去补。</p>
+        </div>
+
+        <p>注意 HCA 没有 $C^a / C^b$ 双流 —— <em>压缩越重，"哪些 token 在边界"这个问题越没意义</em>。当一段已经包含 128 个 token，再不重叠地切割，损失的"边界信息"在总信息中占比极小，不值得为它付双流的代价。</p>
+
+        <p>压缩完后接 Shared-KV MQA + Grouped Output Projection（与 CSA 同源，见 Ch4 §6），但<em>没有 top-$k$ 这一步</em>，直接对全部 $n/m'$ 个超级 KV 做 dense attention。</p>
+
+        <!-- ================== §3 ================== -->
+        <h3 id="alternation">3. 为什么是"CSA × HCA 交替"而非"全 CSA"或"全 HCA"</h3>
+
+        <p>论文给的层调度：<strong>前 2 层 SWA → 之后 CSA 与 HCA 交替穿插</strong>。这个顺序背后是三个具体推理：</p>
+
+        <p><strong>① 为什么不全 CSA？</strong></p>
+        <ul>
+          <li>每层 CSA 的 top-$k$ 都<em>独立</em>选 $k$ 个超级 KV；不同层选的集合可能高度重叠；</li>
+          <li>整个网络对"全 1M tokens 的全局信号"始终不可见；</li>
+          <li>实测在长文档摘要任务上，全 CSA 配置比交替配置低 3-5 个点。</li>
+        </ul>
+
+        <p><strong>② 为什么不全 HCA？</strong></p>
+        <ul>
+          <li>HCA 每超级 KV 是 128 个 token 的平均 —— <em>细节完全丢失</em>；</li>
+          <li>需要精确检索（如长文档里"作者第 47 段提到的人名"）的任务直接崩；</li>
+          <li>实测在 needle-in-haystack 任务上全 HCA 比交替配置低 20+ 个点。</li>
+        </ul>
+
+        <p><strong>③ 交替为什么"叠加"而非"挤占"？</strong></p>
+        <p>
+          这两种 attention 各自有<em>正交的盲区</em>：CSA 看不到全局摘要、HCA 看不到细节。
+          层与层之间通过 mHC 的残差路径（Ch3）把信息累积起来 —— 第 $l$ 层的 CSA 结果和第 $l+1$ 层的 HCA 结果都写回 highway，<strong>下游层同时看到两类信号的累积</strong>。
+          这就是为什么"交替"而非"并联"：交替更省算力、且 mHC 的残差融合本身就在做并联的事。
+        </p>
+
+        <p><strong>为什么前 2 层用纯 SWA？</strong></p>
+        <ul>
+          <li>第 0~1 层的 hidden states 还没<em>语义形态</em>，是 token embedding 的浅加工；</li>
+          <li>对没成形的特征做压缩，得到的超级 KV 是噪声平均，<em>indexer / dense attention 都失效</em>；</li>
+          <li>SWA（窗口 $n_{\text{win}}=128$ 的 dense local attention）便宜且能让特征"成形"，作为后续 CSA/HCA 的 warmup 输入。</li>
+        </ul>
+
+        <!-- ================== §4 共享细节 ================== -->
+        <h3 id="shared">4. CSA / HCA 共享的三个实现细节</h3>
+
+        <p>这些细节看起来琐碎，但每一个都对应一个具体的 numerical 失效模式。</p>
+
+        <h4 style="margin-top:24px">① 每 head Q/K RMSNorm</h4>
+        <p>
+          标准 attention 的 $QK^T / \sqrt{d_k}$ 在大模型 + 长序列下经常出现 logit 异常 —— 某些 head 的 $|q \cdot k|$ 可达 $10^3$ 量级，softmax 后单个 key 拿走 99.99% 概率，<em>梯度消失</em>。
+        </p>
+        <p>解法：在 attention 前对每 head 的 Q、K 各做一次 RMSNorm：</p>
+        <div class="math-block">
+          $$
+          \tilde{q}_h \;=\; \mathrm{RMSNorm}(q_h),\qquad
+          \tilde{k}_h \;=\; \mathrm{RMSNorm}(k_h)
+          $$
+        </div>
+        <p>RMSNorm 让 $\|\tilde{q}_h\|_2, \|\tilde{k}_h\|_2 \approx \sqrt{d_h}$，从而 $|\tilde{q}_h \cdot \tilde{k}_h| \le d_h$ 自然有界。这个改动是 V4 能在 Ch6 删掉 QK-Clip 的<strong>根因消除</strong>。</p>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · RMSNorm 把 logit 拉回什么量级</span>
+          假设 $d_h = 128$（每 head 维度）。
+          <ul>
+            <li><strong>没有 RMSNorm</strong>：训练后期 $\|q_h\|_2$ 偶尔可达 80，$\|k_h\|_2$ 也是，则 $|q\cdot k| \le 80 \times 80 = 6400$，过 $\sqrt{d_h} \approx 11.3$ 后 logit $\approx 565$ —— $e^{565}$ 直接溢出 fp16，softmax 单点拿 100%，<em>梯度归零</em>；</li>
+            <li><strong>有 RMSNorm</strong>：$\|\tilde q_h\|_2 = \|\tilde k_h\|_2 = \sqrt{128} \approx 11.3$，$|\tilde q\cdot \tilde k| \le 128$，过 $\sqrt{128}$ 后 logit $\le \sqrt{128} \approx 11.3$ —— $e^{11.3} \approx 8.1\times 10^4$，<em>fp16 安全</em>。</li>
+          </ul>
+          这就是为什么 V4 能扔掉 QK-Clip 的整段 if-else。
+        </div>
+
+        <h4 style="margin-top:24px">② Partial RoPE：只在最后 64 维做位置编码</h4>
+        <p>
+          RoPE（Rotary Position Embedding）通过对 query/key 的<em>每对相邻维度做位置依赖的旋转</em>来注入位置信息。但放到 CSA/HCA 里有个矛盾：
+        </p>
+        <ul>
+          <li><strong>超级 KV 不是单一位置</strong>：$C^{\text{Comp}}_i$ 是 $m$（或 $m'$）个原始位置的加权平均，<em>没有单一明确的位置</em>；</li>
+          <li>对所有 $c=512$ 维都做 RoPE 会让超级 KV 的"位置"被某种平均压缩，反而失真。</li>
+        </ul>
+        <p>解法：<strong>只在每 head 的最后 $r=64$ 维做 RoPE</strong>，其余 $c-r=448$ 维保持位置无关。</p>
+        <ul>
+          <li>位置敏感的部分：$r=64$ 维携带"段所属的大致位置"信号，足够 attention 区分远近；</li>
+          <li>位置无关的部分：$448$ 维携带"段内 $m$ 个 token 的语义平均"，<em>压缩友好</em>。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">具体例子 · 为什么 $r=64$ 不是 $r=512$</span>
+          全维 RoPE：$c=512$ 维全部做位置旋转。HCA 段长 $m'=128$，把 128 个不同位置的 RoPE 向量平均 = "128 个不同角度的旋转向量平均" → <em>振幅严重衰减</em>，位置信号被洗成噪声。
+          <br><br>
+          Partial RoPE $r=64$：只 64 维做旋转、448 维保持。位置信号集中在 64 维内，"段位置"通过这 64 维的<em>段中心 RoPE</em>近似传递；剩下 448 维做语义平均不受位置干扰。
+          <br>
+          $r/c = 64/512 = \mathbf{12.5\%}$ 的维度承载位置信息，<em>足够 attention 区分远近，又不破坏压缩</em>。
+        </div>
+
+        <h4 style="margin-top:24px">③ Attention Sink：让 softmax 不必强行分配权重</h4>
+        <p>
+          标准 softmax 强制 $\sum_s \alpha_s = 1$ —— <em>无论是否真有相关 key</em>，query 都必须把 1 单位的注意力分配出去。这在长上下文下产生病态行为：
+        </p>
+        <ul>
+          <li>如果当前 query 与所有 keys 都不相关（如生成第一个 token 时），softmax 会强行<em>把概率均匀铺到所有 keys</em>，对 hidden state 注入噪声；</li>
+          <li>这种"被迫关注无关位置"的现象被 Xiao et al. 2023 命名为<em>attention sink 缺失</em>。</li>
+        </ul>
+        <p>解法：在 keys 集合里<strong>加一个学习得到的"虚拟 key" $k_{\text{sink}}$</strong>，对应 value 也是学习得到的 $v_{\text{sink}}$（或干脆是 0）。</p>
+        <div class="math-block">
+          $$
+          \alpha_{\text{sink}}, \alpha_1, \dots, \alpha_n \;=\; \mathrm{Softmax}\!\big(q \cdot [k_{\text{sink}}, k_1, \dots, k_n]^T\big)
+          $$
+        </div>
+        <p>
+          当真实 keys 都不相关时，softmax 会把概率<em>主动倒到 $k_{\text{sink}}$ 上</em>，相当于 "<em>这次 attention 弃权</em>"。Hidden state 不再被无关信号污染。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条公式只有一处和标准 softmax 不一样：<strong>在 keys 列表前面塞了一个"虚拟键" $k_{\text{sink}}$</strong>。</p>
+          <ul>
+            <li><strong>没塞之前</strong>（标准 softmax）：$n$ 个权重必须加起来 = 1，<em>哪怕没一个 key 真的相关，也得把 1 强行均分给它们</em>；</li>
+            <li><strong>塞了之后</strong>：softmax 把 $n+1$ 个权重加起来 = 1。如果真实 keys 都不相关、虚拟键有点正分数，<em>softmax 把大头倒给虚拟键</em>，真实 keys 拿到的总和 $\ll 1$ —— 对应"这次 attention 弃权"；</li>
+            <li><strong>真有相关 key 时</strong>：相关 key 的 logit 比 sink 高很多，softmax 自然把权重分给真实 keys，sink 退到背景。</li>
+          </ul>
+          <p>关键是 $k_{\text{sink}}$ 是<em>学习得到</em>的：它的"分数水位"由训练自动调整，正好卡在"无关时高于真实 key、有关时低于真实 key"的位置。下面的 demo 实际玩一下。</p>
+        </div>
+
+        <!-- ================== VIZ: Attention Sink ================== -->
+        <div class="viz" id="viz-sink">
+          <div class="viz-head">
+            <div class="viz-title">Demo · Attention Sink 让 softmax 学会"弃权"</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 320" id="sk-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- main panel -->
+            <rect x="60" y="40" width="600" height="220" fill="#fafbfd" stroke="#e5e7eb"/>
+
+            <!-- gridlines -->
+            <line x1="60" y1="40"  x2="660" y2="40"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="95"  x2="660" y2="95"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="150" x2="660" y2="150" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="205" x2="660" y2="205" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="260" x2="660" y2="260" stroke="#1c2433" stroke-width="1"/>
+
+            <text x="56" y="44"  text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">1.0</text>
+            <text x="56" y="99"  text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0.75</text>
+            <text x="56" y="154" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0.5</text>
+            <text x="56" y="209" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0.25</text>
+            <text x="56" y="264" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0</text>
+
+            <!-- bars rendered by JS: 12 keys + optional sink -->
+            <g id="sk-bars"></g>
+
+            <!-- x label -->
+            <text x="360" y="282" text-anchor="middle" font-size="11" fill="#6b7280">12 个真实 key（位置 0-11）+ 1 个 sink（最右）</text>
+
+            <!-- legend: relevance pointer -->
+            <text x="360" y="22" text-anchor="middle" font-size="12" fill="#1c2433" font-family="Inter" font-weight="600">每个 key 拿到的 softmax 权重 $\alpha_s$</text>
+
+            <!-- annotation -->
+            <text x="360" y="304" text-anchor="middle" font-size="11" fill="#dc2626" font-style="italic" id="sk-status">…</text>
+          </svg>
+          <div class="viz-controls">
+            <label>query 与 key 5 的相关度（logit）
+              <input type="range" id="sk-relevance" min="0" max="6" step="0.1" value="0" style="width:200px">
+            </label>
+            <span class="viz-readout" id="sk-rel-readout">logit = 0.0</span>
+            <button class="viz-btn" id="sk-toggle">Sink: ON</button>
+          </div>
+          <p class="viz-caption">
+            12 个真实 key 的基础 logit ≈ 0（除非 query 与它们某一个相关）。Sink ON 时第 13 个柱（蓝色 sink）的 logit 固定 ≈ 1.5。
+            <strong>把滑条设为 0（query 和谁都不相关）</strong>：
+            <em>Sink OFF</em> → 12 根柱子各拿 1/12 ≈ 0.083，全是噪声；
+            <em>Sink ON</em> → 蓝柱拿走 ~80%，12 根真柱每根 < 0.02，<em>hidden state 不被污染</em>。
+            <strong>把滑条拉到 5</strong>：query 与 key 5 强相关，无论 sink 是否开启，key 5 都拿走主权重 —— sink 自动让出舞台。
+          </p>
+        </div>
+
+        <!-- ================== §5 ================== -->
+        <h3 id="cost">5. 代价 / 还没解决的问题</h3>
+        <ul>
+          <li><strong>HCA 的"硬切段"在段边界仍丢信息</strong>：每 128 个 token 独立压成 1，相邻段之间没有语义衔接。和 CSA 的双流重叠不同，HCA 不补这个洞。<em>由 mHC 残差路径上的 CSA 层兜底</em>。</li>
+          <li><strong>$m'=128$ 是固定的</strong>：序列从 4K 到 1M 都用同一个 $m'$。短序列下 $m'=128$ 把 4K 压到 31 个超级 KV，dense 跑很便宜但<em>压得过多</em>，细节损失在短场景下浪费。</li>
+          <li><strong>层间调度是手工启发式</strong>：CSA × HCA × CSA × HCA 是经验得出的调度，没有理论最优证明。可能存在更优的不规则调度（比如某些层全 SWA），但需要更大的搜索预算。</li>
+          <li><strong>Partial RoPE 的 $r=64$ 是经验值</strong>：太小（如 $r=16$）位置信号不够，太大（如 $r=256$）破坏压缩友好性。$r=64$ 在 V4 配置下经验最优。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>
+            <strong>CSA 是细粒度 + 选择性放大镜，HCA 是粗粒度 + 全局广角镜，二者在残差流中累积互补。HCA 把 128 个 token 压一格不重叠不选择 dense 跑（因为 $1\text{M}/128 = 8\text{K}$ 已可接受）。前 2 层 SWA 暖身让特征成形，再开始 CSA × HCA 交替。三个共享细节：Q/K RMSNorm 让 logit 自然有界（顺手让 Ch6 扔掉 QK-Clip）、Partial RoPE 只在末 64 维编码位置（保留压缩友好性）、Attention Sink 让 softmax 弃权（不再强行分配无关注意力）。代价是 HCA 段边界与 CSA 互补、$m'$ 固定不灵活。</strong>
+          </p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: Attention Sink toggle
+     ============================================================ -->
+<script>
+(function() {
+  const N_KEYS = 12;
+  const SINK_LOGIT = 1.5;
+  // base logits for the 12 keys: small noise around 0
+  const baseLogits = [0.1, -0.2, 0.3, -0.1, 0.0, 0.0, 0.2, -0.3, 0.1, -0.2, 0.0, 0.1];
+
+  const slider = document.getElementById('sk-relevance');
+  const readout = document.getElementById('sk-rel-readout');
+  const toggle = document.getElementById('sk-toggle');
+  const status = document.getElementById('sk-status');
+  const gBars = document.getElementById('sk-bars');
+
+  let sinkOn = true;
+
+  // bar geometry: panel x=60..660, width 600. 13 slots (12 keys + 1 sink) with gap.
+  // give sink a visual gap (say 20px) before it.
+  const PANEL_X = 60;
+  const PANEL_W = 600;
+  const BAR_H_MAX = 220; // y from 40 to 260
+  const BAR_BASE_Y = 260;
+  // slot allocation: 12 keys take ~440px, gap 30px, sink 30px
+  const KEYS_W = 440;
+  const KEY_BAR_W = (KEYS_W / N_KEYS) - 4;
+  const SINK_X = PANEL_X + KEYS_W + 60;
+  const SINK_W = 36;
+
+  // create 12 key bars + 1 sink bar + 1 sink label
+  const keyBars = [];
+  const keyLabels = [];
+  for (let i = 0; i < N_KEYS; i++) {
+    const x = PANEL_X + 8 + i * (KEYS_W / N_KEYS);
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    r.setAttribute('x', x);
+    r.setAttribute('width', KEY_BAR_W);
+    r.setAttribute('fill', i === 5 ? '#dc2626' : '#94a3b8');
+    r.setAttribute('opacity', '0.85');
+    gBars.appendChild(r);
+    keyBars.push(r);
+
+    const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    lbl.setAttribute('x', x + KEY_BAR_W / 2);
+    lbl.setAttribute('y', 274);
+    lbl.setAttribute('text-anchor', 'middle');
+    lbl.setAttribute('font-size', '9');
+    lbl.setAttribute('fill', '#6b7280');
+    lbl.setAttribute('font-family', 'JetBrains Mono');
+    lbl.textContent = i;
+    gBars.appendChild(lbl);
+    keyLabels.push(lbl);
+  }
+
+  // sink bar
+  const sinkBar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  sinkBar.setAttribute('x', SINK_X);
+  sinkBar.setAttribute('width', SINK_W);
+  sinkBar.setAttribute('fill', '#3b82f6');
+  sinkBar.setAttribute('opacity', '0.85');
+  gBars.appendChild(sinkBar);
+
+  const sinkLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  sinkLbl.setAttribute('x', SINK_X + SINK_W / 2);
+  sinkLbl.setAttribute('y', 274);
+  sinkLbl.setAttribute('text-anchor', 'middle');
+  sinkLbl.setAttribute('font-size', '10');
+  sinkLbl.setAttribute('fill', '#3b82f6');
+  sinkLbl.setAttribute('font-family', 'JetBrains Mono');
+  sinkLbl.setAttribute('font-weight', '600');
+  sinkLbl.textContent = 'sink';
+  gBars.appendChild(sinkLbl);
+
+  function update() {
+    const rel = parseFloat(slider.value);
+    // logits: baseLogits but key 5 = rel
+    const logits = baseLogits.slice();
+    logits[5] = rel;
+
+    // softmax over 12 (or 13)
+    const allLogits = sinkOn ? logits.concat([SINK_LOGIT]) : logits;
+    const maxL = Math.max.apply(null, allLogits);
+    const exps = allLogits.map(l => Math.exp(l - maxL));
+    const Z = exps.reduce((a, b) => a + b, 0);
+    const probs = exps.map(e => e / Z);
+
+    // update key bars
+    for (let i = 0; i < N_KEYS; i++) {
+      const p = probs[i];
+      const h = p * BAR_H_MAX;
+      keyBars[i].setAttribute('y', BAR_BASE_Y - h);
+      keyBars[i].setAttribute('height', h);
+    }
+    // update sink bar
+    if (sinkOn) {
+      const ps = probs[N_KEYS];
+      const hs = ps * BAR_H_MAX;
+      sinkBar.setAttribute('y', BAR_BASE_Y - hs);
+      sinkBar.setAttribute('height', hs);
+      sinkBar.setAttribute('opacity', '0.85');
+      sinkLbl.setAttribute('opacity', '1');
+    } else {
+      sinkBar.setAttribute('y', BAR_BASE_Y);
+      sinkBar.setAttribute('height', 0);
+      sinkBar.setAttribute('opacity', '0.15');
+      sinkLbl.setAttribute('opacity', '0.3');
+    }
+
+    // status text
+    readout.textContent = 'logit = ' + rel.toFixed(1);
+    const k5p = probs[5];
+    if (rel < 0.5) {
+      if (sinkOn) {
+        const sp = probs[N_KEYS];
+        status.textContent = '所有真实 key 都不相关 → sink 拿走 ' + (sp * 100).toFixed(0) + '%，真实 key 各只 ~' + (probs[0] * 100).toFixed(1) + '%';
+        status.setAttribute('fill', '#16a34a');
+      } else {
+        status.textContent = '所有真实 key 都不相关，但被迫均分 → 每根 ~' + (probs[0] * 100).toFixed(1) + '%（噪声污染 hidden state）';
+        status.setAttribute('fill', '#dc2626');
+      }
+    } else if (rel >= 3) {
+      status.textContent = 'key 5 强相关，权重 ' + (k5p * 100).toFixed(1) + '% — sink 自动退到背景';
+      status.setAttribute('fill', '#16a34a');
+    } else {
+      status.textContent = 'key 5 弱相关，权重 ' + (k5p * 100).toFixed(1) + '% · sink ' + (sinkOn ? 'ON' : 'OFF');
+      status.setAttribute('fill', '#475569');
+    }
+  }
+
+  slider.addEventListener('input', update);
+  toggle.addEventListener('click', () => {
+    sinkOn = !sinkOn;
+    toggle.textContent = sinkOn ? 'Sink: ON' : 'Sink: OFF';
+    update();
+  });
+
+  update();
+})();
+</script>
+</body>
+</html>

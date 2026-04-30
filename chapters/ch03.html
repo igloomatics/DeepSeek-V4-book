@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 03 · mHC — 残差通路的几何护栏</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch3">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 03 · mHC</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part1.html">第一部分 · 架构</a><span class="sep">/</span>Ch 03</div>
+
+      <article id="ch3" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第一部分 · 架构 · 03</div>
+        <h2 class="chapter-title">mHC — 残差通路的几何护栏</h2>
+        <p class="chapter-sub">从"残差等于加法"到"残差等于带几何约束的矩阵混合"—— V4 把 60+ 层堆叠的稳定性问题搬到了流形上。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂 mHC</div>
+          <p class="term-name">mHC = Manifold-constrained Hyper-Connection（流形约束的超连接）</p>
+          <p>把"残差连接"从一根标量 highway 变成 $n_{hc}$ 条并行 highway，再把它们之间的"换道矩阵"强制关进一个<em>不会放大输入</em>的几何集合里。这就是 V4 在 60+ 层超深堆叠下还能稳得住的核心。</p>
+          <dl>
+            <dt>残差连接（Residual Connection）</dt>
+            <dd>Transformer 里 $x_{l+1} = x_l + F_l(x_l)$ 那条"加法支路"，让深网络的梯度能直接传回去。简单好用，但深度一上去，<em>能量越加越大、异常值越传越远</em>，是这一章一切麻烦的根源。</dd>
+
+            <dt>Hyper-Connection（HC，Zhu 2025）</dt>
+            <dd>把单条残差扩成 $n_{hc}$ 条并行残差流（V4 取 $n_{hc}=4$）。每层多三个学习矩阵 $A_l, B_l, C_l$ 控制"读哪几条流 / 把输出写到哪几条流 / 流之间怎么混"。表达力上去了，但 $B_l$ 无约束 ⇒ <em>稳定性反而更差</em>。</dd>
+
+            <dt>Manifold（流形）</dt>
+            <dd>这里特指<strong>双随机矩阵的 Birkhoff 多面体</strong> —— 所有"元素非负、行和为 1、列和为 1"的方阵构成的集合 $\mathcal M$。它有两个救命性质：里头任何矩阵的<em>谱范数 $\le 1$</em>，且<em>乘法封闭</em>（俩双随机矩阵相乘还是双随机）。</dd>
+
+            <dt>Constrained（受约束）</dt>
+            <dd>把每层学到的"未约束"矩阵 $\tilde B_l$ 用 <strong>Sinkhorn-Knopp 迭代</strong> 20 步可微地投影回 $\mathcal M$。"可微"是关键 —— 反向传播能直接穿过去，整个 mHC 端到端可学。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>把 4 条 highway 之间的"换道矩阵"关进双随机牢笼里，让 60 层堆叠后的累积变换永远不会放大输入。</div>
+        </div>
+
+        <!-- ================== 章首论文图：三段式演进 ================== -->
+        <figure class="paper-fig">
+          <img src="../figures/ch03/01.png" alt="标准残差、Hyper-Connection、Manifold-Constrained HC 三种结构对比">
+          <figcaption>
+            <strong>图 3-1 · 标准残差 → HC → mHC 的三段式演进。</strong>
+            <strong>(a) 标准残差</strong>：单条 highway，$x_l \xrightarrow{\mathcal F} \oplus \to x_{l+1}$，下文 §1 讲它为什么扛不住 60 层。
+            <strong>(b) Hyper-Connection</strong>：把残差扩成多条 highway，引入 Pre / Res / Post 三个 <em>无约束</em> 线性 mapping（橙色块），表达力上去了但 §3 会说明它仍会爆炸。
+            <strong>(c) mHC</strong>：把这三个 mapping 都包进流形投影 $\mathcal P_{\mathcal M}(\cdot)$（绿色块），强制落在双随机矩阵的 Birkhoff 多面体上 —— 这就是 §4-6 的故事。
+            <span class="fig-source">来源：Xie et al. 2026《Manifold-Constrained Hyper-Connection》（V4 论文 §2.2 引用）。</span>
+          </figcaption>
+        </figure>
+
+        <!-- ================== §1 标准残差为什么扛不住 ================== -->
+        <h3 id="motivation">1. 标准残差为什么扛不住 60 层</h3>
+        <p>
+          标准残差连接 $x_{l+1} = x_l + F_l(x_l)$ 看起来无害，但在大深度下有三个具体的失效模式：
+        </p>
+        <ul>
+          <li><strong>能量累积</strong>：每个 $F_l$ 都向 $x$ 加一份贡献，$\|x_L\|$ 随 $L$ 增大单调上升。Pre-norm 能缓解但不能消除。</li>
+          <li><strong>有效深度坍缩</strong>：当 $\|x_L\|$ 已经很大时，新加的 $F_L(x_L)$ 相对于累积的 $x_L$ 显得微不足道，<em>后期层的贡献被淹没</em>。模型名义 60 层，实际有效层数远小于 60。</li>
+          <li><strong>异常值不可消除</strong>：残差路径是恒等映射，<em>一旦某一层 $F_l$ 输出含 outlier，它会被原样复制到所有后续层</em>。这是 LLM 训练中"激活异常值"问题的几何根源。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练</span>
+          假设每层 $F_l$ 的输出范数稳定在 $\|F_l(x)\| \approx 0.05 \cdot \|x\|$（中等贡献）。则
+          $\|x_L\|^2 \le \|x_0\|^2 \cdot \prod_{l=1}^{L}(1 + 0.05)^2 \approx \|x_0\|^2 \cdot 1.05^{2L}$，
+          深度 $L=60$ 时 $\|x_{60}\| / \|x_0\| \approx 1.05^{60} \approx \mathbf{18\times}$。
+          也就是说，最深层看到的输入幅度比最浅层<strong>大一个数量级</strong>，再叠加 LayerNorm 的非线性，训练就开始飘。
+        </div>
+
+        <p>
+          DeepSeek 团队在 V4-Pro 早期实验（深度 61）里直接撞上了这个问题。常见的解法是改 LayerNorm（DeepNorm、Sandwich-LN 等），但都是<em>压住表象</em>。V4 走了另一条路 —— 直接改残差的<strong>几何结构</strong>。
+        </p>
+
+        <!-- ================== §2 HC ================== -->
+        <h3 id="hc">2. Hyper-Connection（Zhu 2025）：把残差从向量扩成矩阵</h3>
+
+        <p><strong>核心想法</strong>：与其只有一条残差流（宽度 $d$），不如同时维护 $n_{hc}$ 条<em>并行残差流</em>（每条宽度 $d$），把整个 state 写成矩阵 $X_l \in \mathbb{R}^{n_{hc} \times d}$。每层引入三个学习矩阵 $A_l, B_l, C_l$ 控制流之间的读写：</p>
+
+        <div class="math-block">
+          $$
+          X_{l+1} \;=\; B_l\, X_l \;+\; C_l\,F_l\!\big(A_l X_l\big)
+          $$
+        </div>
+
+        <p>每个矩阵的形状与角色：</p>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>形状</th><th>角色</th><th>V4 取值（$n_{hc}=4, d=7168$）</th></tr></thead>
+            <tbody>
+              <tr><td>$X_l$</td><td>$n_{hc} \times d$</td><td>第 $l$ 层的"残差流矩阵"，$n_{hc}$ 条并行 highway</td><td>$4 \times 7168$，每个 token 多带 4 份隐藏状态</td></tr>
+              <tr><td>$A_l$</td><td>$1 \times n_{hc}$</td><td><strong>读</strong>：把 $n_{hc}$ 条流加权平均成单个 $d$-向量喂给 block</td><td>$1 \times 4$，4 个权重</td></tr>
+              <tr><td>$F_l$</td><td>$d \to d$</td><td>第 $l$ 层的实际计算（attention 或 FFN）</td><td>原本 Transformer block 不变</td></tr>
+              <tr><td>$C_l$</td><td>$n_{hc} \times 1$</td><td><strong>写</strong>：把 block 输出分发回 $n_{hc}$ 条流</td><td>$4 \times 1$，4 个权重</td></tr>
+              <tr><td>$B_l$</td><td>$n_{hc} \times n_{hc}$</td><td><strong>混合</strong>：流之间的相互交换矩阵</td><td>$4 \times 4 = 16$ 个权重</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>$X_{l+1} = B_l X_l + C_l F_l(A_l X_l)$ 翻成大白话就是三步：</p>
+          <ol>
+            <li><strong>读</strong>：$A_l X_l$ —— 从 4 条 highway 上各取一点料，混成一份"输入"喂给本层 attention/FFN；</li>
+            <li><strong>算</strong>：$F_l(\cdot)$ —— 本层正常计算，输出仍是 $d$ 维向量；</li>
+            <li><strong>写 + 混合</strong>：$C_l \cdot \text{(输出)} + B_l X_l$ —— 一边把新结果按 $C_l$ 分发到 4 条流，一边按 $B_l$ 把旧的 4 条流重新"换道"打包。</li>
+          </ol>
+          <p>整个过程比标准残差多了三个旋钮：<em>选择从哪几条流读、写到哪几条流、流之间怎么换道</em>。模型可以学会"这一层我把 outlier 关在第 3 条流里别让它污染主流"这种策略。</p>
+        </div>
+
+        <p>$n_{hc}$ 在 V4 取 4 —— 4 条 highway 之间允许"分工 + 兜底"，例如某些流专门承载长程信号、另一些承载局部信号，$B_l$ 决定它们如何借换。</p>
+
+        <!-- ================== §3 HC 仍会爆炸 + Viz 1 ================== -->
+        <h3 id="why-hc-fails">3. 但 HC 自己仍会"原地爆炸"</h3>
+        <p>
+          HC 的稳定性问题集中在 $B_l$。它是一个无约束的 $n_{hc} \times n_{hc}$ 矩阵，所有层堆起来后，从输入到输出的<em>残差通路总变换</em>是 $B_L \cdots B_2 B_1$。
+        </p>
+        <p>定量看：</p>
+        <ul>
+          <li>如果<em>每层平均</em> $\|B_l\|_2 = 1.05$（仅高出 5%），60 层乘下来 $\|\prod B_l\|_2 \le 1.05^{60} \approx 18\times$ —— 残差路径放大 18 倍；</li>
+          <li>如果某些 $B_l$ 学出大的<em>负值</em>，相邻层流之间出现强相消，信息被洗掉；</li>
+          <li>训练初期 $B_l$ 几乎随机，谱半径分布很宽 —— 训练前几千步极其不稳。</li>
+        </ul>
+        <p>这正是 DeepSeek 在 V4-Pro 早期跑出的现象。HC 本身没解决稳定性，只是<em>把问题包装得更大</em>。</p>
+
+        <!-- VIZ 1: 谱范数堆叠曲线 -->
+        <div class="viz" id="viz-norm-decay">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 深度堆叠下的谱范数对比</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 320" id="vnd-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- background -->
+            <rect x="60" y="20" width="640" height="240" fill="#fafbfd" stroke="#e5e7eb" stroke-width="1"/>
+
+            <!-- horizontal grid lines (log-scale: 0.01, 0.1, 1, 10, 100) -->
+            <line x1="60" y1="260" x2="700" y2="260" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="200" x2="700" y2="200" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="140" x2="700" y2="140" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="3,3"/>
+            <line x1="60" y1="80"  x2="700" y2="80"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="20"  x2="700" y2="20"  stroke="#e5e7eb" stroke-width="1"/>
+
+            <!-- vertical grid lines at L=1, 20, 40, 60, 80 -->
+            <line x1="60"    y1="20" x2="60"    y2="260" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="213.9" y1="20" x2="213.9" y2="260" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="375.9" y1="20" x2="375.9" y2="260" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="538.0" y1="20" x2="538.0" y2="260" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="3,3"/>
+            <line x1="700"   y1="20" x2="700"   y2="260" stroke="#e5e7eb" stroke-width="1"/>
+
+            <!-- y axis labels (log scale) -->
+            <text x="55" y="264" text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">0.01</text>
+            <text x="55" y="204" text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">0.1</text>
+            <text x="55" y="144" text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">1</text>
+            <text x="55" y="84"  text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">10</text>
+            <text x="55" y="24"  text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">100</text>
+
+            <!-- x axis labels -->
+            <text x="60"    y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">1</text>
+            <text x="213.9" y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">20</text>
+            <text x="375.9" y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">40</text>
+            <text x="538.0" y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">60</text>
+            <text x="700"   y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">80</text>
+
+            <!-- axis titles -->
+            <text x="380" y="305" text-anchor="middle" font-size="12" fill="#1c2433">深度 L（堆叠层数）</text>
+            <text x="20" y="140" text-anchor="middle" font-size="12" fill="#1c2433" transform="rotate(-90 20 140)">‖∏ B_l‖₂（log scale）</text>
+
+            <!-- L=60 dashed marker label -->
+            <text x="538" y="34" text-anchor="middle" font-size="10.5" fill="#94a3b8" font-family="JetBrains Mono">L=60</text>
+
+            <!-- two curves -->
+            <path id="vnd-line-uc"  d="" fill="none" stroke="#dc2626" stroke-width="2"/>
+            <path id="vnd-line-mhc" d="" fill="none" stroke="#16a34a" stroke-width="2"/>
+
+            <!-- legend -->
+            <rect x="480" y="32" width="200" height="50" fill="#ffffff" stroke="#e5e7eb" stroke-width="1" rx="4"/>
+            <line x1="492" y1="48" x2="516" y2="48" stroke="#dc2626" stroke-width="2"/>
+            <text x="522" y="51" font-size="11" fill="#1c2433" font-family="Inter">无约束 HC：‖B‖^L</text>
+            <line x1="492" y1="68" x2="516" y2="68" stroke="#16a34a" stroke-width="2"/>
+            <text x="522" y="71" font-size="11" fill="#1c2433" font-family="Inter">mHC：恒 ≤ 1</text>
+          </svg>
+          <div class="viz-controls">
+            <label>每层 ‖B_l‖₂
+              <input type="range" id="vnd-slider" min="0.85" max="1.15" step="0.005" value="1.05" style="width:200px">
+            </label>
+            <span class="viz-readout" id="vnd-readout">…</span>
+          </div>
+          <p class="viz-caption">
+            拖滑条调整"每层无约束 HC 的谱范数"。红线 = 60 层堆叠后的累积放大；绿线 = mHC 强制每层 ≤ 1，无论怎么堆都不放大。<strong>把滑条拉到 1.05 看 L=60 的红线读数</strong> —— 18 倍放大正是 V4-Pro 早期训练飘掉的根因。
+          </p>
+        </div>
+
+        <!-- ================== §4 mHC 约束 ================== -->
+        <h3 id="mhc">4. mHC 的核心约束：把 $B_l$ 关进 Birkhoff 多面体</h3>
+
+        <p>
+          mHC（Manifold-constrained HC, Xie 2026）的关键一步：强制 $B_l$ 落在<strong>双随机矩阵的 Birkhoff 多面体</strong>上：
+        </p>
+
+        <div class="math-block">
+          $$
+          B_l \in \mathcal{M}\;:=\;\Big\{\, M \in \mathbb{R}^{n_{hc}\times n_{hc}} \;\Big|\;
+          M\mathbf{1} = \mathbf{1},\;\;
+          \mathbf{1}^{T}M = \mathbf{1}^{T},\;\;
+          M_{ij} \ge 0 \,\Big\}
+          $$
+        </div>
+
+        <p>这个约束的含义拆开来看：</p>
+        <ul>
+          <li>$M_{ij} \ge 0$：每个流给下一层各流的"权重"都是非负的，<strong>禁止相消</strong>；</li>
+          <li>$M\mathbf{1} = \mathbf{1}$：每行和为 1，每条流"分给"出去的总权重是 1，<strong>不放大</strong>；</li>
+          <li>$\mathbf{1}^{T}M = \mathbf{1}^{T}$：每列和为 1，每条新流"接收"的总权重是 1，<strong>不浓缩</strong>。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">具体例子</span>
+          一个合法的 $4\times 4$ 双随机矩阵：
+          $$ M = \begin{pmatrix} 0.6 & 0.1 & 0.2 & 0.1 \\ 0.1 & 0.5 & 0.1 & 0.3 \\ 0.2 & 0.3 & 0.4 & 0.1 \\ 0.1 & 0.1 & 0.3 & 0.5 \end{pmatrix} $$
+          每行加起来 $=1$，每列加起来 $=1$，全员 $\ge 0$。它的谱范数是 $\|M\|_2 \approx 0.91 \le 1$。
+          <br><br>
+          反例：把右下角改成 1.5，行和变 1.9，列和也变 1.9 —— 不再双随机，谱范数会爆。
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">为什么 Birkhoff 多面体能根治放大问题</div>
+          <ol>
+            <li><strong>谱范数恒 $\le 1$</strong>：由 Birkhoff–von Neumann 定理，双随机矩阵 = 置换矩阵的凸组合。所有置换矩阵谱范数为 1，凸组合的谱范数 $\le 1$。所以 $\|B_l\|_2 \le 1$，$\|\prod B_l\|_2 \le 1$ <em>无论堆多深</em>。</li>
+            <li><strong>矩阵乘法下闭合</strong>：双随机矩阵的乘积仍然双随机。这意味着<em>累积变换永远在合法集内</em>，60 层和 6 层在几何稳定性上没有区别。</li>
+          </ol>
+        </div>
+
+        <p>几何直观：把 4 条 highway 想成 4 个能量罐。$B_l$ 描述的是"这一步如何把 4 个罐里的水重新分配到 4 个新罐"—— 双随机约束保证<strong>总量守恒、不浓缩、不增减</strong>，最坏情况是所有水均匀混合（$M = \tfrac{1}{n_{hc}} \mathbf{1}\mathbf{1}^T$），最理想情况是直接置换（$M$ 是某个排列）。回到<strong>图 3-1 (c)</strong>：那三个绿色 $\mathcal P_{\mathcal M}(\cdot)$ 框做的就是这件事，把 (b) 里的橙色 mapping 都打回这个集合。</p>
+
+        <p><strong>$A_l, C_l$ 的处理</strong>：</p>
+        <ul>
+          <li>$A_l$ 用 $\mathrm{Sigmoid}$ 投到 $(0, 1)^{n_{hc}}$ —— 读流时禁止负权重，避免主信号被异号项相消；</li>
+          <li>$C_l$ 用 $2\cdot\mathrm{Sigmoid}$ 投到 $(0, 2)^{n_{hc}}$ —— 写入流时给稍宽的动态范围，让 block 贡献能"压过去"。</li>
+        </ul>
+
+        <!-- ================== §5 动态+静态参数化 ================== -->
+        <h3 id="param">5. 动态 + 静态参数化：让约束矩阵随上下文走</h3>
+
+        <p>如果 $B_l$ 是固定的可学习参数，每层只有一个 $B_l$，<em>它不能根据当前 token 调整流间路由</em>。mHC 把它分解成静态 + 动态两部分：</p>
+
+        <div class="math-block">
+          $$
+          \tilde{B}_l \;=\; \alpha^{\text{res}}_l \cdot \mathrm{Mat}\!\big(\hat{X}_l W^{\text{res}}_l\big) \;+\; S^{\text{res}}_l
+          $$
+        </div>
+
+        <p>每个符号：</p>
+        <ul>
+          <li>$\hat{X}_l$：当前层 RMSNorm 后的输入；</li>
+          <li>$W^{\text{res}}_l$：把 $\hat{X}_l$ 投到 $n_{hc}^2$ 维的矩阵，$\mathrm{Mat}(\cdot)$ 把这个向量 reshape 成 $n_{hc} \times n_{hc}$；</li>
+          <li>$\alpha^{\text{res}}_l$：可学习的<em>标量</em>系数，控制"动态部分"的权重；</li>
+          <li>$S^{\text{res}}_l$：可学习的<em>静态</em> $n_{hc} \times n_{hc}$ 矩阵，提供"默认混合模式"。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条公式可以理解成<strong>"默认换道地图 + 一份按 token 微调"</strong>：</p>
+          <ul>
+            <li>$S^{\text{res}}_l$ 是<em>地图</em>：每层有一份固定的"4 条 highway 默认怎么换道"，训练初期主要靠它，模式简单稳定；</li>
+            <li>$\hat X_l W^{\text{res}}_l$ 是<em>实时路况</em>：根据当前 token 内容动态生成一个补丁矩阵；</li>
+            <li>$\alpha^{\text{res}}_l$ 是<em>音量旋钮</em>：训练初期取 ≈0.1，地图占主导；后期 $\alpha$ 学大，按 token 调整变得重要。</li>
+          </ul>
+          <p>这种"先打地基再加上层建筑"的参数化，是<em>双阶段训练稳定性</em>的核心 —— 模型不会在第 0 步就被一个随机大动态项推飞。</p>
+        </div>
+
+        <p>$A_l, C_l$ 也用同样的动态+静态分解，公式形状相同，只是输出维度变成 $1\times n_{hc}$ 和 $n_{hc}\times 1$。</p>
+
+        <!-- ================== §6 Sinkhorn-Knopp + Viz 2 ================== -->
+        <h3 id="sinkhorn">6. Sinkhorn-Knopp：把任意正矩阵打回多面体</h3>
+
+        <p>$\tilde{B}_l$ 经过上述参数化后只是个普通矩阵，怎么<em>可微地</em>投到 Birkhoff 多面体上？mHC 的做法：</p>
+        <ol>
+          <li>先取 $\exp(\tilde{B}_l)$，保证非负；</li>
+          <li>用 Sinkhorn-Knopp 迭代交替归一化行与列，20 步收敛到双随机矩阵。</li>
+        </ol>
+
+        <div class="math-block">
+          $$
+          M^{(t)} \;=\; \mathcal{T}_r\!\Big(\mathcal{T}_c\!\big(M^{(t-1)}\big)\Big),\qquad t = 1, 2, \ldots, 20
+          $$
+        </div>
+
+        <p>其中 $\mathcal{T}_r$ 是行归一化（每行除以行和），$\mathcal{T}_c$ 是列归一化（每列除以列和）。</p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>Sinkhorn-Knopp 干的事就两件，反复轮流：</p>
+          <ol>
+            <li><strong>把每一行除以它的行和</strong> ⇒ 行和都变成 1（但列和被打乱）；</li>
+            <li><strong>把每一列除以它的列和</strong> ⇒ 列和都变成 1（但行和又被打乱了一点点）。</li>
+          </ol>
+          <p>每轮两边都被"打乱"得越来越轻，20 轮后行和列和都 ≈ 1，这就是双随机。重要的是这两步都是<em>可微的元素级除法</em>，autograd 能正常穿过去 —— 整个 mHC 仍然端到端可训。</p>
+        </div>
+
+        <!-- VIZ 2: Sinkhorn-Knopp 4×4 步进 -->
+        <div class="viz" id="viz-sinkhorn">
+          <div class="viz-head">
+            <div class="viz-title">Demo · Sinkhorn-Knopp 在 4×4 矩阵上的逐步收敛</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 280" id="sk-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- title bar -->
+            <text x="120" y="22" font-size="12" fill="#475569" font-family="Inter" font-weight="600">当前矩阵 M^(t)</text>
+            <text x="500" y="22" font-size="12" fill="#475569" font-family="Inter" font-weight="600">行和 / 列和（应都趋近 1）</text>
+
+            <!-- grid will be drawn dynamically (see script) -->
+            <g id="sk-grid"></g>
+
+            <!-- row sums: shown to the right of each row -->
+            <g id="sk-rowsums"></g>
+            <!-- col sums: shown below each column -->
+            <g id="sk-colsums"></g>
+
+            <!-- step indicator next op label -->
+            <text x="60"  y="265" font-size="12" fill="#1c2433" font-family="Inter" id="sk-next-op">下一步：行归一化（每行 ÷ 行和）</text>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="sk-step">下一步 ▶</button>
+            <button class="viz-btn" id="sk-run">一键跑完 20 步</button>
+            <button class="viz-btn" id="sk-reset">重置随机矩阵</button>
+            <span class="viz-readout">步数：<span id="sk-step-label">0/20</span></span>
+            <span class="viz-readout" id="sk-rowres">行残差 0.00</span>
+            <span class="viz-readout" id="sk-colres">列残差 0.00</span>
+          </div>
+          <p class="viz-caption">
+            初始矩阵是随机正矩阵（模拟 $\exp(\tilde B_l)$ 的输出）。每按"下一步"交替做一次行 / 列归一化。<strong>观察：3-5 步后两个残差就掉到 $10^{-3}$ 量级，10 步后基本归零</strong>。这就是 mHC 选 20 步迭代的安全边界。
+          </p>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">为什么 Sinkhorn-Knopp 一定收敛？</div>
+          <p>
+            经典定理（Sinkhorn 1964）：任何全正矩阵在交替行列归一化下都收敛到双随机矩阵，且收敛是<strong>线性</strong>的（每次误差缩小 $\sim$ 常数比例）。
+            对 $4 \times 4$ 矩阵，10 步内残差就能降到 $10^{-4}$；20 步是<em>充足的安全边界</em>。
+          </p>
+          <p>
+            <strong>为什么不用 Hungarian 算法（求最优排列）？</strong> 因为它给出离散的硬置换，不可微，反向传播无法穿过它。Sinkhorn 是这个分配问题的<em>软可微版本</em> —— 这也是它在 OT、attention sinkformer、RL 等领域被广泛使用的原因。
+          </p>
+        </div>
+
+        <!-- ================== §7 代价 ================== -->
+        <h3 id="cost">7. 代价 / 还没解决的问题</h3>
+        <ul>
+          <li><strong>Sinkhorn 计算开销</strong>：每层每步 20 次 $4\times 4$ 矩阵的行列归一化 $\approx$ 320 次乘除。相对 forward+backward 完全可忽略。</li>
+          <li><strong>表达力损失</strong>：双随机 $4\times 4$ 矩阵构成 9 维流形（无约束是 16 维）。理论上表达力下降，但<em>实测 loss 曲线不显著变化</em>，反而稳定性大幅改善。</li>
+          <li><strong>只约束了流间混合，没约束 $F_l$ 本身</strong>：mHC 让残差路径"非膨胀"，但 $F_l$ 仍可能产生大幅 outlier。这部分由 Ch14 的 SwiGLU Clamping 与 Anticipatory Routing 兜底。</li>
+          <li><strong>$n_{hc}$ 必须不大</strong>：$n_{hc} = 4$ 是平衡点。若 $n_{hc} \to 16$，$B_l$ 矩阵变 $16\times 16$，Sinkhorn 仍 cheap，但<em>动态参数化的 $W^{\text{res}}$ 投影维度从 16 涨到 256</em>，参数量上升。V4 取 4 是工程权衡。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>
+            <strong>标准残差是无约束加法，60 层堆叠时能量与异常值都会累积。HC 把残差从向量扩成 $n_{hc}$ 条 highway，给每层三个旋钮（读 $A_l$ / 写 $C_l$ / 混合 $B_l$）。但 $B_l$ 无约束仍会爆炸，所以 mHC 把它关进双随机矩阵的 Birkhoff 多面体 —— 谱范数恒 $\le 1$ 且乘法封闭，60 层等同于 6 层的稳定性。代价是 9-vs-16 维表达力损失（实测无影响）和每层 20 步 Sinkhorn（开销可忽略）。</strong>
+          </p>
+        </div>
+
+        <div class="diagram-wrap">
+          <div class="mermaid">
+flowchart LR
+  X["X_l<br/>shape n_hc × d"] --> Norm["RMSNorm + flatten"]
+  Norm --> Aw["A_l 通道"]
+  Norm --> Bw["B_l 通道"]
+  Norm --> Cw["C_l 通道"]
+  Aw -- "Sigmoid" --> A["A_l ∈ (0,1)"]
+  Cw -- "2·Sigmoid" --> C["C_l ∈ (0,2)"]
+  Bw -- "exp" --> Bp["正矩阵"]
+  Bp -- "Sinkhorn-Knopp ×20" --> B["B_l ∈ Birkhoff"]
+  A --> F["Layer F_l"]
+  F --> C
+  C --> Add(("+"))
+  X --> B
+  B --> Add
+  Add --> Xn["X_(l+1)"]
+
+  classDef key fill:#71a4e1,stroke:#71a4e1,color:#fff
+  class B,A,C key
+          </div>
+        </div>
+        <p class="caption">图 3-2 · mHC 的动态参数化流程。Sinkhorn-Knopp 是把残差矩阵"打回流形"的关键一步，保证累积变换的谱范数永远 $\le 1$。</p>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ================== Ch03 内联交互脚本 ================== -->
+<script>
+/* ---------- Viz 1: 谱范数堆叠曲线 ---------- */
+(function () {
+  var slider  = document.getElementById('vnd-slider');
+  var readout = document.getElementById('vnd-readout');
+  var lineUC  = document.getElementById('vnd-line-uc');
+  var lineMHC = document.getElementById('vnd-line-mhc');
+  if (!slider) return;
+
+  var Lmax = 80;
+  var PL = 60, PT = 20, PW = 640, PH = 240;
+  var yMin = -2, yMax = 2; // log10 axis range
+
+  function xPx(L) { return PL + (L - 1) * PW / (Lmax - 1); }
+  function yPx(v) {
+    var ly = Math.log10(Math.max(v, 1e-10));
+    var clamped = Math.max(yMin, Math.min(yMax, ly));
+    return PT + (yMax - clamped) / (yMax - yMin) * PH;
+  }
+
+  function update() {
+    var b = parseFloat(slider.value);
+    var dUC = '', dMHC = '';
+    var v60 = 0;
+    for (var L = 1; L <= Lmax; L++) {
+      var vu = Math.pow(b, L);
+      var vc = 1.0; // mHC 永远 ≤ 1，这里画 = 1 的上界线
+      var x = xPx(L);
+      dUC  += (L === 1 ? 'M' : 'L') + x.toFixed(1) + ',' + yPx(vu).toFixed(1);
+      dMHC += (L === 1 ? 'M' : 'L') + x.toFixed(1) + ',' + yPx(vc).toFixed(1);
+      if (L === 60) v60 = vu;
+    }
+    lineUC.setAttribute('d', dUC);
+    lineMHC.setAttribute('d', dMHC);
+
+    var v60Str;
+    if (v60 >= 100 || v60 < 0.01) v60Str = v60.toExponential(2);
+    else v60Str = v60.toFixed(3);
+    readout.textContent = '‖B_l‖₂ = ' + b.toFixed(3) + '   →   L=60 时累积 ‖∏B‖ ≈ ' + v60Str + '（红线），mHC ≤ 1（绿线）';
+  }
+
+  slider.addEventListener('input', update);
+  update();
+})();
+
+/* ---------- Viz 2: Sinkhorn-Knopp 4×4 步进 ---------- */
+(function () {
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var grid    = document.getElementById('sk-grid');
+  var rowSums = document.getElementById('sk-rowsums');
+  var colSums = document.getElementById('sk-colsums');
+  var stepBtn = document.getElementById('sk-step');
+  var runBtn  = document.getElementById('sk-run');
+  var resetBtn= document.getElementById('sk-reset');
+  var stepLab = document.getElementById('sk-step-label');
+  var rowResL = document.getElementById('sk-rowres');
+  var colResL = document.getElementById('sk-colres');
+  var nextOp  = document.getElementById('sk-next-op');
+  if (!grid) return;
+
+  var N = 4;
+  var CELL = 50;
+  var ORIGIN_X = 60;
+  var ORIGIN_Y = 40;
+  var MAX_STEPS = 20;
+
+  var M = null;
+  var step = 0;
+  var cells = []; // [i][j] => { rect, text }
+
+  // build static grid + row/col sum text nodes
+  for (var i = 0; i < N; i++) {
+    cells[i] = [];
+    for (var j = 0; j < N; j++) {
+      var rect = document.createElementNS(SVG_NS, 'rect');
+      rect.setAttribute('x', ORIGIN_X + j * CELL);
+      rect.setAttribute('y', ORIGIN_Y + i * CELL);
+      rect.setAttribute('width', CELL);
+      rect.setAttribute('height', CELL);
+      rect.setAttribute('stroke', '#cbd5e1');
+      rect.setAttribute('stroke-width', '1');
+      grid.appendChild(rect);
+
+      var text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('x', ORIGIN_X + j * CELL + CELL / 2);
+      text.setAttribute('y', ORIGIN_Y + i * CELL + CELL / 2 + 4);
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('font-size', '12');
+      text.setAttribute('font-family', 'JetBrains Mono');
+      grid.appendChild(text);
+
+      cells[i][j] = { rect: rect, text: text };
+    }
+
+    // row sum label
+    var rs = document.createElementNS(SVG_NS, 'text');
+    rs.setAttribute('x', ORIGIN_X + N * CELL + 14);
+    rs.setAttribute('y', ORIGIN_Y + i * CELL + CELL / 2 + 4);
+    rs.setAttribute('font-size', '12');
+    rs.setAttribute('font-family', 'JetBrains Mono');
+    rs.setAttribute('fill', '#1c2433');
+    rs.setAttribute('id', 'sk-rs-' + i);
+    rowSums.appendChild(rs);
+  }
+  for (var j = 0; j < N; j++) {
+    var cs = document.createElementNS(SVG_NS, 'text');
+    cs.setAttribute('x', ORIGIN_X + j * CELL + CELL / 2);
+    cs.setAttribute('y', ORIGIN_Y + N * CELL + 18);
+    cs.setAttribute('text-anchor', 'middle');
+    cs.setAttribute('font-size', '12');
+    cs.setAttribute('font-family', 'JetBrains Mono');
+    cs.setAttribute('fill', '#1c2433');
+    cs.setAttribute('id', 'sk-cs-' + j);
+    colSums.appendChild(cs);
+  }
+
+  // header for "row sum / col sum" arrows already drawn in static SVG.
+  // Add a small 'σ' label
+  var rsHead = document.createElementNS(SVG_NS, 'text');
+  rsHead.setAttribute('x', ORIGIN_X + N * CELL + 14);
+  rsHead.setAttribute('y', ORIGIN_Y - 8);
+  rsHead.setAttribute('font-size', '11');
+  rsHead.setAttribute('fill', '#94a3b8');
+  rsHead.setAttribute('font-family', 'Inter');
+  rsHead.textContent = 'Σ (行)';
+  rowSums.appendChild(rsHead);
+  var csHead = document.createElementNS(SVG_NS, 'text');
+  csHead.setAttribute('x', ORIGIN_X - 8);
+  csHead.setAttribute('y', ORIGIN_Y + N * CELL + 18);
+  csHead.setAttribute('text-anchor', 'end');
+  csHead.setAttribute('font-size', '11');
+  csHead.setAttribute('fill', '#94a3b8');
+  csHead.setAttribute('font-family', 'Inter');
+  csHead.textContent = 'Σ (列)';
+  colSums.appendChild(csHead);
+
+  function lerpColor(t) {
+    // pale blue -> deep blue, t in [0,1]
+    var r1 = 238, g1 = 242, b1 = 248; // #eef2f8
+    var r2 = 113, g2 = 164, b2 = 225; // #71a4e1
+    var r = Math.round(r1 + (r2 - r1) * t);
+    var g = Math.round(g1 + (g2 - g1) * t);
+    var bb = Math.round(b1 + (b2 - b1) * t);
+    return 'rgb(' + r + ',' + g + ',' + bb + ')';
+  }
+
+  function reset() {
+    M = [];
+    for (var i = 0; i < N; i++) {
+      var row = [];
+      for (var j = 0; j < N; j++) {
+        // exp(N(0, 0.7)) --- generates positive matrix with non-trivial spread
+        var u = Math.random();
+        var v = Math.random();
+        var n = Math.sqrt(-2 * Math.log(Math.max(u, 1e-12))) * Math.cos(2 * Math.PI * v);
+        row.push(Math.exp(n * 0.7));
+      }
+      M.push(row);
+    }
+    step = 0;
+    render();
+  }
+
+  function render() {
+    var mx = 0;
+    for (var i = 0; i < N; i++)
+      for (var j = 0; j < N; j++)
+        if (M[i][j] > mx) mx = M[i][j];
+
+    for (var i = 0; i < N; i++) {
+      var rowSum = 0;
+      for (var j = 0; j < N; j++) {
+        var v = M[i][j];
+        rowSum += v;
+        var t = mx > 0 ? v / mx : 0;
+        cells[i][j].rect.setAttribute('fill', lerpColor(t));
+        cells[i][j].text.textContent = v.toFixed(3);
+        cells[i][j].text.setAttribute('fill', t > 0.55 ? '#ffffff' : '#1c2433');
+      }
+      var rs = document.getElementById('sk-rs-' + i);
+      var rdiff = Math.abs(rowSum - 1);
+      rs.textContent = rowSum.toFixed(3);
+      rs.setAttribute('fill', rdiff < 0.01 ? '#16a34a' : (rdiff < 0.1 ? '#a16207' : '#dc2626'));
+    }
+    for (var j = 0; j < N; j++) {
+      var colSum = 0;
+      for (var i = 0; i < N; i++) colSum += M[i][j];
+      var cs = document.getElementById('sk-cs-' + j);
+      var cdiff = Math.abs(colSum - 1);
+      cs.textContent = colSum.toFixed(3);
+      cs.setAttribute('fill', cdiff < 0.01 ? '#16a34a' : (cdiff < 0.1 ? '#a16207' : '#dc2626'));
+    }
+
+    var rowMax = 0, colMax = 0;
+    for (var i2 = 0; i2 < N; i2++) {
+      var s = 0;
+      for (var j2 = 0; j2 < N; j2++) s += M[i2][j2];
+      rowMax = Math.max(rowMax, Math.abs(s - 1));
+    }
+    for (var j3 = 0; j3 < N; j3++) {
+      var s2 = 0;
+      for (var i3 = 0; i3 < N; i3++) s2 += M[i3][j3];
+      colMax = Math.max(colMax, Math.abs(s2 - 1));
+    }
+
+    stepLab.textContent = step + '/' + MAX_STEPS;
+    rowResL.textContent = '行残差 ' + (rowMax === 0 ? '0.000' : rowMax.toExponential(2));
+    colResL.textContent = '列残差 ' + (colMax === 0 ? '0.000' : colMax.toExponential(2));
+
+    if (step >= MAX_STEPS) {
+      stepBtn.disabled = true;
+      runBtn.disabled = true;
+      nextOp.textContent = '已完成 20 步迭代 —— 行/列残差应都已 < 10⁻⁴';
+    } else {
+      stepBtn.disabled = false;
+      runBtn.disabled = false;
+      var op = (step % 2 === 0) ? '行归一化（每行 ÷ 行和）' : '列归一化（每列 ÷ 列和）';
+      nextOp.textContent = '下一步：' + op + '（第 ' + (step + 1) + ' 步）';
+    }
+  }
+
+  function nextStep() {
+    if (step >= MAX_STEPS) return;
+    if (step % 2 === 0) {
+      for (var i = 0; i < N; i++) {
+        var s = 0;
+        for (var j = 0; j < N; j++) s += M[i][j];
+        if (s > 0) for (var j2 = 0; j2 < N; j2++) M[i][j2] /= s;
+      }
+    } else {
+      for (var j3 = 0; j3 < N; j3++) {
+        var s2 = 0;
+        for (var i2 = 0; i2 < N; i2++) s2 += M[i2][j3];
+        if (s2 > 0) for (var i3 = 0; i3 < N; i3++) M[i3][j3] /= s2;
+      }
+    }
+    step++;
+    render();
+  }
+
+  function runAll() {
+    while (step < MAX_STEPS) {
+      if (step % 2 === 0) {
+        for (var i = 0; i < N; i++) {
+          var s = 0;
+          for (var j = 0; j < N; j++) s += M[i][j];
+          if (s > 0) for (var j2 = 0; j2 < N; j2++) M[i][j2] /= s;
+        }
+      } else {
+        for (var j3 = 0; j3 < N; j3++) {
+          var s2 = 0;
+          for (var i2 = 0; i2 < N; i2++) s2 += M[i2][j3];
+          if (s2 > 0) for (var i3 = 0; i3 < N; i3++) M[i3][j3] /= s2;
+        }
+      }
+      step++;
+    }
+    render();
+  }
+
+  resetBtn.addEventListener('click', reset);
+  stepBtn.addEventListener('click', nextStep);
+  runBtn.addEventListener('click', runAll);
+  reset();
+})();
+</script>
+
+</body>
+</html>

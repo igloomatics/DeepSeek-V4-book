@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 16 · Specialist — 多面手的炼成</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch16">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 16 · Specialist</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part4.html">第四部分 · 后训练</a><span class="sep">/</span>Ch 16</div>
+
+      <article id="ch16" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第四部分 · 后训练 · 16</div>
+        <h2 class="chapter-title">Specialist — 多面手的炼成</h2>
+        <p class="chapter-sub">为什么 V4 把 post-training 拆成"先 N 个领域 specialist、再用 OPD 合一"，GRPO 比传统 PPO 省掉的 value head 在 N 倍并行下意味着什么，GRM 的"以生成代评分"为什么能彻底替掉 RLHF 的人工标注，以及三档 reasoning effort（8K/128K/384K context）背后的训练-推理 budget 设计。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"Specialist 阶段"</div>
+          <p class="term-name">Specialist 阶段 = V4 后训练的<em>第一阶段</em>：给每个领域（数学/代码/Agent/写作/Instruction Following…）独立训一个领域专家模型；每个专家在三档 reasoning effort 下分别 RL，得到 N×3 个 checkpoint；这些 checkpoint 是 Ch18 OPD 阶段的"老师团"</p>
+          <p>
+            一句话：<strong>把 V3 时代的"混合 RL 一锅端"拆成"先专精、再合并"两阶段</strong>。
+            专精阶段每个 specialist 沿用 V3 / R1 的 SFT + GRPO 套路（不变），创新主要在两处：(1) GRM 让 hard-to-verify 任务（写作、规划）也能 RL；(2) 三档 reasoning effort 让同一专家有快/中/极致三种推理 budget。
+          </p>
+          <dl>
+            <dt>Specialist（领域专家模型）</dt>
+            <dd>从 V4-Pro/Flash-Base 出发，在<em>单一领域</em>用领域数据走完整 SFT + RL 的 checkpoint。论文提到 10+ 个领域：数学、代码、Agent 工具调用、Instruction Following、长写作、安全 等。<strong>是中间产物</strong>，不直接发布；最终模型由 OPD 把 N 个 specialist 蒸成一个。</dd>
+
+            <dt>SFT（Supervised Fine-Tuning）</dt>
+            <dd>用<em>(prompt, gold answer)</em> 对监督训练。post-training 起点。<em>问题</em>：模仿训练数据的<strong>表层模式</strong>，对推理深度提升有限。所以 SFT 之后必须接 RL。V4 沿用 V3.2 的 SFT 数据策略 + 模板。</dd>
+
+            <dt>GRPO（Group Relative Policy Optimization, DeepSeek 2024）</dt>
+            <dd>V3/R1 自研的 RL 算法。核心：每个 prompt 采样<em>一组</em> $G$ 条 rollout（$G\approx 8$），用<strong>组内平均 reward 作 baseline</strong>（不再训 value head）。<em>动机</em>：标准 PPO 要训一个与 actor 同尺寸的 critic，1.6T 模型上等于显存 ×2。GRPO 用统计平均替 critic，<strong>显存省一半、并行 N 个 specialist 时省 N 倍</strong>。</dd>
+
+            <dt>GRM（Generative Reward Model）</dt>
+            <dd>用 LLM 生成式地"批改"trajectory，输出"为什么这是好答案"的 chain-of-thought + 最终分数。<em>对比 scalar RM</em>：scalar RM 输出 1 个数，无解释，靠人标 reward 训出；GRM 直接复用 actor 网络<strong>边生成边打分</strong>，不需要单独的 reward 模型 + 大幅减少人工标注。在 hard-to-verify 任务（写作 / Agent 决策）上是 V4 的关键一跳。</dd>
+
+            <dt>Easy-to-Verify vs Hard-to-Verify</dt>
+            <dd><strong>Easy</strong>：数学（答案对就对）、代码（test 跑通就跑通）—— rule-based / unit-test verifier 给 0/1 reward。<strong>Hard</strong>：写作好坏、Agent 决策合理性、Instruction Following 度 —— 没有客观答案。<em>传统做法靠 RLHF 收集偏好 → scalar RM</em>，每万样本 ~$10K 标注成本。GRM 把这部分压到接近 0。</dd>
+
+            <dt>Reasoning Effort（推理强度）</dt>
+            <dd>同一模型可以用<em>不同长度</em>的 thinking chain 解题。V4 把它形式化成三档：<strong>Non-think</strong>（无 thinking，直接答）/ <strong>Think High</strong>（中等推理链）/ <strong>Think Max</strong>（极致思考）。每档训练时用不同的 length penalty 与 RL 上下文窗口（8K/128K/384K）。<em>推理时</em>用户可按需选档，类似 OpenAI o1 的"low/medium/high"。</dd>
+
+            <dt>Length Penalty（长度惩罚）</dt>
+            <dd>RL reward 里的额外项：超出预期长度<em>线性扣分</em>。Non-think 档惩罚强（鼓励短）、Think Max 档惩罚弱（允许长）。<strong>是 effort 档分化的工程关键</strong> —— 不靠 prompt 控长，靠 reward 直接塑造。</dd>
+
+            <dt>Reward Hacking（奖励黑客）</dt>
+            <dd>RL 训得久会发现：模型学会用<em>非正常方式</em>骗高分（比如代码 RL 里把 test case 注释掉）。scalar RM 尤其易被 hack，因为它对"短回路"无防御。GRM 因为要先<strong>生成解释</strong>，hack 成本高（解释要"自圆其说"），抗 hack 性显著好。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>Specialist 阶段是 V4 后训练的"备料车间" —— 把 V3 的 SFT + RL 范式<em>不动算法</em>、只在 reward 信号（GRM）和 budget 控制（三档 effort）两处升级，产出 N 个领域专家供 Ch18 的 OPD 蒸馏。读完你应该能解释为什么 V4 不直接做混合 RL，而是绕一圈"先 N 个 specialist 再合一"。</div>
+        </div>
+
+        <!-- ================== §1 范式 ================== -->
+        <h3 id="paradigm">1. 范式置换：从"一锅端 RL"到"先专精再合并"</h3>
+        <p>
+          V3 的后训练只有一个阶段：把所有 SFT 数据混在一起，配多种 reward（rule + RM），跑混合 RL。这条路在 V4 规模下出现三个症状：
+        </p>
+        <ul>
+          <li><strong>方差爆炸</strong>：不同任务 reward 量纲不一致（代码 0/1 vs 写作 0–10），加权和被绝对值大的任务主导，小信号被淹没；</li>
+          <li><strong>分布偏移</strong>：同一模型同时优化数学和写作，长 horizon 上学到的策略与单领域 specialist 差距明显；</li>
+          <li><strong>调参组合爆炸</strong>：每加一个领域，混合权重要重新搜索。</li>
+        </ul>
+        <p>V4 的回答：<strong>把"专精"和"合并"解耦</strong>。</p>
+        <ul>
+          <li><strong>Stage 1（本章）</strong>：N 个独立 specialist，每个只看自己领域、用最适合自己的 reward；</li>
+          <li><strong>Stage 2（Ch18 OPD）</strong>：把 N 个 specialist 当 frozen teacher，让 student 用 reverse KL on-policy 蒸馏一遍。</li>
+        </ul>
+
+        <p>
+          这个拆法有个隐藏好处 —— <em>每个 specialist 可以并行训</em>。10 个领域 × 3 档 effort = 30 个 checkpoint，理论上可以用 30 倍集群并行跑出来。但只有 GRPO 这种"无 value head"的算法才能撑得起这种并行，因为 value head 的显存成本会让并行度大打折扣。这就引出下一节。
+        </p>
+
+        <!-- ================== §2 GRPO ================== -->
+        <h3 id="grpo">2. GRPO：用"组内 baseline"替掉 value head</h3>
+
+        <p>
+          标准 PPO 需要训两个网络：actor（policy）+ critic（value head）。critic 的尺寸通常与 actor 相同（共享 backbone 也好，单独网络也好），<strong>显存翻倍 + 反向计算翻倍</strong>。1.6T 规模下这个翻倍直接致命。
+        </p>
+
+        <p>
+          GRPO 的洞察：<em>baseline 不一定要是个学到的 value 函数，可以是<strong>同 prompt 多个 rollout 的平均 reward</strong></em>。
+        </p>
+
+        <div class="math-block">
+          $$
+          A_i \;=\; \frac{r_i - \mathrm{mean}\!\big(\{r_j\}_{j=1}^G\big)}{\mathrm{std}\!\big(\{r_j\}_{j=1}^G\big)}, \qquad
+          \mathcal{L}_{\text{GRPO}} \;=\; -\,\frac{1}{G}\sum_{i=1}^{G} A_i \cdot \log \pi_\theta(y_i \mid x)
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条公式翻成大白话就是<strong>"同一个题让模型答 G 遍，谁的 reward 高于平均就鼓励谁、低于平均就惩罚谁"</strong>：</p>
+          <ol>
+            <li><strong>$\{r_j\}_{j=1}^G$</strong>：同一 prompt 采样 G 条独立 rollout（$G$ 一般取 8 或 16），各自跑完得到 reward；</li>
+            <li><strong>$\mathrm{mean}(\{r_j\})$</strong>：这一组 G 条的平均 reward —— <em>组内 baseline</em>，替代了 PPO 的 $V(s)$；</li>
+            <li><strong>$\mathrm{std}(\{r_j\})$</strong>：归一化方差，让不同难度题的 advantage 量级可比；</li>
+            <li><strong>$A_i$</strong>：标准化后的"相对优势"。$A_i &gt; 0$ → 这条比组内平均好 → 增加它的概率；$A_i &lt; 0$ → 减少；</li>
+            <li><strong>损失 $-A_i \log \pi$</strong>：标准 policy gradient 形式，advantage 当权重。</li>
+          </ol>
+          <p>关键的<em>不出现 $V(s)$ 也不出现 critic 网络</em> —— baseline 是<strong>统计的，而不是学出来的</strong>。这条 trick 让 GRPO 在 1.6T 规模仍可承担，是 V3/R1/V4 通用 RL 算法。</p>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · GRPO 省的显存</span>
+          1.6T MoE 模型按 49B 激活算，一次 forward+backward state 需 ~600GB（参数 + 优化器 + activation）。
+          <ul>
+            <li><strong>PPO 含 critic</strong>：actor 600 + critic 600 + critic optimizer 200 ≈ <em>1400GB</em>；</li>
+            <li><strong>GRPO</strong>：只 actor 600 + 一组 rollout buffer ~5GB ≈ <em>605GB</em>；</li>
+            <li>差额 800GB / 节点，<strong>同样集群下 GRPO 能并行 2× 多 specialist</strong>。</li>
+          </ul>
+          再叠加 G=8 组内 rollout 共享同一个 prefill（prompt 部分），相当于"显存少一半 + 一次 prefill 摊到 8 条"。这就是 V4 能并行训 10 个 specialist 的根本原因。
+        </div>
+
+        <!-- ================== §3 GRM ================== -->
+        <h3 id="grm">3. GRM：把"评分"也变成"生成"</h3>
+        <p>
+          GRPO 解决了"怎么 RL"，<em>但 reward 从哪来</em>仍然是个问题。三种来源：
+        </p>
+        <ul>
+          <li><strong>Rule-based</strong>：数学答案精确匹配、format 校验。最干净但只覆盖少数任务；</li>
+          <li><strong>Unit-test</strong>：代码任务跑测试。覆盖代码全栈；</li>
+          <li><strong>Reward Model</strong>：训一个网络给"质量"打分。覆盖一切其它任务（写作 / 规划 / Agent 决策）—— 但<strong>训 RM 本身需要海量人工偏好标注</strong>，每万样本 ~$10K 起。</li>
+        </ul>
+
+        <p>
+          V4 的关键一跳：<strong>把 RM 也变成 generative</strong>。给 GRM 一个 trajectory，让它<em>先 think 再打分</em>：
+        </p>
+
+        <pre><code>&lt;think&gt;
+这个回答的优点是 ... 但在 X 处明显犯了 Y 错误，因为 ...
+&lt;/think&gt;
+score: 6/10</code></pre>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 GRM 为什么能 work</div>
+          <p>三件事一起作用：</p>
+          <ol>
+            <li><strong>复用 actor 已有的 reasoning 能力</strong>：scalar RM 是从头训的小模型；GRM 直接<em>用 actor 同样的 backbone 在评分模式下推理</em>，相当于"模型给自己当评委" —— actor 知道的东西 GRM 也知道；</li>
+            <li><strong>解释能力是抗 reward hacking 的护城河</strong>：scalar RM 给 9.5 分但不解释，hack 容易（学会"凡是包含某 trigger 词都给高分"）；GRM 必须在 think 段落里<em>说出理由</em>，hack 成本陡升 —— 模型要同时学会"骗高分"和"自圆其说"；</li>
+            <li><strong>小批人工标注 → 大量自标注</strong>：人工只标 ~1K 高质量 (trajectory, reasoning, score) 三元组训 GRM 起步，之后让 GRM 给 99% 的 trajectory 自打分。<em>10 万样本的标注成本从 $100K 降到 $1K 数量级</em>。</li>
+          </ol>
+          <p>从工程哲学上，GRM 是 V4 的"<em>把判别问题转成生成问题</em>"姿态在 reward 上的延伸 —— 与 SwiGLU 的乘性结构、CSA 的 Lightning Indexer 同根（用模型已有能力替专门组件）。</p>
+        </div>
+
+        <h3 id="effort">4. 三档 Reasoning Effort：让同一专家有三个推理 budget</h3>
+
+        <p>
+          同一个数学题，o1 / R1 这类模型可能 think 50 token 就答出来，也可能 think 5000 token 探索多条路。两者都是有价值的：日常对话不需要 5000 token thinking 的延迟，但奥数题需要。V4 把这件事做成<strong>三档训练</strong>：
+        </p>
+
+        <div class="config-table">
+          <table>
+            <thead>
+              <tr><th>档</th><th>响应格式</th><th>RL ctx</th><th>length penalty</th><th>典型场景</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><strong>Non-think</strong></td><td><code>&lt;/think&gt;</code> + 直接答</td><td>8K</td><td>强</td><td>日常对话 / 低风险</td></tr>
+              <tr><td><strong>Think High</strong></td><td><code>&lt;think&gt;…&lt;/think&gt;</code> + 答</td><td>128K</td><td>中</td><td>规划 / 中风险决策</td></tr>
+              <tr><td><strong>Think Max</strong></td><td>+ 系统强约束 prompt + 完整 thinking</td><td>384K</td><td>弱</td><td>奥数 / 极限推理</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Think Max 在 system prompt 前注入一段强制深度思考的指令（论文 Table 3，简言之就是"绝对最大推理强度，必须穷尽所有路径与对抗场景"）。这条 system prompt 不是简单的 hint，而是<em>训练时和推理时都用</em>的一致约束 —— RL 时模型在这个 prompt 下被 length penalty 弱化、context 拉到 384K，于是学会"在被允许长 think 时确实长 think"。
+        </p>
+
+        <!-- ================== VIZ: 三档 effort ================== -->
+        <div class="viz" id="viz-effort">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 三档 reasoning effort 的 token budget vs benchmark accuracy（拖动看 budget 如何决定档位）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 340" id="effort-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- axes -->
+            <line x1="60" y1="290" x2="700" y2="290" stroke="#1c2433" stroke-width="1"/>
+            <line x1="60" y1="40" x2="60" y2="290" stroke="#1c2433" stroke-width="1"/>
+
+            <!-- gridlines -->
+            <line x1="60" y1="240" x2="700" y2="240" stroke="#e5e7eb"/>
+            <line x1="60" y1="190" x2="700" y2="190" stroke="#e5e7eb"/>
+            <line x1="60" y1="140" x2="700" y2="140" stroke="#e5e7eb"/>
+            <line x1="60" y1="90" x2="700" y2="90" stroke="#e5e7eb"/>
+
+            <!-- y-axis labels (accuracy %) -->
+            <text x="55" y="293" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">40</text>
+            <text x="55" y="243" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">55</text>
+            <text x="55" y="193" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">70</text>
+            <text x="55" y="143" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">85</text>
+            <text x="55" y="93" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">100</text>
+
+            <!-- x-axis labels (token budget log scale) -->
+            <text x="60" y="306" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">100</text>
+            <text x="200" y="306" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">1K</text>
+            <text x="350" y="306" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">8K</text>
+            <text x="500" y="306" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">128K</text>
+            <text x="650" y="306" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">384K</text>
+            <text x="380" y="328" font-size="10" fill="#94a3b8" font-family="Inter" text-anchor="middle">推理 token 预算（log）</text>
+            <text x="20" y="170" font-size="10" fill="#94a3b8" font-family="Inter" transform="rotate(-90 20 170)">benchmark 精度 %</text>
+
+            <!-- accuracy curves -->
+            <path id="effort-easy" fill="none" stroke="#16a34a" stroke-width="2"/>
+            <path id="effort-mid"  fill="none" stroke="#71a4e1" stroke-width="2"/>
+            <path id="effort-hard" fill="none" stroke="#dc2626" stroke-width="2"/>
+
+            <!-- vertical effort markers -->
+            <line x1="350" y1="40" x2="350" y2="290" stroke="#cbd5e1" stroke-width="0.7" stroke-dasharray="3,3"/>
+            <line x1="500" y1="40" x2="500" y2="290" stroke="#cbd5e1" stroke-width="0.7" stroke-dasharray="3,3"/>
+            <line x1="650" y1="40" x2="650" y2="290" stroke="#cbd5e1" stroke-width="0.7" stroke-dasharray="3,3"/>
+            <text x="350" y="36" text-anchor="middle" font-size="10" fill="#475569" font-family="Inter">Non-think 8K</text>
+            <text x="500" y="36" text-anchor="middle" font-size="10" fill="#475569" font-family="Inter">Think High 128K</text>
+            <text x="650" y="36" text-anchor="middle" font-size="10" fill="#475569" font-family="Inter">Think Max 384K</text>
+
+            <!-- current budget marker -->
+            <line id="effort-marker" stroke="#1c2433" stroke-width="1.5" stroke-dasharray="2,2"/>
+            <circle id="effort-dot-easy" r="4.5" fill="#16a34a" stroke="#fff" stroke-width="1"/>
+            <circle id="effort-dot-mid"  r="4.5" fill="#71a4e1" stroke="#fff" stroke-width="1"/>
+            <circle id="effort-dot-hard" r="4.5" fill="#dc2626" stroke="#fff" stroke-width="1"/>
+
+            <!-- legend -->
+            <g transform="translate(440, 50)">
+              <line x1="0" y1="6" x2="20" y2="6" stroke="#16a34a" stroke-width="2"/>
+              <text x="26" y="10" font-size="11" fill="#1c2433">日常对话（饱和早）</text>
+              <line x1="0" y1="22" x2="20" y2="22" stroke="#71a4e1" stroke-width="2"/>
+              <text x="26" y="26" font-size="11" fill="#1c2433">规划 / 中等推理</text>
+              <line x1="0" y1="38" x2="20" y2="38" stroke="#dc2626" stroke-width="2"/>
+              <text x="26" y="42" font-size="11" fill="#1c2433">奥数 / 极限推理</text>
+            </g>
+          </svg>
+          <div class="viz-controls">
+            <label>推理 token 预算
+              <input type="range" id="effort-slider" min="0" max="100" step="1" value="35" style="width:240px">
+              <span class="viz-readout"><span id="effort-readout">8K</span></span>
+            </label>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：三条曲线是三类任务难度的"精度 vs token budget"关系。绿线（日常对话）在 1K token 就饱和；蓝线（中等推理）在 8K–128K 之间陡升；红线（奥数）在 128K 之后还在涨，需要 384K 才接近上限。
+            <br>
+            把滑条拉到 <strong>Non-think 区</strong>（8K 以下）你能看到红线还在 ~50% 半饱和；拉到 <strong>Think Max</strong>（>128K）红线接近 ~85% —— 这就是 V4 必须做三档训练的原因：<em>不同任务的最优 budget 差 100×+</em>，固定 budget 总有一档浪费或一档不够。
+          </p>
+        </div>
+
+        <!-- ================== §5 Cookbook ================== -->
+        <h3 id="cookbook">5. 一个 Specialist 的训练 cookbook</h3>
+        <ol>
+          <li><strong>起点</strong>：从 V4-Pro/Flash-Base 出发（Ch15 Base 评测里的"高 ceiling"基座）；</li>
+          <li><strong>SFT</strong>：用领域内高质量 (prompt, gold answer) 对走 1-2 epoch SFT，让模型学到领域 schema 与基本回答格式；</li>
+          <li><strong>RL（GRPO）</strong>：每个 prompt 采 G=8 条 rollout，按 GRPO advantage 更新。Reward 视任务而定 —— 数学 rule-based、代码 unit-test、其余 GRM；</li>
+          <li><strong>三档 effort 各跑一遍</strong>：分别在 8K / 128K / 384K context + 不同 length penalty 下 RL，得到 Non-think / High / Max 三个 checkpoint；</li>
+          <li><strong>交付</strong>：N 个领域 × 3 档 = ~30 个 specialist checkpoint，全部 frozen，作为 Ch18 OPD 阶段的"老师团"。</li>
+        </ol>
+
+        <div class="callout callout-good">
+          <div class="callout-title">为什么这是"备料"而不是"成品"</div>
+          <p>
+            specialist 在自己的领域内强但<em>不全面</em>：数学 specialist 不会处理 Agent 工具调用，代码 specialist 不会做长写作。直接把 N 个 checkpoint 部署也不可行 —— 用户不会按领域选模型。
+            <br>
+            真正的 V4-Pro / Flash 是 Ch18 OPD 把这 30 个 checkpoint <strong>蒸成一个 student</strong>。所以本章训出的所有东西<em>都不会发布</em>，只是中间产物。这种"花大力气训一堆只为蒸馏"的做法在开源社区罕见，但对最终 ceiling 是值的。
+          </p>
+        </div>
+
+        <!-- ================== §6 论文图占位 ================== -->
+        <h3 id="figs">6. 论文图复刻</h3>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch16/01</span>
+          <p class="fig-want">需要：V4 论文 §4.1 后训练总览图，含 Specialist Stage（N 个领域 × 3 档 effort）→ OPD Stage → 最终 V4-Pro/Flash 的两阶段流水图。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.1，Figure 6 / 流水图（待补）</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch16/02</span>
+          <p class="fig-want">需要：Table 2 / Table 3 —— 三档 reasoning effort 的训练超参（context 长度 / length penalty / system prompt）+ Think Max 模式的强约束 prompt 全文。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.1.3，Table 2 + Table 3（待补）</p>
+        </div>
+
+        <h3 id="summary">7. 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>Specialist 阶段把 V3 的"混合 RL 一锅端"拆成<em>"先 N 个领域专家、再合一"</em>两阶段；GRPO 用<strong>组内统计 baseline</strong> 替掉 critic 让 N 倍并行成立，GRM 用<strong>生成式打分</strong>把 hard-to-verify 任务的标注成本降两个数量级，三档 reasoning effort 让同一专家覆盖 100× 的推理 budget 跨度。这一切都是在为 Ch18 OPD 的"反向 KL 蒸馏"备料。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: 三档 reasoning effort 的 token budget vs accuracy
+     ============================================================ -->
+<script>
+(function() {
+  // x maps token budget (log scale 100..384K) to pixel 60..700
+  // log10(100)=2, log10(384000)≈5.58
+  const X0 = 60, X1 = 700, LOG_MIN = 2, LOG_MAX = Math.log10(384000);
+  // y maps accuracy 40..100 to pixel 290..90
+  const Y0 = 290, Y1 = 90, ACC_MIN = 40, ACC_MAX = 100;
+
+  function tokenToX(t) {
+    const k = Math.log10(Math.max(100, t));
+    const r = (k - LOG_MIN) / (LOG_MAX - LOG_MIN);
+    return X0 + r * (X1 - X0);
+  }
+  function accToY(a) {
+    const r = (a - ACC_MIN) / (ACC_MAX - ACC_MIN);
+    return Y0 - r * (Y0 - Y1);
+  }
+  // slider 0..100 maps to log token 100..384K
+  function sliderToTokens(s) {
+    const k = LOG_MIN + (s / 100) * (LOG_MAX - LOG_MIN);
+    return Math.pow(10, k);
+  }
+
+  // saturating accuracy curves of form: a_inf - (a_inf - a_0) * exp(-t / tau)
+  // easy: saturates fast (tau small)
+  // mid:  saturates around 8K
+  // hard: saturates around 100K
+  function accEasy(t) {
+    return 95 - 50 * Math.exp(-t / 800);
+  }
+  function accMid(t) {
+    return 88 - 40 * Math.exp(-t / 18000);
+  }
+  function accHard(t) {
+    return 86 - 42 * Math.exp(-t / 90000);
+  }
+
+  function buildPath(fn) {
+    let d = '';
+    for (let i = 0; i <= 200; i++) {
+      const r = i / 200;
+      const k = LOG_MIN + r * (LOG_MAX - LOG_MIN);
+      const t = Math.pow(10, k);
+      const a = fn(t);
+      const px = tokenToX(t), py = accToY(a);
+      d += (i === 0 ? 'M' : 'L') + px.toFixed(1) + ',' + py.toFixed(1) + ' ';
+    }
+    return d;
+  }
+
+  document.getElementById('effort-easy').setAttribute('d', buildPath(accEasy));
+  document.getElementById('effort-mid').setAttribute('d',  buildPath(accMid));
+  document.getElementById('effort-hard').setAttribute('d', buildPath(accHard));
+
+  function fmtTokens(t) {
+    if (t >= 1000) return (t / 1000).toFixed(t < 10000 ? 1 : 0) + 'K';
+    return t.toFixed(0);
+  }
+
+  function update(s) {
+    const t = sliderToTokens(s);
+    document.getElementById('effort-readout').textContent = fmtTokens(t);
+    const px = tokenToX(t);
+    document.getElementById('effort-marker').setAttribute('x1', px);
+    document.getElementById('effort-marker').setAttribute('x2', px);
+    document.getElementById('effort-marker').setAttribute('y1', 40);
+    document.getElementById('effort-marker').setAttribute('y2', 290);
+    document.getElementById('effort-dot-easy').setAttribute('cx', px);
+    document.getElementById('effort-dot-easy').setAttribute('cy', accToY(accEasy(t)));
+    document.getElementById('effort-dot-mid').setAttribute('cx', px);
+    document.getElementById('effort-dot-mid').setAttribute('cy', accToY(accMid(t)));
+    document.getElementById('effort-dot-hard').setAttribute('cx', px);
+    document.getElementById('effort-dot-hard').setAttribute('cy', accToY(accHard(t)));
+  }
+
+  document.getElementById('effort-slider').addEventListener('input', e => {
+    update(parseInt(e.target.value, 10));
+  });
+  update(35);
+})();
+</script>
+</body>
+</html>

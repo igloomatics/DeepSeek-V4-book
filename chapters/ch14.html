@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 14 · Anticipatory + SwiGLU — 长序列的稳定带</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch14">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 14 · Anticipatory + SwiGLU</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part3.html">第三部分 · 预训练</a><span class="sep">/</span>Ch 14</div>
+
+      <article id="ch14" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第三部分 · 预训练 · 14</div>
+        <h2 class="chapter-title">Anticipatory + SwiGLU — 长序列的稳定带</h2>
+        <p class="chapter-sub">两个朴素到几乎"配方级"的稳定性 trick：把 router 的更新时刻往前挪 Δt 步、把 SwiGLU 的线性 / 门控分量分别钳到 [-10,10] / ≤10。论文罕见地写"理论解释还不够，先开源给社区"——这一章把"为什么有效"补上去。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"两条稳定带"</div>
+          <p class="term-name">Anticipatory Routing = 路由用 $\theta_{t-\Delta t}$ 算 index、特征用 $\theta_t$ 算激活；SwiGLU Clamping = 线性分量 $[-10, 10]$ / 门控分量 $\le 10$ 的硬钳位</p>
+          <p>
+            一句话：<strong>spike 经常源自路由把 outlier 放大成全局正反馈，钳位经常是"局部 outlier 被 SwiGLU 的乘性结构指数放大"</strong>。
+            两个 trick 的核心都是<em>把"会失控的子系统"短暂或永久地隔离出主路径</em> —— 与 mHC（Ch3）"残差矩阵从主干隔出"是同一个工程哲学。
+          </p>
+          <dl>
+            <dt>Loss Spike（损失尖峰）</dt>
+            <dd>训练曲线突然从 $\sim 2.0$ 跳到 $\sim 5.0$ 甚至 NaN 的现象。1.6T 模型上几乎周期性出现。<em>根因之一</em>：MoE 路由把某个 outlier token 推向所有 expert（路由分布塌陷成 one-hot），导致 expert 输出爆炸 → 残差爆炸 → 整层 NaN。<strong>是 LLM 工程化的头号敌人</strong>。</dd>
+
+            <dt>MoE Router（路由网络）</dt>
+            <dd>计算 $r = \mathrm{softmax}(W_r \cdot x)$，按 top-$k$ 选 expert。$W_r$ 是路由权重矩阵。<em>问题</em>：$W_r$ 跟主干一起训，<strong>当 $x$ 出现 outlier 时 $W_r \cdot x$ 也出 outlier</strong>，softmax 塌成 one-hot，路由失稳。</dd>
+
+            <dt>$\theta_t$ vs $\theta_{t-\Delta t}$（参数解耦）</dt>
+            <dd>$\theta_t$ = 当前 step 的全部参数；$\theta_{t-\Delta t}$ = $\Delta t$ 步前的快照。Anticipatory 的核心：<em>路由 index 用 $\theta_{t-\Delta t}$ 中的 $W_r$ 算</em>，而 expert 内部权重和主干仍用 $\theta_t$。<strong>路由的更新慢半拍</strong>，从而对当前 batch 的 outlier 不敏感。</dd>
+
+            <dt>Anticipatory（前瞻 / 提前 fetch）</dt>
+            <dd>具体实现：在 step $t-\Delta t$ 时就把"将来 step $t$ 要用的路由 index"算好缓存起来。$\Delta t$ 步后，主干用最新 $\theta_t$ 算激活，但路由 index 直接读缓存（用的是历史 $\theta$）。<em>开销 ~20%</em>（要多跑一次 router 前向 + EP 通信，但与 EP 通信 overlap），<em>仅在 spike 检测器触发时启用</em>。</dd>
+
+            <dt>SwiGLU（Shazeer 2020）</dt>
+            <dd>$\mathrm{SwiGLU}(x) = (W_g x \odot \sigma(W_g' x)) \cdot W_o$ —— 其中 $W_g x$ 是<em>线性分量</em>，$\sigma(W_g' x)$ 是 sigmoid 门控（亦写作 $\mathrm{SiLU}$ 形式 $\sigma(z)\cdot z$）。<strong>乘性结构是其表达力的来源，也是 outlier 放大器</strong>：两个 ~5 的值相乘成 ~25，再过 $W_o$ 又是一次放大。</dd>
+
+            <dt>Outlier（异常激活值）</dt>
+            <dd>训练中正常激活范数 ~$O(1)$，但偶尔出现某个 channel 上 ~10–100 的极端值。来源多：(1) 罕见 token 在某 head 触发；(2) RoPE 在长序列下某些频率累积；(3) MoE 某个 expert 训练不足。<em>SwiGLU 把它们指数放大，路由把它们变成 one-hot —— 两条都是稳定性杀手</em>。</dd>
+
+            <dt>Clamping（硬钳位 / 截断）</dt>
+            <dd>$\mathrm{clamp}(x, a, b) = \min(\max(x, a), b)$。比 LayerNorm / RMSNorm 更暴力的截断方式，<em>无参数</em>。优点：单次前向就能杀掉 outlier；缺点：在边界处梯度为 0，模型可能"学不到"边界外的有用信号。<strong>V4 的实证结论：[-10,10] 阈值下，性能不掉、稳定性大涨</strong>。</dd>
+
+            <dt>实证主义（"先开源，理论再说"）</dt>
+            <dd>论文罕见地写"理论解释还不充分"。这是 DeepSeek 工程文化的体现：<em>1.6T 训练上反复证明有效就值得公开</em>，藏起来反而是社区损失。这种实证 &gt; 解释的姿态，本身是 V4 报告值得学习的部分。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>这两个 trick 都不"治本"，但都"治标"得极好 —— Anticipatory 把路由的反馈环延迟 Δt 步打断正反馈，Clamping 把 SwiGLU 的乘性放大器加上电压保护。它们与 Ch11 的训练框架优化、Ch9 的 bit-identical 一起，让 V4 的 1.6T 训练真的能跑完 60 天而不爆。</div>
+        </div>
+
+        <!-- ================== §1 spike 的解剖 ================== -->
+        <h3 id="anatomy">1. Loss Spike 的解剖：路由 + SwiGLU 的双正反馈</h3>
+        <p>
+          要理解这两条 trick 为什么有效，先看 spike 是怎么诞生的。在 1.6T MoE 训练里，一次 spike 的<em>典型时序</em>：
+        </p>
+        <ol>
+          <li><strong>$t=0$</strong>：某个 batch 含罕见 token 序列（如 base64 编码、emoji 集群）；</li>
+          <li><strong>$t=0$ 内</strong>：该 token 在某层产生 outlier 激活 $\|x\|$ ~ 50（正常 ~1）；</li>
+          <li><strong>$t=0$ 内</strong>：路由 $W_r \cdot x$ 也跟着 ~50，softmax 塌成 one-hot 全发某 expert；</li>
+          <li><strong>$t=0$ 内</strong>：那个 expert 收到全部流量，SwiGLU 乘性结构把 50 ×50 → 2500，再过 $W_o$ → 输出范数 ~200；</li>
+          <li><strong>$t=1$</strong>：反向梯度 $\nabla W_r \propto x \cdot \nabla r$ 也是 ~50 量级，<strong>$W_r$ 朝"再次塌成 one-hot 那个方向"被推</strong> → 下次相似 token 时 spike 更严重；</li>
+          <li><strong>几步内</strong>：路由完全固化，所有流量都去那个 expert，其他 expert 失活，loss 一路飞。</li>
+        </ol>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · spike 的指数放大链</span>
+          假设 outlier token 在某层制造 $\|x\| = 50$（正常 ~1）：
+          <ul>
+            <li><strong>SwiGLU 的双线性结构</strong>：线性分量 ~50，门控 sigmoid 饱和到 ~1，乘积 ~50。再过 $W_o$（按 Frobenius 范数 ~3），输出 ~150；</li>
+            <li><strong>路由的 softmax 塌陷</strong>：$\mathrm{softmax}([50, 1, 1, ..., 1])$ 第一项 $\approx 1$，其余 $\approx 0$。<em>top-6 被压成 top-1</em>；</li>
+            <li><strong>残差累积</strong>：mHC 残差 $\|B\| \approx 1.05$ 下放大 $1.05^{61} \approx 18\times$，输出 ~2700；</li>
+            <li><strong>loss 跳变</strong>：cross-entropy 对 logits 范数敏感，$\|z\| = 2700$ 量级让 softmax 塌成 one-hot 错误预测，<strong>单 token loss 从 ~2 跳到 ~20</strong>。</li>
+          </ul>
+          这条链的每一步单独看都"小",合起来就是 spike。两条 trick 各斩断一环：<strong>Anticipatory 切第 5 步（路由的反馈环）；Clamping 切第 1 步（outlier 进 SwiGLU 前直接钳到 10）</strong>。
+        </div>
+
+        <!-- ================== §2 Anticipatory Routing ================== -->
+        <h3 id="anticipatory">2. Anticipatory Routing：路由的更新慢半拍</h3>
+        <p>
+          做法：路由 index 在 step $t-\Delta t$ 就用<em>当时的</em> $W_r^{(t-\Delta t)}$ 算好缓存。当训练走到 step $t$ 时：
+        </p>
+
+        <div class="math-block">
+          $$
+          \underbrace{r_t}_{\text{路由 index}} \;=\; \mathrm{topk}\!\left( W_r^{\,(t-\Delta t)} \cdot x_t \right), \qquad
+          \underbrace{y_t}_{\text{激活}} \;=\; \sum_{i \in r_t} \mathrm{Expert}_i^{\,(t)}(x_t)
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条公式翻成大白话是<strong>"路由用旧权重选 expert，expert 内部用新权重算激活"</strong>：</p>
+          <ol>
+            <li><strong>$W_r^{(t-\Delta t)}$</strong>：$\Delta t$ 步前缓存下来的路由权重 —— 这是<em>慢的部分</em>，对当前 batch 的 outlier 不敏感；</li>
+            <li><strong>$x_t$</strong>：当前 step 真实激活 —— 即使 $x_t$ 出现 outlier，乘以的 $W_r$ 是旧版，<em>没有被它"教坏"过</em>；</li>
+            <li><strong>$\mathrm{topk}$</strong>：照常选 top-$k$ expert；</li>
+            <li><strong>$\mathrm{Expert}_i^{(t)}$</strong>：expert 内部权重用最新 $\theta_t$ —— 这是<em>快的部分</em>，正常学习；</li>
+            <li><strong>$x_t$ 仍走 $\theta_t$ 主干</strong>：所以特征质量不受影响。</li>
+          </ol>
+          <p><strong>关键洞察</strong>：spike 的正反馈环 是 "outlier $x$ → $W_r \cdot x$ outlier → $\nabla W_r$ 朝 outlier 方向 → 下次更 outlier"。<em>把 $W_r$ 推迟 $\Delta t$ 步</em> 等于在反馈环里插了一段"延时电路"，它来不及响应这个 batch 的 outlier，等几步后噪声平均掉了，反馈环就<strong>断了</strong>。这就是为什么"治标"（不修 $W_r$ 本身）也能治住 spike。</p>
+        </div>
+
+        <h4 id="when">2.1 触发条件 + 开销</h4>
+        <p>
+          Anticipatory 不是常开的。它只在<strong>spike 检测器</strong>报警时才启用：
+        </p>
+        <ul>
+          <li>检测器：监控 router output 的<em>熵</em>，当熵在几步内 ↓ 超过阈值（说明分布在塌陷成 one-hot）→ 触发；</li>
+          <li>触发后 ~100 step 持续启用 anticipatory，让反馈环冷却；</li>
+          <li>稳定后回退 standard router；</li>
+          <li>开销：anticipatory 模式下 ~20%（多算一次 router 前向、与 EP 通信 overlap），<em>正常模式 0 开销</em>。</li>
+        </ul>
+
+        <p>
+          所以训练总开销几乎无感（按 spike 触发率 ~2% step 估算，wall-time 增加 0.4%），<strong>但 spike 频率从每 2K step 一次降到几乎为 0</strong>。
+
+        </p>
+
+        <!-- ================== VIZ: SwiGLU clamp ================== -->
+        <h3 id="swiglu">3. SwiGLU Clamping：把乘性放大器加电压保护</h3>
+        <p>
+          SwiGLU 的核心结构是<em>线性分量 × sigmoid 门控</em>：
+        </p>
+        <div class="math-block">
+          $$
+          \mathrm{SwiGLU}(x) \;=\; \big(\underbrace{W_g x}_{\text{线性 }g}\big) \;\odot\; \big(\underbrace{\sigma(W_u x) \cdot W_u x}_{\text{SiLU 门控 }u}\big)
+          $$
+        </div>
+        <p>
+          V4 的钳位规则简单粗暴：
+        </p>
+        <div class="math-block">
+          $$
+          g \leftarrow \mathrm{clamp}(g, -10, 10), \qquad u \leftarrow \min(u, 10)
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这两条钳位翻成大白话是<strong>"线性分量给上下界电压保护，门控分量只防爆顶"</strong>：</p>
+          <ol>
+            <li><strong>$g \leftarrow \mathrm{clamp}(g, -10, 10)$</strong>：线性分量是<em>对称的</em>（可正可负），$\pm 10$ 双向截断。$\pm 10$ 这个值远超正常激活的 ±3-4，所以正常 token 不受影响；</li>
+            <li><strong>$u \leftarrow \min(u, 10)$</strong>：门控经过 SiLU 后<em>近似 ReLU</em>（负值被压到 0 附近），只需要防上爆；</li>
+            <li><strong>无下界</strong>：因为 SiLU 本身能处理负值（导数小但非 0），不需要钳。</li>
+          </ol>
+          <p>这条 clamp 的关键性质是<em>对正常激活完全无感</em> —— 99.9% 的 token 激活在 $|g| \le 4$ 区间，钳位不触发。但 0.1% 的 outlier 触发后，乘积 $g \cdot u \le 100$，<strong>而非未钳位时的 $\sim 50 \times 50 = 2500$</strong>。一刀斩掉 25× 的乘性放大。</p>
+        </div>
+
+        <div class="viz" id="viz-swiglu">
+          <div class="viz-head">
+            <div class="viz-title">Demo · SwiGLU 钳位前后的输出曲线（拖动 outlier 强度看放大效应）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 320" id="swiglu-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- axes -->
+            <line x1="60" y1="280" x2="690" y2="280" stroke="#1c2433" stroke-width="1"/>
+            <line x1="60" y1="20" x2="60" y2="280" stroke="#1c2433" stroke-width="1"/>
+
+            <!-- gridlines -->
+            <line x1="60" y1="170" x2="690" y2="170" stroke="#e5e7eb"/>
+            <line x1="60" y1="220" x2="690" y2="220" stroke="#e5e7eb"/>
+            <line x1="60" y1="120" x2="690" y2="120" stroke="#e5e7eb"/>
+            <line x1="60" y1="70" x2="690" y2="70" stroke="#e5e7eb"/>
+
+            <!-- y-axis labels (output magnitude, log scale 1..1000) -->
+            <text x="55" y="284" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">1</text>
+            <text x="55" y="224" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">10</text>
+            <text x="55" y="174" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">10²</text>
+            <text x="55" y="124" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">10³</text>
+            <text x="55" y="74" text-anchor="end" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">10⁴</text>
+            <text x="20" y="160" font-size="10" fill="#94a3b8" font-family="Inter" transform="rotate(-90 20 160)">|SwiGLU 输出| (log)</text>
+
+            <!-- x-axis labels (input |x|, 0..50) -->
+            <text x="60" y="298" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">0</text>
+            <text x="186" y="298" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">10</text>
+            <text x="312" y="298" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">20</text>
+            <text x="438" y="298" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">30</text>
+            <text x="564" y="298" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">40</text>
+            <text x="690" y="298" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">50</text>
+            <text x="375" y="316" font-size="10" fill="#94a3b8" font-family="Inter" text-anchor="middle">输入激活范数 |x|</text>
+
+            <!-- curves -->
+            <path id="swiglu-raw" fill="none" stroke="#dc2626" stroke-width="2.2"/>
+            <path id="swiglu-clamped" fill="none" stroke="#16a34a" stroke-width="2.2"/>
+
+            <!-- current input marker -->
+            <line id="swiglu-marker" stroke="#71a4e1" stroke-width="1.5" stroke-dasharray="4,3"/>
+            <circle id="swiglu-dot-raw" r="5" fill="#dc2626"/>
+            <circle id="swiglu-dot-clamped" r="5" fill="#16a34a"/>
+
+            <!-- legend -->
+            <g transform="translate(440, 30)">
+              <line x1="0" y1="6" x2="20" y2="6" stroke="#dc2626" stroke-width="2.2"/>
+              <text x="26" y="10" font-size="11" fill="#1c2433">未钳位 SwiGLU</text>
+              <line x1="0" y1="24" x2="20" y2="24" stroke="#16a34a" stroke-width="2.2"/>
+              <text x="26" y="28" font-size="11" fill="#1c2433">[-10,10] 钳位后</text>
+            </g>
+
+            <!-- readouts -->
+            <text x="80" y="40" font-size="11" fill="#1c2433">当前 |x| = <tspan id="swiglu-x-readout" font-family="JetBrains Mono">3.0</tspan> · 未钳 |out| = <tspan id="swiglu-raw-readout" fill="#dc2626" font-family="JetBrains Mono">9.0</tspan> · 钳后 = <tspan id="swiglu-clamp-readout" fill="#16a34a" font-family="JetBrains Mono">9.0</tspan> · 倍数差 = <tspan id="swiglu-ratio" font-family="JetBrains Mono" font-weight="600">1.0×</tspan></text>
+          </svg>
+          <div class="viz-controls">
+            <label>outlier 强度 |x|
+              <input type="range" id="swiglu-slider" min="0.5" max="50" step="0.5" value="3" style="width:240px">
+              <span class="viz-readout" id="swiglu-readout">3.0</span>
+            </label>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：横轴是输入激活范数 $|x|$，纵轴是 SwiGLU 输出范数（log 标度）。红线是未钳位的 SwiGLU $\sim x^2$ 增长（线性 × 门控），<em>$|x|=50$ 时输出已 ~2500</em>。绿线是钳位后：在 $|x| \le 10$ 段两条重合（钳位不触发，正常学习），$|x| > 10$ 后绿线被截断在 ~100。
+            <br>
+            把滑条拉到 <strong>30 以上</strong>看"倍数差" —— 钳位让最严重的 outlier 输出降低 25×+，<em>这就是单步 spike 被切断的根因</em>。99.9% token 在 $|x| \le 4$ 区间，钳位对它们等同 no-op。
+          </p>
+        </div>
+
+        <h3 id="philosophy">4. 工程哲学：先承认子系统会发散，再把发散关在小窗口</h3>
+        <div class="callout callout-good">
+          <div class="callout-title">两个 trick 共享的姿态</div>
+          <p>
+            Anticipatory Routing 和 SwiGLU Clamping 看似无关，但它们共享一种<em>反"完美主义"</em>的工程姿态：
+          </p>
+          <ol>
+            <li><strong>不假装子系统永远正常</strong>：路由会塌陷、SwiGLU 会爆，<em>这是物理事实</em>，不可能靠纯优化消除；</li>
+            <li><strong>但限制爆炸的传播半径</strong>：路由爆 → 延迟 $\Delta t$ 步让反馈断；SwiGLU 爆 → 钳位让乘积有上界；</li>
+            <li><strong>正常路径完全无干扰</strong>：trigger 触发率 &lt;1%，正常 token 走原路径；</li>
+            <li><strong>实证 &gt; 解释</strong>：DeepSeek 老实承认理论尚不充分，但 1.6T 训练上反复验证有效。</li>
+          </ol>
+          <p>这与 mHC（Ch3）"残差矩阵从主干隔出"、Ch9 "批不变换可调试性"是同一种姿态：<strong>把"难驯服"的子系统物理隔离，而不是花无穷力气让它"完美"</strong>。这就是 V4 工程文化的核心。</p>
+        </div>
+
+        <h3 id="figs">5. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <div class="fig-tag">论文图占位</div>
+          <p class="fig-want">需要：V4 论文 §5.3 (训练稳定性) 中的 loss 曲线对比图 —— 无 anticipatory + 无 clamping 的 spike 频率 vs 全开后的曲线。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3，Figure 12 / 13（待补）</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <div class="fig-tag">论文图占位</div>
+          <p class="fig-want">需要：spike 触发时 router output 熵的下降曲线 + anticipatory 启停的时间标记。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3 附录或 Figure 14（待补）</p>
+        </div>
+
+        <h3 id="summary">6. 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>spike 是"outlier → router 塌陷 / SwiGLU 放大"两条正反馈环的合谋；<strong>Anticipatory 把 router 那条延迟 $\Delta t$ 步打断，Clamping 把 SwiGLU 那条加电压保护</strong>。两者都不治本（outlier 仍然存在），但都"治标"得极好 —— 这就是 V4 在 1.6T 规模下能稳定训练 60 天的关键之一。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: SwiGLU clamping curve
+     ============================================================ -->
+<script>
+(function() {
+  // SwiGLU surrogate: f(x) = x * silu(x) ≈ x^2 for large x; with W_o gain ~1
+  // For visualization we use simplified |out| = x^2 (raw) vs clamp(x,10)^2 = min(x,10)^2
+  // y axis log scale: 1..1e4 maps to 280..70 (linear log10)
+  // x axis: 0..50 maps to 60..690
+
+  function xToPx(x) { return 60 + x / 50 * 630; }
+  function yToPx(y) {
+    // y = 10^k, k in [0, 4]; map k to [280, 70] (range 210)
+    const k = Math.log10(Math.max(0.5, y));
+    const clk = Math.max(0, Math.min(4, k));
+    return 280 - clk / 4 * 210;
+  }
+
+  function rawOut(x) {
+    // approximate SwiGLU magnitude: linear * silu ~ x * x * sigmoid(x)
+    // for x>0 sigmoid≈1 so ~x^2; we use this surrogate
+    return x * x;
+  }
+  function clampedOut(x) {
+    const xc = Math.min(x, 10);
+    return xc * xc;
+  }
+
+  function buildPath(fn) {
+    let d = '';
+    for (let i = 0; i <= 200; i++) {
+      const x = (i / 200) * 50;
+      if (x < 0.5) continue;
+      const y = fn(x);
+      const px = xToPx(x), py = yToPx(y);
+      d += (d === '' ? 'M' : 'L') + px.toFixed(1) + ',' + py.toFixed(1) + ' ';
+    }
+    return d;
+  }
+
+  document.getElementById('swiglu-raw').setAttribute('d', buildPath(rawOut));
+  document.getElementById('swiglu-clamped').setAttribute('d', buildPath(clampedOut));
+
+  function update(x) {
+    const rOut = rawOut(x);
+    const cOut = clampedOut(x);
+    document.getElementById('swiglu-readout').textContent = x.toFixed(1);
+    document.getElementById('swiglu-x-readout').textContent = x.toFixed(1);
+    document.getElementById('swiglu-raw-readout').textContent = rOut.toFixed(1);
+    document.getElementById('swiglu-clamp-readout').textContent = cOut.toFixed(1);
+    const ratio = rOut / cOut;
+    document.getElementById('swiglu-ratio').textContent = ratio.toFixed(1) + '×';
+
+    const px = xToPx(x);
+    document.getElementById('swiglu-marker').setAttribute('x1', px);
+    document.getElementById('swiglu-marker').setAttribute('x2', px);
+    document.getElementById('swiglu-marker').setAttribute('y1', 30);
+    document.getElementById('swiglu-marker').setAttribute('y2', 280);
+    document.getElementById('swiglu-dot-raw').setAttribute('cx', px);
+    document.getElementById('swiglu-dot-raw').setAttribute('cy', yToPx(rOut));
+    document.getElementById('swiglu-dot-clamped').setAttribute('cx', px);
+    document.getElementById('swiglu-dot-clamped').setAttribute('cy', yToPx(cOut));
+  }
+
+  document.getElementById('swiglu-slider').addEventListener('input', e => {
+    update(parseFloat(e.target.value));
+  });
+  update(3);
+})();
+</script>
+</body>
+</html>

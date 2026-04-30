@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 19 · RL / OPD 工程 — 后训练的发动机</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch19">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 19 · RL / OPD 工程</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part4.html">第四部分 · 后训练</a><span class="sep">/</span>Ch 19</div>
+
+      <article id="ch19" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第四部分 · 后训练 · 19</div>
+        <h2 class="chapter-title">RL / OPD 工程 — 后训练的发动机</h2>
+        <p class="chapter-sub">Ch18 把"OPD 为什么可行"讲完了；这一章只回答"它怎么跑得起"。trillion 级 teacher × 全词表 logit × 1M context × on-policy rollout 这四件事任一单独都能压垮集群，V4 用四个工程支柱（FP4 / Teacher Scheduling / WAL Rollout / Million-Token RL）把它们同时跑起。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"OPD 工程支柱"</div>
+          <p class="term-name">四个支柱 = (1) FP4 在 rollout/teacher/reference forward 全量启用；(2) Teacher Scheduling 把 N 个 trillion teacher 拆到中央存储 + 中央 hidden 缓冲 + GPU 上动态装载的 prediction head；(3) Token 粒度 WAL 让 rollout 抢占可恢复且无 length bias；(4) Million-Token RL 把 1M trajectory 切轻量元数据 + 重 per-token 字段</p>
+          <p>
+            一句话：<strong>把"原理上可行"翻译成"工程上能跑"</strong>。
+            OPD 的物理障碍是<em>显存（trillion teacher）+ 带宽（全词表 logit）+ 容错（on-policy rollout 抢占）+ 长度（1M context）</em> 四个独立瓶颈。每个支柱单独解决一个，缺一不可。
+            这一章是 V4 区别于其它开源蒸馏工作的<strong>真正护城河</strong> —— 没有这一节，trillion teacher × 全词表 KL 是 PPT。
+          </p>
+          <dl>
+            <dt>FP4 全量启用（在 rollout / teacher / reference forward）</dt>
+            <dd>Ch10 的 FP4 QAT 让<em>训练时的 forward</em>能用 FP4 权重 + 无损 dequant。OPD 阶段把这件事推到极致：<strong>所有 inference-only 路径（rollout、N 个 teacher 前向、reference 模型前向）全部走原生 FP4</strong>，只在 backward 路径维持 FP8。<em>动机</em>：teacher 与 reference 永远不更新，没必要 FP8 精度，FP4 砍内存 + 砍带宽。</dd>
+
+            <dt>Teacher Scheduling（教师调度）</dt>
+            <dd>OPD 框架要支持<em>任意多个 trillion teacher</em>同时算 logit。简单地"全部装显存"不可能（10 个 trillion ~ 10TB 权重）。V4 的方案：<strong>把 teacher 状态拆到三处</strong>—— ① 权重在中央分布式存储；② 前向 hidden state 在中央 buffer；③ 仅在需要时把对应 teacher 的 prediction head 动态装到 GPU。配合按 teacher index 排序的 batching，每个 head 整个训练 step 只装载一次。</dd>
+
+            <dt>Centralized Weight Offload（权重托管）</dt>
+            <dd>所有 teacher 权重写到分布式存储（3FS 或类似），用 ZeRO-like 方式按需切片加载到 GPU。<em>对比常驻 GPU</em>：常驻需要每张卡至少 ~100GB teacher 显存；offload 让 teacher 与 student 共享显存预算，<strong>训练时显存不爆</strong>。代价是 I/O，但与计算 overlap 后净开销可控。</dd>
+
+            <dt>不实例化 logits（never materialize）</dt>
+            <dd>关键工程 trick。$|V| > 100\text{K}$ 全词表 logits × batch × seq 体积比模型本身还大（见 Ch18 数值演练 2.6 TB/step）。V4 在 teacher forward 期间<em>只缓存最后一层 hidden state</em>到中央 buffer；训练时再把它过对应 teacher 的 prediction head 现场重建 logits + 直接算 KL，<strong>logits 张量从来不在显存上完整出现</strong>。</dd>
+
+            <dt>按 Teacher Index 排序的 batching</dt>
+            <dd>训练样本在 dispatch 阶段按"它属于哪个 teacher"排序后再 batch。结果：每个 GPU 每个 step <em>只看一个 teacher 的样本</em> → 这个 teacher 的 prediction head 装载一次后整步复用 → <strong>head 装载成本被 batch 摊薄到接近零</strong>。是把"动态装载"做成可承担的关键。</dd>
+
+            <dt>Async I/O（异步 I/O）</dt>
+            <dd>权重 / hidden state 的 load/unload 全部走<em>后台流</em>，不阻塞前向计算。等价于把 I/O 时间藏到计算下面（与 Ch7 MegaMoE 同思路）。需要双 buffer + 预取，但工程上是经典模式。</dd>
+
+            <dt>TileLang KL Kernel</dt>
+            <dd>student / teacher logits 的精确 KL 由专门 TileLang kernel（Ch8）计算，避免 PyTorch 动态显存分配带来的碎片。<em>动机</em>：每 step 算上万次 KL，PyTorch 的 op-by-op 调度会让显存 fragment 在几小时内累积爆炸；TileLang 的静态 layout 让 KL 张量始终在固定地址，<strong>0 fragmentation</strong>。</dd>
+
+            <dt>WAL（Write-Ahead Log，写前日志）</dt>
+            <dd>数据库经典技术。每次状态变更<em>先写到顺序日志</em>，再改主数据。崩溃恢复时凭日志重放。V4 RL 借这个思路：rollout 每生成 1 个 token 就 append 到 trajectory log，preempt 时凭 log + 落盘 KV 直接续 decode，<strong>不必从头重生</strong>。</dd>
+
+            <dt>Length Bias（长度偏差）</dt>
+            <dd>关键概念。短 trajectory 容易在 preempt 窗口内"完成"，长 trajectory 容易被中断。如果中断后<em>整体丢弃重跑</em>，训练数据中"成功生成"的样本被系统性偏向短回答。<strong>policy 学到"短答案更可能成功"的伪信号</strong> → distribution shift。Token 粒度 WAL 是为了让长 trajectory 也能"续上"，从根上消掉这个 bias。</dd>
+
+            <dt>Preemptible & Fault-Tolerant Rollout</dt>
+            <dd>大规模集群里 rollout 服务<em>常被高优任务抢占</em>（GPU 资源争用）+ <em>常发硬件故障</em>。RL 训练的 rollout 必须能在两种事件下保持训练数据无偏。WAL 同时解决这两个：preempt 时凭 WAL + 落盘 KV 续 decode；硬件错误时凭 WAL 已生成 token 重做 prefill 重建 KV。</dd>
+
+            <dt>1M Context RL 的 trajectory 切两类</dt>
+            <dd>1M token 的单条 rollout trajectory 含 ~60MB KV cache + ~10MB hidden states + 元数据。如果整体作为 one record 在 dispatch 阶段全部 load，单节点显存秒爆。V4 把 trajectory 拆 <em>lightweight metadata</em>（prompt、reward、长度等）和 <em>heavy per-token field</em>（每 token 的 logit / hidden / KV），dispatch 只 load 元数据做 shuffle/packing，重字段用<strong>共享内存 data loader</strong> 按需加载。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>这章是把 Ch18 OPD 的"为什么"和实际能跑之间的<em>砍刀</em>。四个支柱解决四个独立瓶颈：FP4 砍显存、Teacher Scheduling 砍 logit 体积、WAL 砍 length bias、Million-Token RL 砍 trajectory I/O。读完你应该能解释为什么 token-WAL 不是"普通断点续跑"而是消除 length bias 的关键。</div>
+        </div>
+
+        <!-- ================== §1 FP4 全量 ================== -->
+        <h3 id="fp4">1. FP4 在 OPD 的全量启用</h3>
+        <p>
+          Ch10 已经讲过 FP4 QAT 的核心 trick：FP32 master → FP4 → FP8 dequant 无损，让<em>训练 forward</em> 也能用 FP4 权重。OPD 阶段把这件事推到极致 —— 所有<strong>不需要 backward 的 forward 路径</strong>（rollout 推理、N 个 teacher 算 logit、reference 模型算 KL 基线）全部走原生 FP4。
+        </p>
+        <ul>
+          <li>rollout 与所有 inference-only forward（teacher、reference）使用<strong>原生 FP4 (MXFP4)</strong>；</li>
+          <li>训练 step 的 backward 仍走 FP8 主路径，FP4 → FP8 dequant 无损（Ch10 sub-block scale 嵌套），与现有 mixed-precision pipeline 无缝对接；</li>
+          <li>不用动 backward kernel，<em>显存与带宽却整体砍半</em>；</li>
+          <li>未来硬件如果做到原生 FP4×FP8 GEMM，单 token 还能再降 1/3 FLOPs。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · FP4 在 OPD 阶段省的显存</span>
+          一次 OPD step：student backward 占 forward 显存的 ~50%，teacher × N + reference + rollout 都是 inference-only forward。
+          <ul>
+            <li><strong>纯 FP8</strong>：1 个 student 训练（设占用 1.0×）+ 10 个 teacher（10×）+ 1 个 reference（1×）+ rollout（1×）= 13×；</li>
+            <li><strong>FP4 全量 inference + FP8 backward</strong>：student 训练 1.0× + 10 teacher × 0.5 = 5× + 1 reference × 0.5 = 0.5× + rollout × 0.5 = 0.5× = <strong>7×</strong>；</li>
+            <li>显存压力降到 7/13 ≈ <em>54%</em>，等价于 GPU 数 ÷2。</li>
+          </ul>
+          这部分省下来的预算正好抵消 teacher 数量增加带来的成本，<strong>不增加集群规模就能多挂几个 teacher</strong>。FP4 的"砍精度但不砍能力"在 OPD 阶段是关键。
+        </div>
+
+        <!-- ================== §2 Teacher Scheduling ================== -->
+        <h3 id="scheduling">2. Teacher Scheduling：让 N 个 trillion 教师同框</h3>
+        <p>
+          OPD 的核心瓶颈不是算 KL（那是廉价 GEMM），是<em>把 N 个 trillion teacher 同时供给 KL 计算</em>。论文给的工程套路是把 teacher 状态<strong>拆到三处</strong>，让任意时刻 GPU 上至多挂一个 teacher head：
+        </p>
+
+        <ol>
+          <li><strong>中央分布式存储</strong>装 teacher 权重（按 ZeRO-like 切片），按需加载；</li>
+          <li><strong>中央 buffer</strong>装<em>最后一层 hidden state</em>（teacher forward 的产物），训练时再过对应 prediction head 重建 logits；</li>
+          <li><strong>GPU 显存</strong>动态装载<em>当前 batch 用到的</em> teacher prediction head（仅最后一层）。</li>
+        </ol>
+
+        <p>
+          配合<strong>按 teacher index 排序的 batching</strong>：训练样本在 dispatch 阶段先按"属于哪个 teacher"排序，再分发到 GPU。每个 GPU 在一个 step 里<em>只看一个 teacher</em> → prediction head 装载一次后整步复用 → 装载成本被摊薄到几乎零。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 三处状态拆分的物理账</div>
+          <p>这里的核心是把"全部 teacher 全部 logit"这个不可能装进 GPU 的对象，<em>分时分空间</em>地散到三处：</p>
+          <ol>
+            <li><strong>权重</strong>：从中央存储按需切片加载 → I/O 是瓶颈，但与计算 overlap 可吃掉；</li>
+            <li><strong>Hidden state</strong>（每 token 一个 $d$ 维向量，$d=7168$）：体积是 logits 的 $1/|V| \approx 1/18$，<em>能装进 GPU 中央 buffer</em>；</li>
+            <li><strong>Logits</strong>：从来不在显存里完整出现，<em>用一次算一次扔一次</em>，靠 hidden + prediction head 现场重建。</li>
+          </ol>
+          <p>合起来：<strong>"GPU 永远只看到 1 个 teacher 的 1 个 head + 该 teacher 这一 batch 样本的 logit 流"</strong>。其它 N-1 个 teacher 的状态都在中央存储里"沉睡"。这就是把 trillion-teacher OPD 跑得起的物理基础。</p>
+        </div>
+
+        <!-- ================== §3 WAL Rollout & Length Bias ================== -->
+        <h3 id="wal">3. WAL Rollout：可抢占可容错 + 消除 length bias</h3>
+        <p>
+          OPD 是 on-policy 的（Ch18 §4），每个 step 都要先用<em>当前最新 student</em> rollout 一批 trajectory，再算 KL。在大规模集群下两件事必然发生：
+        </p>
+        <ul>
+          <li><strong>抢占</strong>：rollout 服务被高优训练任务挤占（GPU 资源争用），随时可能被 evict；</li>
+          <li><strong>故障</strong>：硬件错误（GPU ECC、NVLink 抖动、磁盘故障）是常态，1000 卡 / 月 几十次。</li>
+        </ul>
+        <p>
+          最朴素的容错方案是把<em>未完成的 rollout 整体丢弃重跑</em>。这个方案有一个<strong>系统性偏差</strong>，是整章最容易被忽视但也最重要的洞察：
+        </p>
+
+        <div class="callout callout-warn">
+          <div class="callout-title">为什么"丢弃重跑"会引入 length bias</div>
+          <p>
+            假设抢占窗口长度 $T$（比如 5 分钟），rollout 平均生成速率 $r$ token/s。任何 trajectory 长度 $L > rT$ 都<em>必然</em>被中断；长度 $L \le rT$ 才有机会"完成"。
+          </p>
+          <ol>
+            <li>长 trajectory（深度推理、长代码生成）大概率被丢；</li>
+            <li>短 trajectory 大概率"完成"被纳入训练数据；</li>
+            <li>policy 看到的"成功完成"样本平均长度<strong>系统性低估</strong>；</li>
+            <li>反向梯度引导 policy 偏向<em>短答案</em> —— 这是<strong>训练数据被 evict 机制污染</strong>。</li>
+          </ol>
+          <p>这个偏差不是"性能损失"那么简单，它是<em>分布层面的偏移</em>。你训完一个 OPD model 发现它在长答题（奥数 / debug）上表现差，根因可能不是 OPD 损失设计错，而是<strong>length bias 偷偷重塑了训练数据</strong>。token 粒度 WAL 就是为了从根上斩断这条因果链。</p>
+        </div>
+
+        <p>V4 的设计：</p>
+        <ul>
+          <li>每个生成请求维护 <strong>token 粒度 Write-Ahead Log</strong> —— 每生成 1 个 token 立刻 append 到 trajectory log；</li>
+          <li>preempt 时暂停 inference，<strong>把整个 KV cache 落盘</strong>到分布式存储；</li>
+          <li>resume 时凭 WAL + 落盘 KV 直接<em>续 decode</em>，从中断的 token 接着生成；</li>
+          <li>致命硬件错误（KV cache 不可恢复）时，凭 WAL 中已生成的 token 重做 prefill，重建 KV。</li>
+        </ul>
+
+        <!-- ================== VIZ: WAL 续 vs 重跑 ================== -->
+        <div class="viz" id="viz-wal">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 抢占下"丢弃重跑" vs "WAL 续 decode" 的时间线 + 成功完成比例（拖动 trajectory 长度）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 340" id="wal-svg" xmlns="http://www.w3.org/2000/svg">
+            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">"丢弃重跑" 方案：抢占即整段丢，下次重头来过</text>
+            <text x="20" y="172" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">"WAL 续 decode" 方案：抢占时落盘，恢复时从 WAL 接</text>
+
+            <g id="wal-discard"></g>
+            <line x1="20" y1="138" x2="700" y2="138" stroke="#cbd5e1"/>
+            <text x="20" y="156" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">完成比例 = <tspan id="wal-discard-rate" fill="#dc2626">0%</tspan> · length bias = <tspan id="wal-discard-bias" fill="#dc2626" font-weight="600">严重</tspan></text>
+
+            <g id="wal-resume"></g>
+            <line x1="20" y1="288" x2="700" y2="288" stroke="#cbd5e1"/>
+            <text x="20" y="306" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">完成比例 = <tspan id="wal-resume-rate" fill="#16a34a">0%</tspan> · length bias = <tspan id="wal-resume-bias" fill="#16a34a" font-weight="600">无</tspan></text>
+
+            <!-- legend -->
+            <g transform="translate(440, 6)">
+              <rect x="0" y="0" width="14" height="10" fill="#71a4e1"/><text x="18" y="9" font-size="10" fill="#475569">生成中</text>
+              <rect x="74" y="0" width="14" height="10" fill="#dc2626"/><text x="92" y="9" font-size="10" fill="#475569">抢占丢弃</text>
+              <rect x="158" y="0" width="14" height="10" fill="#fbbf24"/><text x="176" y="9" font-size="10" fill="#475569">落盘 KV</text>
+              <rect x="232" y="0" width="14" height="10" fill="#16a34a"/><text x="250" y="9" font-size="10" fill="#475569">完成</text>
+            </g>
+          </svg>
+          <div class="viz-controls">
+            <label>trajectory 平均长度
+              <input type="range" id="wal-slider" min="500" max="100000" step="500" value="20000">
+              <span class="viz-readout"><span id="wal-readout">20K</span> token</span>
+            </label>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：上排 6 条 trajectory 走"丢弃重跑"路径 —— 每次抢占（红段）整条丢、下次从 0 重生。<em>越长的 trajectory 越难穿越完整抢占窗口</em>，所以长 trajectory 完成率低，整体数据偏向短样本（length bias）。
+            <br>
+            下排同样 6 条走"WAL 续"路径 —— 抢占时落盘 KV（黄段），恢复后<strong>从 WAL 记录的 token 位置接着 decode</strong>。即使 trajectory 跨多个抢占窗口，最终都能完成。
+            <br>
+            把 trajectory 长度从 5K 拉到 100K 看上下完成率差距：丢弃重跑下长 trajectory 完成率<em>断崖式</em>下降，WAL 续下保持 ~100%。<strong>这就是 length bias 的视觉证据</strong>。
+          </p>
+        </div>
+
+        <!-- ================== §4 Million-Token RL ================== -->
+        <h3 id="million">4. Million-Token RL 框架：把 trajectory 拆轻重</h3>
+        <p>
+          1M token 的单条 trajectory 一旦完整 load 进显存就秒爆。V4 的优化分两步：
+        </p>
+
+        <ol>
+          <li><strong>切两类字段</strong>：每条 trajectory 拆成
+            <ul>
+              <li><em>lightweight metadata</em>：prompt、reward、长度、teacher 归属、状态码 等；</li>
+              <li><em>heavy per-token field</em>：每 token 的 hidden state、KV、logit；</li>
+            </ul>
+          </li>
+          <li><strong>分层加载</strong>：
+            <ul>
+              <li>dispatch 阶段只 load metadata，做 global shuffle 与 packing layout 计算；</li>
+              <li>per-token 重字段通过<strong>共享内存 data loader</strong> 按需加载，节点内多 GPU 共享一份，消除冗余；</li>
+              <li>mini-batch 消费完<em>立即释放</em>，CPU/GPU 内存压力随时间稳定；</li>
+              <li>on-device mini-batch 数量按 workload 动态决定，在<em>计算吞吐</em>与<em>I/O overlap</em>之间取最优解。</li>
+            </ul>
+          </li>
+        </ol>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 1M token trajectory 的体积分布</span>
+          单条 1M token trajectory：
+          <ul>
+            <li><strong>metadata</strong>：~10 KB（prompt 头 + reward + 几十个标记字段）；</li>
+            <li><strong>hidden states</strong>：1M × $d$=7168 × FP8 = ~7 GB；</li>
+            <li><strong>KV cache</strong>：~60 GB（CSA/HCA 压缩后已经省了 90%）；</li>
+            <li><strong>logits（中央 buffer 缓存）</strong>：根本不实例化（Ch19 §2）；</li>
+          </ul>
+          metadata : heavy = 1 : $10^7$。<strong>简单做"整体 load"等于把 metadata 也带上 GB 级负担</strong>，shuffle / packing 阶段的 dispatch 流水会被卡住。切两类后 dispatch 只过 metadata（KB 级），重字段按需 stream，工程效率提升数千倍。
+        </div>
+
+        <!-- ================== §5 与 DSec 的接缝 ================== -->
+        <h3 id="dsec-handoff">5. 与 DSec Sandbox 的接缝</h3>
+        <p>
+          本章四节解决的是 RL/OPD <em>训练 + rollout 推理</em>的工程问题。但 agentic rollout 还要执行<strong>外部命令</strong>（bash、文件、网页、单元测试），这部分的承载者是下一章的 <strong>DSec</strong> —— 整个 post-training 流水线由 "<em>训练框架 + rollout 引擎 + sandbox 平台</em>"三件套共同承担。
+        </p>
+
+        <div class="callout callout-good">
+          <div class="callout-title">为什么这套基建是 V4 的真正护城河</div>
+          <p>
+            蒸馏在算法层不复杂 —— forward / reverse KL、on-policy 这些都是教科书级。但<strong>同时跑 10+ 个 trillion teacher + student + reward model + sandbox 仍能 24/7 不掉链子</strong>，这是开源社区从未做过的工程量级。
+            <br>
+            Ch19 + Ch20 合起来的工程深度，是 V4 区别于其它"做开源蒸馏"工作的真正分水岭 —— 不是论文里的公式新，是公式底下那层<em>能让公式跑起来的水管</em>新。
+          </p>
+        </div>
+
+        <!-- ================== §6 论文图占位 ================== -->
+        <h3 id="figs">6. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch19/01</span>
+          <p class="fig-want">需要：Teacher Scheduling 时间线 —— X 轴是 step，Y 轴是 GPU；展示"按 teacher 排序的 batching"如何让每 GPU 在每 step 只装载一个 teacher head。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.2 OPD Infrastructure（待补）</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch19/02</span>
+          <p class="fig-want">需要：WAL rollout 状态机示意：generating → preempted → checkpointing → resumed → completed，对比"discard and restart" 的 generating → preempted → discarded → restart 路径。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.2.3 Preemptible Rollout（待补）</p>
+        </div>
+
+        <h3 id="summary">7. 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>四个支柱解决四个独立物理瓶颈：<strong>FP4</strong> 砍 inference-only forward 的显存与带宽、<strong>Teacher Scheduling</strong> 把 N 个 trillion teacher 拆到中央存储 + buffer + 动态 head 三层、<strong>token 粒度 WAL</strong> 让 rollout 抢占可恢复同时消除 length bias、<strong>Million-Token RL</strong> 把 1M trajectory 拆轻重字段分层加载。这一章是 V4 在后训练领域<em>真正的护城河</em>。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: WAL discard vs resume
+     ============================================================ -->
+<script>
+(function() {
+  // 6 trajectories with varying lengths
+  // x axis: time (0..680 px)
+  // y axis: 6 rows
+  const X0 = 20, X1 = 700;
+  const ROW_H = 14, ROW_GAP = 4;
+  const TOP_Y = 38, BOT_Y = 188;
+  const PRE_WINDOW_PX = 90;  // preempt window length in pixels
+  const PRE_GAP_PX = 60;     // gap between preempt windows
+
+  function drawSeg(g, x, y, w, h, fill) {
+    if (w < 0.5) return;
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', y);
+    r.setAttribute('width', w); r.setAttribute('height', h);
+    r.setAttribute('fill', fill); r.setAttribute('stroke', '#fff'); r.setAttribute('stroke-width', '0.4');
+    g.appendChild(r);
+  }
+
+  function fmtTokens(n) {
+    if (n >= 1000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'K';
+    return n.toFixed(0);
+  }
+
+  function render(avgLen) {
+    document.getElementById('wal-readout').textContent = fmtTokens(avgLen);
+
+    const total = X1 - X0;
+    // generation rate: 1px per (avgLen / 200) tokens roughly; we set total length-needed in px proportional to avgLen
+    // We'll draw each trajectory's "needed length" as a fraction of canvas
+    const lenPx = Math.min(total * 0.95, 20 + avgLen / 200);  // px to fully complete
+
+    // 6 trajectories with len multiplier 0.5, 0.7, 1.0, 1.3, 1.6, 2.0 of avgLen
+    const mults = [0.4, 0.65, 1.0, 1.3, 1.7, 2.1];
+    const dg = document.getElementById('wal-discard');
+    const rg = document.getElementById('wal-resume');
+    dg.innerHTML = '';
+    rg.innerHTML = '';
+
+    let dCompleted = 0, rCompleted = 0;
+
+    // Preempt windows occur every PRE_GAP_PX after PRE_WINDOW_PX of generation
+    // Pattern: gen for PRE_GAP_PX, then preempt for PRE_WINDOW_PX, then gen, ...
+    function nextPreemptStart(t0) {
+      // find next time after t0 when preempt occurs
+      // preempt windows at [PRE_GAP_PX, PRE_GAP_PX + PRE_WINDOW_PX], then [2*PRE_GAP_PX + PRE_WINDOW_PX, ...]
+      // simplified: cycle = PRE_GAP_PX + PRE_WINDOW_PX
+      const cycle = PRE_GAP_PX + PRE_WINDOW_PX;
+      const offset = t0 % cycle;
+      if (offset < PRE_GAP_PX) {
+        return t0 + (PRE_GAP_PX - offset);
+      } else {
+        return t0 + (cycle - offset);
+      }
+    }
+
+    mults.forEach((m, idx) => {
+      const need = lenPx * m;
+      const yTop = TOP_Y + idx * (ROW_H + ROW_GAP);
+      const yBot = BOT_Y + idx * (ROW_H + ROW_GAP);
+
+      // ===== DISCARD strategy =====
+      // start generating at x=0; if hits preempt before reaching `need`, discard everything and restart
+      let dx = 0; // position in canvas
+      let dGenSoFar = 0;
+      let dDone = false;
+      while (dx < total && !dDone) {
+        const preStart = nextPreemptStart(dx);
+        const genUntil = Math.min(preStart, dx + (need - dGenSoFar));
+        const genLen = genUntil - dx;
+        if (dGenSoFar + genLen >= need) {
+          // completes before preempt
+          drawSeg(dg, X0 + dx, yTop, genLen - 0.5, ROW_H, '#71a4e1');
+          // mark completed segment with green tip
+          drawSeg(dg, X0 + dx + genLen - 4, yTop, 4, ROW_H, '#16a34a');
+          dDone = true;
+          dCompleted++;
+        } else {
+          // generated, then preempt → discard, restart
+          drawSeg(dg, X0 + dx, yTop, genLen, ROW_H, '#71a4e1');
+          // preempt window: red discard
+          const discardW = Math.min(PRE_WINDOW_PX, total - (dx + genLen));
+          drawSeg(dg, X0 + dx + genLen, yTop, discardW, ROW_H, '#dc2626');
+          dx = dx + genLen + discardW;
+          dGenSoFar = 0; // reset
+        }
+      }
+
+      // ===== RESUME strategy =====
+      // generate continuously, on preempt save KV (yellow), then resume
+      let rx = 0;
+      let rGenSoFar = 0;
+      let rDone = false;
+      while (rx < total && !rDone) {
+        const preStart = nextPreemptStart(rx);
+        const genUntil = Math.min(preStart, rx + (need - rGenSoFar));
+        const genLen = genUntil - rx;
+        const newGen = Math.min(genLen, need - rGenSoFar);
+        if (rGenSoFar + genLen >= need) {
+          drawSeg(rg, X0 + rx, yBot, genLen - 0.5, ROW_H, '#71a4e1');
+          drawSeg(rg, X0 + rx + genLen - 4, yBot, 4, ROW_H, '#16a34a');
+          rDone = true;
+          rCompleted++;
+        } else {
+          drawSeg(rg, X0 + rx, yBot, genLen, ROW_H, '#71a4e1');
+          rGenSoFar += newGen;
+          // preempt window: yellow save (no progress lost)
+          const saveW = Math.min(PRE_WINDOW_PX, total - (rx + genLen));
+          drawSeg(rg, X0 + rx + genLen, yBot, saveW, ROW_H, '#fbbf24');
+          rx = rx + genLen + saveW;
+        }
+      }
+    });
+
+    document.getElementById('wal-discard-rate').textContent = (dCompleted / 6 * 100).toFixed(0) + '% (' + dCompleted + '/6)';
+    document.getElementById('wal-resume-rate').textContent  = (rCompleted / 6 * 100).toFixed(0) + '% (' + rCompleted + '/6)';
+
+    if (dCompleted < 6 && dCompleted >= 4) {
+      document.getElementById('wal-discard-bias').textContent = '中等';
+    } else if (dCompleted < 4) {
+      document.getElementById('wal-discard-bias').textContent = '严重（短样本主导）';
+    } else {
+      document.getElementById('wal-discard-bias').textContent = '轻微';
+    }
+  }
+
+  document.getElementById('wal-slider').addEventListener('input', e => {
+    render(parseInt(e.target.value, 10));
+  });
+  render(20000);
+})();
+</script>
+</body>
+</html>

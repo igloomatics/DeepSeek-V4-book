@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 13 · 32T Tokens — 预训练的活水</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch13">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 13 · 32T Tokens</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part3.html">第三部分 · 预训练</a><span class="sep">/</span>Ch 13</div>
+
+      <article id="ch13" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第三部分 · 预训练 · 13</div>
+        <h2 class="chapter-title">32T Tokens — 预训练的活水</h2>
+        <p class="chapter-sub">数据策展不是"清洗 + 拼接"那么简单：长文档优先怎么改了 packing 的概率分布、采样级 mask 怎么把 cross-sample 的隐性噪声切干净、4K→16K→64K→1M 的阶梯调度怎么和 sparse attention 切换时机配合，以及为什么 V4 在 mid-training 才注入 agentic 数据而不是从头混。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"32T Tokens"</div>
+          <p class="term-name">32T Tokens = V4-Flash 32 万亿 / V4-Pro 33 万亿训练 token，长文档优先 + 采样级 mask + 阶梯式扩长上下文 + mid-training 注入 agentic 数据</p>
+          <p>
+            一句话：<strong>把"先用 4K 短样本喂 dense 主干、再扩到 1M 让 sparse attention 接管"做成一条阶梯</strong>，每段长度都对应不同的数据混合 + 不同的 attention 模式。
+            数据本身不是简单"加更多 web"，而是用模板过滤压模型崩塌、扩多语言长尾、把 agentic 任务延到 mid-training 单独注入。
+          </p>
+          <dl>
+            <dt>32T Tokens（与 V3 的 14.8T 比）</dt>
+            <dd>训练 token 总量 ~翻倍。<em>但 token 本身越来越贵</em>：清洗后高质量 web 增长慢，必须靠"长尾语言扩容 + 长文档加权 + 合成 / 翻译 token"补缺口。<strong>token 总量比 V3 大，但每 token 信息密度更高</strong>，这是 Ch15 Base 跳分的根本来源。</dd>
+
+            <dt>FIM（Fill-In-the-Middle，OpenAI 2022）</dt>
+            <dd>训练时把一段文本切成 prefix / middle / suffix，重排成 <code>&lt;PRE&gt; prefix &lt;SUF&gt; suffix &lt;MID&gt; middle</code> 让模型预测 middle。<em>让模型能"双向"看上下文</em> —— 代码补全、cloze 类任务依赖此。V4 沿用 V3 的 FIM 比例（约 10%）。</dd>
+
+            <dt>Packing（样本拼接）</dt>
+            <dd>训练时把多个短样本拼到同一个 sequence 长度（如 4K）填满 batch，避免 padding 浪费。<em>问题</em>：默认 attention 让样本 A 的 token 能看到样本 B 的 token，<strong>引入 cross-sample 关联噪声</strong>。这就是接下来 sample-level mask 要解决的事。</dd>
+
+            <dt>Sample-level Attention Masking（采样级注意力屏蔽）</dt>
+            <dd>V4 与 V3 的<strong>关键差异</strong>：packed sequence 内部，<em>每个样本只能看自己内部的 token，跨样本一律 mask 掉</em>。等价于"打包但语义独立"。在长文档加权的前提下尤其重要 —— 单个文档可能占满整个 4K，跨样本污染会让长上下文学习被短样本主导。</dd>
+
+            <dt>Model Collapse（模型崩塌，Shumailov 2024）</dt>
+            <dd>训练数据混入大量 LLM 生成的<em>模板化文本</em>（SEO、AI 写作、代码片段重复）后，模型分布逐渐塌陷到狭窄模式，<strong>多样性 ↓，幻觉 ↑</strong>。V4 的对策：用专门的<em>模板检测器</em>过滤批量自动生成内容，模板化模式被压低到 ~3% 以下。</dd>
+
+            <dt>Long-Document Priority（长文档优先）</dt>
+            <dd>显著加权学术论文、技术报告、长文献、长代码库。<em>动机</em>：(1) FACTS / Simple-QA 等知识类 benchmark 的 token-efficiency 高度依赖长上下文样本；(2) sparse attention 必须在长样本上才能学到"哪部分该跳过、哪部分该精读"的 selection 模式；(3) 长样本含丰富跨段引用，对 mHC 这种深度堆叠模型的<em>层间依赖</em>训练更有效。</dd>
+
+            <dt>Mid-Training（中段训练）</dt>
+            <dd>Pre-train 末段、SFT 之前的一个新阶段：在已经基本收敛的 Base 上<em>注入特定能力数据</em>（V4 注入 agentic 工具调用 + code agent 轨迹）。比 SFT 多得多 token、比 pre-train 更结构化。<strong>这是 V4 报告新引入的概念</strong>，把"工具能力"从 SFT 提到 pre-train 末端，让 OPD 蒸馏起步就有 agent 知识。</dd>
+
+            <dt>序列长度阶梯：4K → 16K → 64K → 1M</dt>
+            <dd>训练分四段，每段序列长度不同：<strong>4K</strong> 阶段（占 token 约 60%）走 dense attention 学语言基础；<strong>16K + 64K</strong>（约 35%）逐步切到 SWA + CSA/HCA 混合，让 sparse 模式 warmup；<strong>1M</strong>（约 5%）让 long-context 模式精修。<em>这条阶梯的存在是因为 sparse attention 在短序列下无优势，只有长序列才能体现压缩+稀疏的价值</em>。</dd>
+
+            <dt>Tokenizer（沿用 V3 + 几个特殊 token）</dt>
+            <dd>词表 128K 不变（V3 的 BBPE 训练版本）。新增几个 agentic 控制 token：<code>&lt;|tool_call|&gt;</code>、<code>&lt;|tool_result|&gt;</code> 等。<em>不重训 tokenizer 是为了让 V3 的 KV cache、prompt cache 直接复用</em>，向后兼容。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>32T 不是"喂更多数据"那么简单，而是<em>数据策展 + 数据顺序 + attention mask 三件事一起改</em>。读完这章你应该能解释为什么 sample-level mask 在长文档加权后变成了必需，而不是 V3 的可选项。</div>
+        </div>
+
+        <!-- ================== §1 V3 数据策略哪里不够 ================== -->
+        <h3 id="motivation">1. 为什么 V3 的数据策略需要重做</h3>
+        <p>
+          V3 时代的数据 pipeline 已经很成熟：14.8T tokens、CommonCrawl + GitHub + 学术 + 中文 + 多语言混合，含 FIM、tokenizer 128K BBPE。V4 要把<em>百万 token 上下文做成默认</em>，原 pipeline 有三个不再适配的地方：
+        </p>
+
+        <ul>
+          <li><strong>样本平均长度太短</strong>：V3 的样本平均 ~600 token，packing 后短样本占主导。CSA / HCA 的"跨段选择"在 600 token 内体现不出价值，sparse attention 学不到正确的 selection 模式；</li>
+          <li><strong>模板化数据混入</strong>：V3 训练完成后（2024 末），互联网上 LLM 生成内容比例已超 20%，再用同样的过滤器会把<em>模板化模式</em>带进 V4 → model collapse 风险；</li>
+          <li><strong>Cross-sample 噪声放大</strong>：长文档加权后，单样本可能占满 4K 整个 packing，<em>少量短样本被 attention 覆盖到的概率反升</em>，noise 反而比 V3 严重。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 长文档加权后 packing 的样本数变化</span>
+          假设 4K packing window：
+          <ul>
+            <li><strong>V3 风格（短样本主导）</strong>：平均样本长度 600 token → 每 4K window 装 ~6.7 个样本。Cross-sample attention 涉及的 token pair 数 $\binom{6.7}{2} \approx 22$，每对约 600×600=36 万 token-pair。</li>
+            <li><strong>V4 长文档加权</strong>：平均长度涨到 ~2000 token → 每 4K window 装 ~2 个样本。但 cross-sample token pair 数 $\binom{2}{2} = 1$，<em>每对 2000×2000=400 万 token-pair</em>。</li>
+          </ul>
+          单样本对污染量 36→400 万，<strong>噪声密度 ×11×</strong>。V3 的 packing-only 策略下噪声是均匀低水位的；V4 长文档加权后变成"少而极致"的污染源 —— 必须 sample-level mask 切断。
+        </div>
+
+        <!-- ================== §2 sample-level mask 怎么改 ================== -->
+        <h3 id="sample-mask">2. Sample-level Attention Masking</h3>
+        <p>
+          做法很简单：在 packed sequence 上额外维护一个 <em>sample id</em> 数组，attention mask 在因果 mask 之上再叠一层"<strong>$i$ 与 $j$ 同样本才可见</strong>"。
+        </p>
+
+        <div class="math-block">
+          $$
+          M_{ij} \;=\; \begin{cases} 0 & \text{if } j \le i \;\;\land\;\; \mathrm{sid}(i) = \mathrm{sid}(j) \\ -\infty & \text{otherwise} \end{cases}
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条 mask 翻成大白话就是<strong>在标准因果 mask 上多加一条"同源"过滤</strong>：</p>
+          <ol>
+            <li><strong>$j \le i$</strong>：标准因果约束 —— 当前 token 只能看历史 token，不能偷看未来；</li>
+            <li><strong>$\mathrm{sid}(i) = \mathrm{sid}(j)$</strong>：新增的同源约束 —— 即便 $j$ 在 $i$ 前面、且都在同一 packed window 里，<em>只要它们属于不同样本就 mask 掉</em>；</li>
+            <li><strong>$M_{ij} = -\infty$</strong>：把不可见位置的 attention logit 拍到负无穷，softmax 后权重为 0。</li>
+          </ol>
+          <p>这条改动对 V3 是"<em>可选项</em>"（短样本时跨样本噪声小），对 V4 长文档加权后是<strong>必须</strong>。直觉：你不会让一个学术论文的 token 偷看到隔壁拼贴在同一 window 里的论坛帖子，否则模型会学到伪相关性 —— 比如"标题党后面跟方程"这种 packing 制造的虚假分布。</p>
+        </div>
+
+        <!-- ================== VIZ: sample-level mask ================== -->
+        <div class="viz" id="viz-mask">
+          <div class="viz-head">
+            <div class="viz-title">Demo · Packing 内部的 attention mask（拖动样本数 / 切换 sample-level）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 380" id="mask-svg" xmlns="http://www.w3.org/2000/svg">
+            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">attention mask（行 = query，列 = key；绿色 = 可见，灰色 = 屏蔽）</text>
+
+            <!-- mask grid will be drawn into here -->
+            <g id="mask-grid"></g>
+
+            <!-- legend -->
+            <g transform="translate(440, 36)">
+              <rect x="0" y="0" width="14" height="10" fill="#16a34a"/><text x="18" y="9" font-size="10" fill="#475569">同源 + 因果 = 可见</text>
+              <rect x="0" y="18" width="14" height="10" fill="#fbbf24"/><text x="18" y="27" font-size="10" fill="#475569">cross-sample 噪声（V3 看见、V4 屏蔽）</text>
+              <rect x="0" y="36" width="14" height="10" fill="#cbd5e1"/><text x="18" y="45" font-size="10" fill="#475569">未来或屏蔽</text>
+            </g>
+
+            <text x="20" y="350" font-size="11" fill="#1c2433">总 token = <tspan id="mask-total" font-family="JetBrains Mono">64</tspan> · 样本数 = <tspan id="mask-nsamp" font-family="JetBrains Mono">4</tspan> · cross-sample 对数 = <tspan id="mask-cross" fill="#dc2626" font-family="JetBrains Mono">0</tspan> / <tspan id="mask-causal" font-family="JetBrains Mono">0</tspan></text>
+            <text x="20" y="368" font-size="10" fill="#94a3b8">右侧统计：被切掉的 cross-sample / 因果三角总数。</text>
+          </svg>
+          <div class="viz-controls">
+            <label>样本数（往 packed window 里塞几个文档）
+              <input type="range" id="mask-nslider" min="1" max="8" step="1" value="4">
+              <span class="viz-readout" id="mask-nreadout">4</span>
+            </label>
+            <button class="viz-btn" id="mask-toggle">切换到 V4 sample-level mask</button>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：方块 = (query, key) 对。绿格是<em>同样本</em>且 $j \le i$ 的合法 attention；黄格是 V3 默认看见、但 V4 sample-level mask 切断的 <em>cross-sample 因果对</em>；灰格是因果 mask 切掉的未来。
+            <br>
+            把样本数从 1 拉到 8 你会看到黄色块迅速增多（块状对角阵）。点切换按钮看 V4 把所有黄格变灰 —— <strong>每个样本各自一块独立三角，互不可见</strong>。
+            <br>
+            读出"cross-sample 对数 / 因果三角总数"的比例就是 V3 多看到的<em>污染信号比例</em> —— 4 个样本均匀打包时约 25%。
+          </p>
+        </div>
+
+        <!-- ================== §3 4K → 1M 阶梯 + sparse 切换时机 ================== -->
+        <h3 id="staircase">3. 4K → 16K → 64K → 1M 序列长度阶梯</h3>
+        <p>
+          训练序列长度不是从头到尾固定的。V4 走四段阶梯，每段对应不同 attention 模式：
+        </p>
+
+        <div class="config-table">
+          <table>
+            <thead><tr><th>段</th><th>序列长度</th><th>token 占比</th><th>主要 attention 模式</th><th>主要任务</th></tr></thead>
+            <tbody>
+              <tr><td>① 基础</td><td>4K</td><td>~60%</td><td>dense（warmup）</td><td>语言基础 / 短样本知识</td></tr>
+              <tr><td>② 扩长 1</td><td>16K</td><td>~20%</td><td>SWA + CSA 切入</td><td>稀疏 selection 学习</td></tr>
+              <tr><td>③ 扩长 2</td><td>64K</td><td>~15%</td><td>SWA + CSA + HCA 全开</td><td>跨段引用 / 长依赖</td></tr>
+              <tr><td>④ 长精修</td><td>1M</td><td>~5%</td><td>full sparse</td><td>百万 token 训练</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 为什么不是从头跑 1M</div>
+          <p>有三个根本原因让"一开始就 1M"不可行：</p>
+          <ol>
+            <li><strong>显存账</strong>：1M token 单层 KV ~60MB，全模型 ~3.6GB/请求。带 dense attention 时 attention score 矩阵 1M×1M = $10^{12}$ 项，<em>显存 + 计算都爆</em>。必须先在 4K 学到一个能切 sparse 的初值。</li>
+            <li><strong>稀疏 selection 需要先验</strong>：CSA 的 Lightning Indexer 要学"哪部分该精读"。模型未收敛时<em>indexer 选的是噪声</em>，sparse 训练发散。所以前 60% token 走 dense 让模型先学到基本语义。</li>
+            <li><strong>长样本稀缺</strong>：可用的 1M 长样本（书籍、超长仓库）token 数远少于短样本。把它放最后一段精修是 token 效率最优。</li>
+          </ol>
+          <p>这条阶梯在工程层与 Ch11 的 two-stage CP 完美对接：① 阶段 CP 不需要（4K 单卡能装），② 阶段开始 CP=2，③ CP=4，④ CP=8 ~ 16。<em>序列长度调度同时是并行度调度</em>。</p>
+        </div>
+
+        <h3 id="agentic">4. Mid-Training：把 agentic 数据延后注入</h3>
+        <p>
+          V3 把代码、数学、工具调用数据从 pre-train 头到尾混在一起。V4 改为：<strong>pre-train 末端用一段独立 mid-training 阶段集中注入 agentic 数据</strong>（工具调用轨迹、code agent 多步推理、long-horizon 任务）。
+        </p>
+
+        <div class="callout callout-good">
+          <div class="callout-title">为什么延后注入</div>
+          <ol>
+            <li><strong>结构化数据干扰早期学习</strong>：agentic 轨迹含大量结构化 token（<code>&lt;|tool_call|&gt;</code> JSON 等），早期混入会让模型把 token 分布学偏，普通文本生成质量下降；</li>
+            <li><strong>需要稳定的语言基础</strong>：工具调用本质是"语言 → 结构 → 语言"的转换，模型必须先有扎实语言能力才能学好这层映射；</li>
+            <li><strong>Mid-training 可以大胆调高 lr</strong>：相比 SFT 的少量数据 + 低 lr，mid-training 用 pre-train 量级的 lr + 大量 token，让 agentic 能力<em>真正进权重</em>而不是"表层 SFT"；</li>
+            <li><strong>给 OPD 一个高起点</strong>：Ch18 的 reverse-KL 蒸馏期望学生模型已经能调用工具，否则 specialist teacher 蒸不下来。</li>
+          </ol>
+          <p>这是 V4 报告新加的<em>训练阶段</em>，对标 Anthropic / OpenAI 内部已经在做的"capability training"，但 DeepSeek 第一次把它形式化写进开源报告。</p>
+        </div>
+
+        <h3 id="hyperparams">5. V4-Flash / V4-Pro 关键超参对比</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>项</th><th>V4-Flash (284B / 13B 激活)</th><th>V4-Pro (1.6T / 49B 激活)</th></tr></thead>
+            <tbody>
+              <tr><td>Transformer 层数 $L$</td><td>43</td><td>61</td></tr>
+              <tr><td>hidden size $d$</td><td>4096</td><td>7168</td></tr>
+              <tr><td>CSA 压缩率 $m$ / top-k</td><td>4 / 512</td><td>4 / 1024</td></tr>
+              <tr><td>HCA 压缩率 $m'$</td><td>128</td><td>128</td></tr>
+              <tr><td>核心 head 数 / dim $c$</td><td>64 / 512</td><td>128 / 512</td></tr>
+              <tr><td>SWA window $n_{\text{win}}$</td><td>128</td><td>128</td></tr>
+              <tr><td>routed experts (激活 $K$)</td><td>256 (6)</td><td>384 (6)</td></tr>
+              <tr><td>MoE 中间维 $d_{\text{ff}}$</td><td>2048</td><td>3072</td></tr>
+              <tr><td>mHC 扩展因子 $n_{\text{hc}}$</td><td>4</td><td>4</td></tr>
+              <tr><td>Sinkhorn 步数</td><td>20</td><td>20</td></tr>
+              <tr><td>训练 token</td><td>32T</td><td>33T</td></tr>
+              <tr><td>峰值 LR</td><td>$2.7 \times 10^{-4}$</td><td>$2.0 \times 10^{-4}$</td></tr>
+              <tr><td>序列长度调度</td><td>4K → 16K → 64K → 1M</td><td>4K → 16K → 64K → 1M</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 训练总 FLOPs</span>
+          V4-Pro：每 token 激活参数 49B，按"前向 6 ND，反向 12 ND"经验估：
+          <ul>
+            <li>每 token forward+backward ≈ $6 \cdot 49\text{B} = 2.94 \times 10^{11}$ FLOPs；</li>
+            <li>33T tokens × $2.94 \times 10^{11}$ ≈ <strong>$9.7 \times 10^{24}$ FLOPs</strong>；</li>
+            <li>按 H100 BF16 989 TFLOPs/s 与实际 MFU ~35% 算，等价 <strong>$\approx 880{,}000$ H100-小时</strong>，即 <em>10K 卡集群跑 ~3.7 天净计算</em>。</li>
+          </ul>
+          实际带通信开销 + spike 重算 + multi-stage 切换，wall-time 约 60–80 天。这就是为什么 Ch11 的训练框架优化能省下来的每 1% 都极贵。
+        </div>
+
+        <h3 id="figs">6. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <div class="fig-tag">论文图占位</div>
+          <p class="fig-want">需要：V4 论文 §5（数据）的数据成分饼图（web / 学术 / 代码 / 多语言 / agentic）+ 与 V3 的差量条形图。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1 数据章节（待补）</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <div class="fig-tag">论文图占位</div>
+          <p class="fig-want">需要：4K → 1M 序列长度阶梯的训练 schedule，含每段 token 比例、attention 模式切换时机、CP 并行度变化。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.2（待补）</p>
+        </div>
+
+        <h3 id="summary">7. 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>32T token 不是"加更多数据"那么简单，而是 <em>长文档加权 + 采样级 mask + 阶梯式扩长 + mid-training 注入</em> 四件事联动 —— 它们共同把 V3 的"短样本稳态"改造成 V4 的"长上下文默认"。Sample-level mask 是这套改造里最朴素也最关键的一步：它让 packing 这种工程必需不再污染长文档的语义。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: sample-level attention mask
+     ============================================================ -->
+<script>
+(function() {
+  const TOTAL = 64;       // total tokens in window
+  const X0 = 30, Y0 = 60;
+  const CELL = 4;         // 64 × 4 = 256 px wide
+  let nSamples = 4;
+  let v4Mode = false;
+
+  function render() {
+    document.getElementById('mask-nreadout').textContent = nSamples;
+    document.getElementById('mask-total').textContent = TOTAL;
+    document.getElementById('mask-nsamp').textContent = nSamples;
+
+    // assign each token to a sample id (roughly equal partitions)
+    const sid = [];
+    const perSamp = TOTAL / nSamples;
+    for (let i = 0; i < TOTAL; i++) sid.push(Math.floor(i / perSamp));
+
+    const grid = document.getElementById('mask-grid');
+    grid.innerHTML = '';
+
+    let causalCount = 0; // total causal lower-triangle (j<=i)
+    let crossCount = 0;  // cross-sample within causal triangle
+
+    for (let i = 0; i < TOTAL; i++) {
+      for (let j = 0; j < TOTAL; j++) {
+        let fill;
+        if (j > i) {
+          fill = '#e2e8f0'; // future, masked
+        } else {
+          causalCount++;
+          if (sid[i] === sid[j]) {
+            fill = '#16a34a'; // same sample, visible
+          } else {
+            crossCount++;
+            // V3: cross-sample seen (yellow); V4: masked (gray)
+            fill = v4Mode ? '#cbd5e1' : '#fbbf24';
+          }
+        }
+        const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        r.setAttribute('x', X0 + j * CELL);
+        r.setAttribute('y', Y0 + i * CELL);
+        r.setAttribute('width', CELL - 0.3);
+        r.setAttribute('height', CELL - 0.3);
+        r.setAttribute('fill', fill);
+        grid.appendChild(r);
+      }
+    }
+
+    // axis labels
+    const lblQ = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    lblQ.setAttribute('x', 10); lblQ.setAttribute('y', Y0 + TOTAL * CELL / 2);
+    lblQ.setAttribute('font-size', '10'); lblQ.setAttribute('fill', '#94a3b8');
+    lblQ.setAttribute('font-family', 'JetBrains Mono');
+    lblQ.setAttribute('transform', `rotate(-90 10 ${Y0 + TOTAL * CELL / 2})`);
+    lblQ.textContent = 'query i';
+    grid.appendChild(lblQ);
+
+    const lblK = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    lblK.setAttribute('x', X0 + TOTAL * CELL / 2 - 25);
+    lblK.setAttribute('y', Y0 + TOTAL * CELL + 14);
+    lblK.setAttribute('font-size', '10'); lblK.setAttribute('fill', '#94a3b8');
+    lblK.setAttribute('font-family', 'JetBrains Mono');
+    lblK.textContent = 'key j →';
+    grid.appendChild(lblK);
+
+    // sample boundary lines (vertical + horizontal)
+    for (let s = 1; s < nSamples; s++) {
+      const pos = s * perSamp;
+      const xline = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      xline.setAttribute('x1', X0 + pos * CELL);
+      xline.setAttribute('x2', X0 + pos * CELL);
+      xline.setAttribute('y1', Y0);
+      xline.setAttribute('y2', Y0 + TOTAL * CELL);
+      xline.setAttribute('stroke', '#1c2433');
+      xline.setAttribute('stroke-width', '0.6');
+      grid.appendChild(xline);
+      const yline = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      yline.setAttribute('x1', X0);
+      yline.setAttribute('x2', X0 + TOTAL * CELL);
+      yline.setAttribute('y1', Y0 + pos * CELL);
+      yline.setAttribute('y2', Y0 + pos * CELL);
+      yline.setAttribute('stroke', '#1c2433');
+      yline.setAttribute('stroke-width', '0.6');
+      grid.appendChild(yline);
+    }
+
+    document.getElementById('mask-cross').textContent = crossCount;
+    document.getElementById('mask-causal').textContent = causalCount;
+  }
+
+  document.getElementById('mask-nslider').addEventListener('input', e => {
+    nSamples = parseInt(e.target.value, 10);
+    render();
+  });
+  document.getElementById('mask-toggle').addEventListener('click', () => {
+    v4Mode = !v4Mode;
+    document.getElementById('mask-toggle').textContent = v4Mode
+      ? '切回 V3 packing-only mask'
+      : '切换到 V4 sample-level mask';
+    render();
+  });
+  render();
+})();
+</script>
+</body>
+</html>

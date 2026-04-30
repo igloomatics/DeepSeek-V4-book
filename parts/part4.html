@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>第四部分 · 后训练</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="p4">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">第四部分 · 后训练</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span>第四部分 · 后训练</div>
+
+      <article class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>PART 4 · 5 章 · 后训练</div>
+        <h2 class="chapter-title">第四部分 · 后训练</h2>
+        <p class="chapter-sub">V4 与 V3 最显著的范式差异 —— 把混合 RL 整体替成 OPD，配套是 GRM 评分、Tool 接口三件套、十万级沙箱。</p>
+
+        <div class="meta-row">
+          <span><strong>章节数</strong>5 章（Ch16–Ch20）</span>
+          <span><strong>预计阅读</strong>50–70 分钟</span>
+          <span><strong>难度</strong>★★★★☆</span>
+          <span><strong>前置</strong>SFT / RL（GRPO）、KL 蒸馏、Agent / 工具调用、3FS / 容器虚拟化</span>
+        </div>
+
+        <div class="part-jump">
+          <a href="#objectives">▸ 学习目标</a>
+          <a href="#roadmap">▸ 章节路线图</a>
+          <a href="#recap">▾ 本部分小结</a>
+          <a href="#quiz">▾ 自检题</a>
+        </div>
+
+        <div class="objectives" id="objectives">
+          <div class="objectives-eyebrow">▸ LEARNING OBJECTIVES</div>
+          <h3>读完这部分，你将能够</h3>
+          <ul>
+            <li>讲清"先做 N 个 specialist，再用 OPD 合成一个 student"的两阶段范式，并解释这与 V3 混合 RL 的根本不同。</li>
+            <li>列出 Non-think / Think High / Think Max 三档的训练 context（8K/128K/384K）与响应格式差异。</li>
+            <li>说出 Generative Reward Model（GRM）相比 scalar RM 的两个优势。</li>
+            <li>能复述 OPD 损失 <code>L = Σ w_i KL(π_θ ‖ π_E_i)</code>，并解释为什么必须是 reverse KL + on-policy。</li>
+            <li>列出全词表 OPD 的四个工程支柱（FP4 集成 / Teacher Scheduling / WAL Rollout / Million-token RL）。</li>
+            <li>说出 Quick Instruction 的 6 个特殊 token 各自的角色，以及它为何能省掉一个独立的小模型。</li>
+            <li>解释 token 粒度 WAL 为什么不能"从头重生" unfinished requests，以及它如何避免 length bias。</li>
+            <li>列出 DSec 的四种执行衬底（Function / Container / microVM / fullVM）与 3FS 的协作关系。</li>
+          </ul>
+        </div>
+
+        <h3 id="roadmap">本部分章节路线图</h3>
+        <div class="roadmap">
+          <a class="roadmap-card" href="../chapters/ch16.html">
+            <div class="roadmap-num">CH 16</div>
+            <h4>专家训练 + Reasoning Effort</h4>
+            <p>SFT → GRPO → GRM → 三档 thinking budget。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch17.html">
+            <div class="roadmap-num">CH 17</div>
+            <h4>Tool 接口三件套</h4>
+            <p>DSML schema / Interleaved Thinking / Quick Instruction。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch18.html">
+            <div class="roadmap-num">CH 18 · ★</div>
+            <h4>OPD：多教师反向蒸馏</h4>
+            <p>10+ 个领域专家 → 全词表 reverse KL → 一个统一学生。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch19.html">
+            <div class="roadmap-num">CH 19</div>
+            <h4>RL / OPD 工程基础设施</h4>
+            <p>FP4 / Teacher Sched / WAL / Million-token RL —— 让 OPD 真正能跑。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch20.html">
+            <div class="roadmap-num">CH 20</div>
+            <h4>DSec 沙箱平台</h4>
+            <p>四衬底 + 3FS 横向扩 → 单集群 10w+ sandbox。</p>
+          </a>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">如何阅读这部分</div>
+          <p>
+            <strong>Ch18</strong> 是范式置换的高潮，<strong>Ch19</strong> 把"原理上可行"变成"工程上能跑"。如果时间紧，按这个顺序读：18.1–18.3 → 19.2 → 19.3 → 20.1。Ch16/17 是 Specialist 与交互层，Ch20 是执行层。
+          </p>
+        </div>
+
+        <div class="part-divider"><span>读完 5 章后,回来看这里</span></div>
+
+        <h3 id="recap">本部分小结</h3>
+        <div class="recap">
+          <div class="recap-eyebrow">▾ KEY TAKEAWAYS</div>
+          <h3>核心要点回顾</h3>
+          <ul>
+            <li><strong>Specialist（Ch16）</strong>：SFT → GRPO，每个专家在三档 reasoning effort 下分别训练；GRM 用"以生成代评分"省掉海量人工标注。</li>
+            <li><strong>交互（Ch17）</strong>：<code>&lt;|DSML|&gt;</code> 替代 JSON tool-call；Interleaved Thinking 在 tool-calling 模式跨轮保留 thinking；Quick Instruction 6 token 共享主 KV，TTFT 大幅降低。</li>
+            <li><strong>范式（Ch18）</strong>：V3 的"混合 RL"被整体替成 OPD —— 学生 on-policy rollout，向 N 个领域 teacher 求 reverse KL 加权和；选 reverse KL 是因为 mode-seeking 适合"合并"。</li>
+            <li><strong>工程（Ch19）</strong>：FP4 全量启用 + 不实例化 logits + 按 teacher 排序 batching + async I/O + TileLang KL kernel = 全词表 trillion 教师 KL 才跑得起；token 粒度 WAL 让 rollout 可抢占可容错且无 length bias。</li>
+            <li><strong>沙箱（Ch20）</strong>：DSec 四衬底 + 单 SDK + 3FS 横向扩 → 10w+ sandbox 同集群；分层 EROFS / overlaybd 让冷启动毫秒化。</li>
+          </ul>
+        </div>
+
+        <h3>关键公式 / 参数速查</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>位置</th><th>表达 / 数值</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>OPD 损失</td>
+                <td><code>L = Σ_i w_i · KL(π_θ ‖ π_{E_i})</code></td>
+                <td>reverse KL，on-policy rollout，多教师加权</td>
+              </tr>
+              <tr><td>三档 RL 上下文</td><td>8K / 128K / 384K</td><td>Non-think / High / Max</td></tr>
+              <tr><td>Quick Instruction</td><td>6 个特殊 token 共享主 KV</td><td>免独立小模型，TTFT 降</td></tr>
+              <tr><td>FP4 适用范围</td><td>rollout + teacher / reference forward</td><td>backward 仍 FP8</td></tr>
+              <tr><td>DSec 规模</td><td>10w+ sandbox / 单集群</td><td>架在 3FS 上横向扩</td></tr>
+              <tr><td>WAL 粒度</td><td>token-level</td><td>无 length bias</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>设计直觉地图</h3>
+        <ul>
+          <li>OPD 取代混合 RL 的核心动机：<em>RL 只学到"reward 期望"，KL 蒸馏能学到"分布形状"</em> —— 所以 reverse KL 比单纯 reward 更适合"知识合并"。</li>
+          <li>Anticipatory Routing（Ch14）与 mHC（Ch3）共享同一种思路：<em>把"会爆炸"的路径在更新阶段隔离掉</em>。Quick Instruction 与 KV 异构（Ch12）共享另一种思路：<em>把"控制平面"压进"数据平面"</em>。</li>
+          <li>Ch19 的四个工程支柱中，<strong>Teacher Scheduling</strong> 是 V4 区别于其它开源蒸馏工作的真正护城河 —— 没有这一节，trillion 教师全词表 KL 只是 PPT。</li>
+        </ul>
+
+        <h3 id="quiz">自检题</h3>
+
+        <div class="quiz">
+          <p class="quiz-q">Q1. 为什么 OPD 选用 reverse KL（KL(π_θ ‖ π_E)）而不是 forward KL？</p>
+          <details><summary>查看参考答案</summary>
+            <p>reverse KL 是 mode-seeking：让学生分布去贴 teacher 分布的高概率区域。配合 on-policy rollout，学生不会被 teacher 的低概率长尾误导，更适合"把多个领域 teacher 合并到一个学生"。forward KL 反而是 mass-covering，会把学生拉成 mean of teachers，丢失各 teacher 的强项。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q2. trillion 教师做全词表 KL，单凭"加显存"为什么不可能？V4 是怎么破的？</p>
+          <details><summary>查看参考答案</summary>
+            <p>|V| > 100k 的 logits × batch × seq 已经吃光显存。V4：teacher 权重 offload 到中央存储按需加载；不实例化 logits，只缓存 last hidden state；batch 内按 teacher index 排序让每个 prediction head 只装载一次；logits async I/O 不阻塞前向；KL 由专门的 TileLang kernel 计算避免动态分配。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q3. 为什么 unfinished rollout 不能"从头重生"？length bias 是什么？</p>
+          <details><summary>查看参考答案</summary>
+            <p>从头重生意味着所有失败的长生成都被丢弃 → 训练数据里"成功生成"的平均长度被系统性低估 → 学生学到"短答案更可能成功"的虚假信号。token 粒度 WAL 的意义就是让长生成有机会"续上"，避免分布偏移。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q4. Quick Instruction 把 6 个辅助任务编码成 token 而非小模型，工程收益是什么？</p>
+          <details><summary>查看参考答案</summary>
+            <p>(1) 复用主 KV cache，零额外 prefill —— TTFT 降低；(2) 消掉一个独立 inference 进程，运维与版本对齐成本归零；(3) 所有辅助任务能"自然地"利用主模型的能力，不再需要单独训练小模型。这是把"控制平面"压进"数据平面"的典型系统级优化。</p>
+          </details>
+        </div>
+
+        <div class="interactive-slot">
+          预留位：OPD reverse KL 与 forward KL 的可视化对比、teacher scheduling 时间线动画、token-WAL 的"丢弃重跑 vs 续 decode" 演示、Quick Instruction 6-token 序列演示。
+        </div>
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本页目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+</body>
+</html>

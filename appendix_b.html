@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>附录 B · 参数速查</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-base="" data-page="appendix_b">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">附录 B · 参数速查</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="index.html">封面</a><span class="sep">/</span>附录 B</div>
+
+      <article id="appendix_b" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>附录 · B</div>
+        <h2 class="chapter-title">参数速查</h2>
+        <p class="chapter-sub">需要查表时直接拉到这里。所有符号按"架构 / 注意力 / MoE / 残差 / 训练"五类组织，配数学渲染。</p>
+
+        <h3 id="arch">B.1 全局架构参数</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>含义</th><th>V4-Pro</th><th>V4-Flash</th></tr></thead>
+            <tbody>
+              <tr><td>$L$</td><td>Transformer 层数</td><td>61</td><td>43</td></tr>
+              <tr><td>$d$</td><td>hidden size（主干维）</td><td>7168</td><td>4096</td></tr>
+              <tr><td>$|V|$</td><td>词表大小（BBPE，沿用 V3）</td><td>$\approx 128\text{K}$</td><td>$\approx 128\text{K}$</td></tr>
+              <tr><td>$N_{\text{total}}$</td><td>总参数量</td><td>1.6 T</td><td>284 B</td></tr>
+              <tr><td>$N_{\text{act}}$</td><td>每 token 激活参数量</td><td>49 B</td><td>13 B</td></tr>
+              <tr><td>$T_{\text{train}}$</td><td>训练 token 总量</td><td>33 T</td><td>32 T</td></tr>
+              <tr><td>$\eta_{\max}$</td><td>峰值学习率</td><td>$2.0 \times 10^{-4}$</td><td>$2.7 \times 10^{-4}$</td></tr>
+              <tr><td>seq schedule</td><td>序列长度阶梯（4 段）</td><td>4K → 16K → 64K → 1M</td><td>4K → 16K → 64K → 1M</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="csa">B.2 CSA / HCA / SWA 注意力参数（Ch04-05）</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>含义</th><th>V4-Pro</th><th>V4-Flash</th></tr></thead>
+            <tbody>
+              <tr><td>$m$</td><td>CSA 压缩率（每 $m$ 个 token 压成 1 个）</td><td>4</td><td>4</td></tr>
+              <tr><td>$k$</td><td>CSA Top-k 选择数</td><td>1024</td><td>512</td></tr>
+              <tr><td>$m'$</td><td>HCA 重压缩率</td><td>128</td><td>128</td></tr>
+              <tr><td>$n_h$</td><td>核心 attention head 数</td><td>128</td><td>64</td></tr>
+              <tr><td>$d_h$</td><td>每个 head 的 value dim</td><td>512</td><td>512</td></tr>
+              <tr><td>$d_c$</td><td>query 压缩 latent 维（MQA 共享 KV）</td><td>1536</td><td>1536</td></tr>
+              <tr><td>$n^I_h$</td><td>Lightning Indexer head 数</td><td>64</td><td>64</td></tr>
+              <tr><td>$c^I$</td><td>Indexer head dim</td><td>128</td><td>128</td></tr>
+              <tr><td>$g$</td><td>Grouped Output Projection 组数</td><td>16</td><td>16</td></tr>
+              <tr><td>$d_g$</td><td>每组中间 dim</td><td>1024</td><td>1024</td></tr>
+              <tr><td>$n_{\text{win}}$</td><td>SWA 窗口长度</td><td>128</td><td>128</td></tr>
+              <tr><td>$r_{\text{rope}}$</td><td>Partial RoPE 维数（仅最后 r 维做位置编码）</td><td>64</td><td>64</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="moe">B.3 MoE 参数（Ch07）</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>含义</th><th>V4-Pro</th><th>V4-Flash</th></tr></thead>
+            <tbody>
+              <tr><td>$E_{\text{routed}}$</td><td>路由专家数</td><td>384</td><td>256</td></tr>
+              <tr><td>$E_{\text{shared}}$</td><td>共享专家数</td><td>1</td><td>1</td></tr>
+              <tr><td>$K$</td><td>每 token 激活专家数（top-K）</td><td>6</td><td>6</td></tr>
+              <tr><td>$d_{\text{ff}}$</td><td>专家 FFN 中间维</td><td>3072</td><td>2048</td></tr>
+              <tr><td>$W$</td><td>MegaMoE wave 数</td><td>4–6</td><td>4–6</td></tr>
+              <tr><td>$C / B$</td><td>硬件协设公式 $\le 2d$ FLOPs/Byte</td><td>$\le 14336$</td><td>$\le 8192$</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="mhc">B.4 mHC 残差参数（Ch03）</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>含义</th><th>V4-Pro</th><th>V4-Flash</th></tr></thead>
+            <tbody>
+              <tr><td>$n_{\text{hc}}$</td><td>mHC 扩展因子（残差通路数）</td><td>4</td><td>4</td></tr>
+              <tr><td>$t_{\max}$</td><td>Sinkhorn 迭代步数</td><td>20</td><td>20</td></tr>
+              <tr><td>$\|B\|_2$</td><td>残差矩阵谱范数（约束 $\le 1$）</td><td>$\le 1.0$</td><td>$\le 1.0$</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="muon">B.5 Muon 优化器参数（Ch06）</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>含义</th><th>V4 取值</th></tr></thead>
+            <tbody>
+              <tr><td>$\mu$</td><td>动量系数（与 AdamW $\beta_1$ 同位）</td><td>0.95</td></tr>
+              <tr><td>$\lambda$</td><td>weight decay 系数</td><td>0.1</td></tr>
+              <tr><td>$\gamma$</td><td>RMS 重缩放系数（调到 AdamW 同档 lr）</td><td>$\approx 0.2$</td></tr>
+              <tr><td>$(a_1, b_1, c_1)$</td><td>Hybrid NS 第 1 段（激进，前 8 步）</td><td>$(3.4445,\, -4.7750,\, 2.0315)$</td></tr>
+              <tr><td>$(a_2, b_2, c_2)$</td><td>Hybrid NS 第 2 段（标准，后 2 步）</td><td>$(2,\, -1.5,\, 0.5)$</td></tr>
+              <tr><td>NS 总步数</td><td>编译期常数（CUDA Graph 友好）</td><td>10</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="post">B.6 后训练参数（Ch16-19）</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号 / 项</th><th>含义</th><th>V4 取值</th></tr></thead>
+            <tbody>
+              <tr><td>三档 RL ctx</td><td>Non-think / Think High / Think Max 训练上下文</td><td>8K / 128K / 384K</td></tr>
+              <tr><td>$G$</td><td>GRPO 组内采样数</td><td>8</td></tr>
+              <tr><td>$N_{\text{teacher}}$</td><td>OPD 蒸馏的领域 teacher 数</td><td>10+</td></tr>
+              <tr><td>$D_{\text{KL}}(\pi_\theta \| \pi_E)$</td><td>OPD 损失（reverse KL，on-policy）</td><td>—</td></tr>
+              <tr><td>WAL 粒度</td><td>rollout write-ahead log</td><td>token-level</td></tr>
+              <tr><td>FP4 范围</td><td>rollout / teacher / reference forward</td><td>FP4 (E2M1)</td></tr>
+              <tr><td>backward 精度</td><td>梯度反向</td><td>FP8 (E4M3)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="formulas">B.7 全书核心公式速查</h3>
+
+        <p><strong>mHC 残差更新</strong>（Ch03 §2.2）：</p>
+        <div class="math-block">
+          $$
+          X_{l+1} \;=\; B_l X_l \;+\; C_l\, F_l(A_l X_l), \qquad B_l \in \mathrm{Birkhoff}(n_{\text{hc}})
+          $$
+        </div>
+
+        <p><strong>Sinkhorn 投影</strong>（把任意非负矩阵压到双随机面）：</p>
+        <div class="math-block">
+          $$
+          \widehat{B} \leftarrow \widehat{B} \,/\, \mathbf{1}^\top \widehat{B} \quad\text{（行归一）},\qquad
+          \widehat{B} \leftarrow \widehat{B} \,/\, \widehat{B}\, \mathbf{1} \quad\text{（列归一）}
+          $$
+        </div>
+
+        <p><strong>CSA 单 query 复杂度</strong>（Ch04 §3）：</p>
+        <div class="math-block">
+          $$
+          \mathcal{O}_{\text{CSA}} \;=\; \underbrace{\frac{n}{m} \cdot d_h \cdot n^I_h}_{\text{indexer score}} \;+\; \underbrace{k \cdot d_h \cdot n_h}_{\text{core attention}}
+          $$
+        </div>
+
+        <p><strong>Polar 分解 / Muon 目标</strong>（Ch06 §2）：</p>
+        <div class="math-block">
+          $$
+          M = U \Sigma V^\top \;\Longrightarrow\; \mathrm{Polar}(M) = U V^\top \;\;\text{（所有 }\sigma_i = 1\text{）}
+          $$
+        </div>
+
+        <p><strong>Newton–Schulz 一步</strong>（Ch06 §3，矩阵形式）：</p>
+        <div class="math-block">
+          $$
+          M \;\leftarrow\; a\, M \;+\; b\, (MM^\top) M \;+\; c\, (MM^\top)^2 M
+          $$
+        </div>
+        <p>展开到 SVD 坐标里就是把<em>每个奇异值</em>独立施加一个标量五次多项式 $p(\sigma) = a\sigma + b\sigma^3 + c\sigma^5$，$U, V$ 自始至终不变。</p>
+
+        <p><strong>MegaMoE 流水加速比</strong>（Ch07）：</p>
+        <div class="math-block">
+          $$
+          T_{\text{wave}} \;=\; T \cdot \!\left(1 + \frac{4}{W}\right), \qquad
+          \frac{T_{\text{naive}}}{T_{\text{wave}}} \;=\; \frac{5W}{W + 4} \xrightarrow{W \to \infty} 5\times
+          $$
+        </div>
+
+        <p><strong>硬件协设公式</strong>（Ch07）：</p>
+        <div class="math-block">
+          $$
+          \frac{C}{B} \;\le\; 2d \;\;\;(\text{FLOPs/Byte})
+          $$
+        </div>
+
+        <p><strong>Stochastic Rounding</strong>（Ch11 §1，FP32→BF16 通信减半）：</p>
+        <div class="math-block">
+          $$
+          \mathrm{SR}(x) = \begin{cases} \lceil x \rceil & \text{w.p. } p \\ \lfloor x \rfloor & \text{w.p. } 1 - p \end{cases},\qquad
+          p = \frac{x - \lfloor x \rfloor}{\lceil x \rceil - \lfloor x \rfloor}, \quad \mathbb{E}[\mathrm{SR}(x)] = x
+          $$
+        </div>
+
+        <p><strong>Two-stage CP 输出长度</strong>（Ch11 §3）：</p>
+        <div class="math-block">
+          $$
+          \text{Stage 1 输出长度（每 rank）} \;=\; \frac{s}{m} + 1 \;\;\text{（}+1\text{ 是邻居桥接 token）}
+          $$
+        </div>
+
+        <p><strong>KV cache 异构对齐</strong>（Ch12）：</p>
+        <div class="math-block">
+          $$
+          \text{Block 大小} \;=\; \mathrm{lcm}(m, m') \;=\; \mathrm{lcm}(4, 128) \;=\; 128
+          $$
+        </div>
+
+        <p><strong>Sample-level Attention Mask</strong>（Ch13 §2）：</p>
+        <div class="math-block">
+          $$
+          M_{ij} \;=\; \begin{cases} 0 & \text{if } j \le i \;\;\land\;\; \mathrm{sid}(i) = \mathrm{sid}(j) \\ -\infty & \text{otherwise} \end{cases}
+          $$
+        </div>
+
+        <p><strong>Anticipatory Routing</strong>（Ch14 §2，路由用旧权重 + 激活用新权重）：</p>
+        <div class="math-block">
+          $$
+          r_t \;=\; \mathrm{topk}\!\left(W_r^{\,(t-\Delta t)} \cdot x_t\right), \qquad
+          y_t \;=\; \sum_{i \in r_t} \mathrm{Expert}_i^{\,(t)}(x_t)
+          $$
+        </div>
+
+        <p><strong>SwiGLU Clamping</strong>（Ch14 §3）：</p>
+        <div class="math-block">
+          $$
+          g \leftarrow \mathrm{clamp}(g,\, -10,\, 10), \qquad u \leftarrow \min(u,\, 10)
+          $$
+        </div>
+
+        <p><strong>GRPO Advantage</strong>（Ch16 §2）：</p>
+        <div class="math-block">
+          $$
+          A_i \;=\; \frac{r_i - \mathrm{mean}(\{r_j\}_{j=1}^G)}{\mathrm{std}(\{r_j\}_{j=1}^G)}, \qquad
+          \mathcal{L}_{\text{GRPO}} \;=\; -\frac{1}{G}\sum_{i=1}^G A_i \, \log \pi_\theta(y_i \mid x)
+          $$
+        </div>
+
+        <p><strong>OPD 损失</strong>（Ch18 §2，多教师 reverse KL 加权和）：</p>
+        <div class="math-block">
+          $$
+          \mathcal{L}_{\text{OPD}}(\theta) \;=\; \sum_{i=1}^N w_i \,\cdot\, \mathbb{E}_{x \sim \mathcal{D}_i,\; y \sim \pi_\theta(\cdot \mid x)}\!\left[\,D_{\text{KL}}\!\big(\pi_\theta \,\big\|\, \pi_{E_i}\big)\,\right]
+          $$
+        </div>
+
+        <p><strong>KL 散度（reverse 形式）</strong>：</p>
+        <div class="math-block">
+          $$
+          D_{\text{KL}}(\pi_\theta \| \pi_E) \;=\; \sum_{v=1}^{|V|} \pi_\theta(v) \,\log\, \frac{\pi_\theta(v)}{\pi_E(v)} \;\;\text{（每 token 位置一次）}
+          $$
+        </div>
+
+        <p style="text-align:center; color:var(--fg-3); margin-top:48px; font-size:13px;">— 完 —<br>本笔记作于 2026-04，基于 DeepSeek-V4 Preview 技术报告整理，非 DeepSeek 官方文档。</p>
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

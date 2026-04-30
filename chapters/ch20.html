@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 20 · DSec — 代码沙箱与安全护城河</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch20">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 20 · DSec</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part4.html">第四部分 · 后训练</a><span class="sep">/</span>Ch 20</div>
+
+      <article id="ch20" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第四部分 · 后训练 · 20</div>
+        <h2 class="chapter-title">DSec — 代码沙箱与安全护城河</h2>
+        <p class="chapter-sub">为什么 V4 后训练必须自建沙箱平台而不能用现成 Docker 集群，"四衬底 + 单 SDK"如何用一个抽象同时满足"零冷启动函数调用"和"完整 OS 隔离"两个极端，3FS + EROFS + overlaybd 三层叠出来的镜像存储如何让 10w+ 沙箱共享同一份基础层，以及为什么 trajectory log 是 sandbox 级 WAL 的关键。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"DSec"</div>
+          <p class="term-name">DSec = DeepSeek 自研代码沙箱平台：四种执行衬底（Function / Container / microVM / fullVM）背后是统一 SDK <code>libdsec</code>；分层镜像存储（EROFS + overlaybd）架在 3FS 上；trajectory log 提供 client fast-forward + 抢占恢复 + deterministic replay</p>
+          <p>
+            一句话：<strong>把"沙箱"工程化到与训练框架同一抽象层级</strong>。
+            agentic post-training 每条 trajectory 都要在隔离环境里执行 bash / 改文件 / 跑测试，单集群同时跑 10w+ 沙箱才能跟上 OPD 的 rollout 吞吐。"用现成 Docker 起容器"在 1000 并发就开始崩，10w 是另一个量级 —— 必须重写镜像存储、装箱密度、抢占恢复每一层。
+          </p>
+          <dl>
+            <dt>Sandbox（沙箱）</dt>
+            <dd>隔离的执行环境，<em>一次 agentic rollout 对应一个 sandbox</em>。模型生成命令 → 在 sandbox 里执行 → 把 stdout/stderr 喂回模型 → 下一步生成。<em>必须隔离</em>：模型可能跑 <code>rm -rf /</code>、可能尝试访问其它训练任务的文件、可能 fork bomb。生命周期与 GPU 训练 step 同步。</dd>
+
+            <dt>Function Call 衬底（DSec 第 1 档）</dt>
+            <dd>常驻容器池分发：维护几千个<em>预热好的容器</em>，agent 调用时分配一个，用完归还。<strong>零冷启动</strong>（毫秒级），无状态。适合简单工具调用（calculator、format checker、纯函数 API）。<em>缺点</em>：不能装新依赖，环境固定。</dd>
+
+            <dt>Container 衬底（DSec 第 2 档）</dt>
+            <dd>Docker + EROFS 分层镜像。每个 agent 任务有独立 container，按需加载镜像层。<em>大多数 agent 任务都用这一档</em>：可以装 pip、apt 包、跑测试。冷启动几百毫秒（取决于镜像层下载量）。</dd>
+
+            <dt>microVM 衬底（DSec 第 3 档）</dt>
+            <dd>Firecracker（AWS Lambda 同款）+ overlaybd 磁盘格式。<em>VM 级隔离 + 容器级启动速度</em>（亚秒），用 KVM 虚拟化但裁掉了 QEMU 大部分功能。适合<strong>安全敏感 + 高密度</strong>场景 —— 敌对代码、不可信网络访问。</dd>
+
+            <dt>fullVM 衬底（DSec 第 4 档）</dt>
+            <dd>QEMU 全虚拟化。能跑任意 guest OS（Windows、BSD、自定义 kernel）。冷启动秒级，开销最大但最通用。<em>极少数任务需要</em>（系统级测试、跨架构编译）。</dd>
+
+            <dt>libdsec（统一 SDK）</dt>
+            <dd>Python 接口，<strong>一行参数切换衬底</strong>。背后抽象掉 (1) 命令执行；(2) 文件传输；(3) TTY 交互 三件事。Agent 代码不感知底层是 Function 还是 microVM —— 这是工程上 <em>fail-soft</em> 的关键：高密度任务出问题时可以快速降级到更重的衬底。</dd>
+
+            <dt>EROFS（Enhanced Read-Only File System）</dt>
+            <dd>Linux 内核里的<em>只读</em>文件系统，专为 immutable 镜像设计。Container 衬底的基础层用它挂载到 overlayfs <code>lowerdirs</code>，写操作落到 upper 层。<strong>多个 sandbox 共享同一份只读基础层</strong>，节省海量重复存储。</dd>
+
+            <dt>overlaybd（Overlay Block Device）</dt>
+            <dd>microVM 衬底用的<em>块设备级</em>分层格式，类比 EROFS 但工作在 block 而非 file 层。只读基础层在 3FS 上跨实例共享，写操作落到本地 copy-on-write 层。<em>VM 不能用 overlayfs 因为它需要 file system 层访问</em>，overlaybd 是 VM 等价物。</dd>
+
+            <dt>3FS（DeepSeek Fire-Flyer File System）</dt>
+            <dd>DeepSeek 自研分布式文件系统（V3 时代已开源）。本章把它用作<strong>沙箱镜像层的后端存储</strong> + 训练 / KV checkpoint 后端。横向扩到上千节点，提供 RDMA 直读。让单集群 10w+ 沙箱共享同一份镜像 base 成立。</dd>
+
+            <dt>Memory Reclamation（内存回收）</dt>
+            <dd>虚拟化环境下页缓存常被重复占用（host kernel 一份、guest kernel 一份），10w 并发时浪费数 TB。DSec 的优化让 host 能<em>定期回收</em> guest 不再使用的页，把 overcommit 安全可行 —— 物理内存能装下的 sandbox 数翻倍。</dd>
+
+            <dt>Spinlock 抢占（spinlock contention）</dt>
+            <dd>container runtime（runC、containerd）内部有大量 spinlock，并发起多个 container 时<em>线程在 lock 上自旋等待</em>，单 sandbox CPU 开销主要来源。DSec 改写关键路径让锁竞争降到极低，<strong>per-host 装箱密度大幅提升</strong>。</dd>
+
+            <dt>Trajectory Log（轨迹日志）</dt>
+            <dd>每个 sandbox 维护一份<em>全局有序日志</em>，每条命令调用 + 结果都持久化。承担三件事：(1) <strong>Client Fast-Forwarding</strong> —— 训练抢占时 sandbox 资源保留，恢复时直接 replay 已完成命令的缓存结果；(2) <strong>Provenance</strong> —— 每个状态变更可追溯；(3) <strong>Deterministic Replay</strong> —— 任何历史 session 完全可复现。<em>是 sandbox 级 WAL，与 Ch19 token-WAL 同思路</em>。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>DSec 把 agentic 工作流的<em>执行环境</em>提升到与训练框架同等抽象级别。"四衬底 + 单 SDK + 3FS 后端 + trajectory log"四件事少一件 OPD 就跑不到 10w+ 并发。这是 V4 在<em>非模型层</em>构建的最大工程资产。</div>
+        </div>
+
+        <!-- ================== §1 为什么 ================== -->
+        <h3 id="motivation">1. 为什么需要专门的沙箱平台</h3>
+        <p>
+          V4 的 post-training 阶段 OPD 与 RL 都依赖 <strong>agentic rollout</strong>：模型生成"调 bash 跑测试"、"读 README 写代码"这种 trajectory，每条都需要一个隔离执行环境。论文给出四个动机：
+        </p>
+
+        <ul>
+          <li><strong>Workload 极度异构</strong>：从 5ms 的 calculator 调用到几小时的完整 software engineering pipeline，单一衬底覆盖不了；</li>
+          <li><strong>Image 又多又大</strong>：N 个领域 specialist × M 个工具版本 = 数千份镜像，每份数 GB，必须 lazy 加载；</li>
+          <li><strong>高密度部署</strong>：rollout 吞吐要求 10w+ 并发 sandbox / 集群；</li>
+          <li><strong>生命周期与训练协同</strong>：rollout 被 preempt 时 sandbox 状态要保留、checkpoint 时要能恢复 —— 与 Ch19 的 WAL 是同一姿态在 sandbox 层的体现。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 为什么 10w 是另一个量级</span>
+          普通 Kubernetes 集群单节点 ~100 pods 是上限。10w sandbox / 集群假设 1000 节点 → 100 sandbox/节点 → 看起来 OK。但：
+          <ul>
+            <li>每 sandbox 平均寿命 ~30 秒（rollout step 时间），<strong>每秒新建 / 销毁 ~3000 个</strong>；</li>
+            <li>普通 Docker daemon 单进程吞吐 ~10 启动/秒，<em>差 300×</em>；</li>
+            <li>每镜像 ~5GB，3000/秒 × 5GB = 15TB/s 镜像传输 → 远超任何单机网络。</li>
+          </ul>
+          <strong>普通方案根本起不来</strong>，必须把"镜像 base 层共享"做到极致 + 把"启动 / 销毁"做到亚毫秒。这就是 DSec 整章的存在理由。
+        </div>
+
+        <!-- ================== §2 四衬底 ================== -->
+        <h3 id="substrates">2. 四种执行衬底，一套 SDK</h3>
+        <p>
+          DSec 通过 Python SDK <code>libdsec</code> 暴露一致接口，背后由四种衬底承接，按"<em>启动延迟 → 隔离强度</em>"排成谱系：
+        </p>
+
+        <div class="config-table">
+          <table>
+            <thead><tr><th>衬底</th><th>底层</th><th>典型用途</th><th>冷启动</th><th>隔离强度</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Function Call</strong></td><td>常驻容器池分发</td><td>无状态简单调用</td><td>~ms（零冷启动）</td><td>进程级</td></tr>
+              <tr><td><strong>Container</strong></td><td>Docker + EROFS</td><td>大多数 agent 任务</td><td>~100-500ms</td><td>容器级</td></tr>
+              <tr><td><strong>microVM</strong></td><td>Firecracker + overlaybd</td><td>安全敏感、高密度</td><td>~亚秒</td><td>VM 级</td></tr>
+              <tr><td><strong>fullVM</strong></td><td>QEMU</td><td>需要任意 guest OS</td><td>~秒</td><td>完整 VM</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          切换衬底只需改 SDK 一个参数 —— Agent 代码不感知。这条抽象的工程价值：<strong>fail-soft</strong>。Function Call 衬底跑某个任务出现资源不足 → SDK 自动 fallback 到 Container；Container 撞到 syscall 黑名单 → fallback 到 microVM。<em>失败的代价是慢一点而非崩溃</em>。
+        </p>
+
+        <!-- ================== VIZ: 四衬底雷达图 ================== -->
+        <div class="viz" id="viz-substrate">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 四种衬底在 4 个维度上的权衡（点切换 task 类型看推荐衬底）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 380" id="sub-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- 4-axis radar centered at (250, 195), radius 130 -->
+            <!-- axes: 上=启动速度↑, 右=隔离强度↑, 下=兼容性↑, 左=密度↑ -->
+            <g id="sub-radar"></g>
+
+            <!-- task selector + recommendation panel -->
+            <text x="450" y="36" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">当前 task：<tspan id="sub-task-name" fill="#71a4e1">简单工具调用</tspan></text>
+
+            <text x="450" y="68" font-size="11" fill="#475569" font-family="Inter">需要的优先维度：</text>
+            <g id="sub-priorities"></g>
+
+            <text x="450" y="180" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">推荐衬底：<tspan id="sub-rec" fill="#16a34a" font-family="JetBrains Mono">Function</tspan></text>
+            <text x="450" y="206" font-size="11" fill="#475569" font-family="Inter" id="sub-rec-reason"></text>
+
+            <!-- legend -->
+            <g transform="translate(450, 250)">
+              <rect x="0" y="0" width="14" height="10" fill="#16a34a" opacity="0.55"/><text x="18" y="9" font-size="10" fill="#475569">Function</text>
+              <rect x="0" y="18" width="14" height="10" fill="#71a4e1" opacity="0.55"/><text x="18" y="27" font-size="10" fill="#475569">Container</text>
+              <rect x="0" y="36" width="14" height="10" fill="#fbbf24" opacity="0.55"/><text x="18" y="45" font-size="10" fill="#475569">microVM</text>
+              <rect x="0" y="54" width="14" height="10" fill="#dc2626" opacity="0.55"/><text x="18" y="63" font-size="10" fill="#475569">fullVM</text>
+            </g>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="sub-task-simple">简单工具调用</button>
+            <button class="viz-btn" id="sub-task-code">代码执行 / pip 装包</button>
+            <button class="viz-btn" id="sub-task-untrusted">不可信代码</button>
+            <button class="viz-btn" id="sub-task-os">需要特定 OS</button>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：雷达图四轴分别是<em>启动速度</em>（上）/ <em>隔离强度</em>（右）/ <em>兼容性</em>（下）/ <em>密度</em>（左）。每种衬底在四轴上有自己的能力轮廓。
+            <br>
+            点不同 task 按钮看：简单工具调用优先快 → Function；不可信代码优先隔离 → microVM；需要特定 OS 优先兼容性 → fullVM。<strong>四衬底不是冗余而是覆盖了一个 2D 决策空间的四个角</strong>。
+          </p>
+        </div>
+
+        <!-- ================== §3 分层镜像 ================== -->
+        <h3 id="layered">3. 分层镜像存储：让 10w 沙箱共享同一份 base</h3>
+        <p>
+          如果每个 sandbox 独立装一份 5GB 镜像，10w 并发 = 500TB 存储 + 海量重复传输。DSec 的核心优化：<strong>"只读基础层 + 写时复制 upper 层"的两级分层</strong>，base 层在所有 sandbox 间共享。
+        </p>
+
+        <ul>
+          <li><strong>Container 衬底</strong>：base image 与 filesystem commit 作为只读 EROFS 层挂载到 overlayfs <code>lowerdirs</code>；3FS 提供后端存储；元数据放本地、数据块按需 fetch；</li>
+          <li><strong>microVM 衬底</strong>：使用 <code>overlaybd</code> 磁盘格式 —— 只读基础层在 3FS 上跨实例共享，写操作落到本地 copy-on-write 层；</li>
+          <li>这种 snapshot 是<em>可链式</em>的：base → middle → leaf，迭代镜像版本时新版只需新增一层 middle，几毫秒就能起一个新 sandbox。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 为什么 EROFS 与 overlaybd 是两件事</div>
+          <p>它们工作在不同抽象层：</p>
+          <ol>
+            <li><strong>EROFS（文件系统层）</strong>：Container 衬底是 Linux namespace + cgroup，guest 进程<em>直接访问 host kernel 的 file system</em>。所以分层用<em>文件粒度</em> overlay：base 层提供只读文件树，upper 层接收写。<em>简单高效，但需要 host kernel 信任 guest</em>；</li>
+            <li><strong>overlaybd（块设备层）</strong>：microVM 衬底是真正的 VM，guest 看到的是<em>虚拟硬盘</em>。host 不能直接给 file system，必须给"块设备"。所以分层在<em>block 粒度</em>：base 层是只读 disk image，upper 层接收 block 级 CoW。<em>开销稍高，但隔离更彻底（guest 不能 escape 到 host fs）</em>。</li>
+          </ol>
+          <p>合起来：<strong>同一份 base 镜像在 3FS 上存一次，被任意多个 Container（通过 EROFS）和 microVM（通过 overlaybd）共享</strong>。3FS 的角色是"中央分布式存储"，和 Ch19 teacher weight offload 是同一个 3FS 集群 —— 复用基础设施。</p>
+        </div>
+
+        <!-- ================== §4 高密度优化 ================== -->
+        <h3 id="density">4. 高密度优化：把单节点装箱推到 ~100</h3>
+        <p>要把单集群推到 10w+ 并发 sandbox，DSec 攻克两个非显然的瓶颈：</p>
+
+        <ol>
+          <li><strong>页缓存重复</strong>：虚拟化环境下 host kernel 与 guest kernel <em>各自缓存同一份磁盘 page</em>，10w 并发浪费数 TB 物理内存。DSec 通过 <em>memory reclamation</em> 让 host 可以定期回收 guest 不再使用的 pages → <strong>overcommit 安全可行</strong> → 同样物理内存能装的 sandbox 数翻倍；</li>
+          <li><strong>Spinlock 抢占</strong>：container runtime（runC、containerd）的内部锁是<em>单 sandbox CPU 开销</em>的主要来源。10w 并发起停时，工作线程在锁上自旋的时间能占到总 CPU 的 30%+。DSec 改写了关键路径让锁竞争大幅下降 → per-host 装箱密度提升数倍。</li>
+        </ol>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 装箱密度的物理上限</span>
+          单节点 384 核 + 1.5TB DRAM：
+          <ul>
+            <li>每 sandbox 平均 1 核 + 8GB DRAM（保守估计）；</li>
+            <li>核数限制：384 个；</li>
+            <li>内存限制：1.5TB / 8GB = 192 个；</li>
+            <li>合计上限 192 sandbox/节点；</li>
+            <li>10w 并发 → 至少 ~520 节点 → 集群规模可承担；</li>
+          </ul>
+          但<strong>没有 page-cache reclamation 时</strong>每 sandbox 实际占 ~16GB（host + guest 双份缓存），密度降到 96 → 集群规模翻倍 → 成本翻倍。这就是为什么"看似边缘"的 memory reclamation 是装箱密度的关键。
+        </div>
+
+        <!-- ================== §5 trajectory log ================== -->
+        <h3 id="log">5. Trajectory Log：sandbox 级 WAL</h3>
+        <p>
+          Ch19 §3 的 token 粒度 WAL 解决<em>rollout 推理</em>的抢占恢复。DSec 在<em>沙箱执行</em>层有完全对应的设计：每个 sandbox 维护<strong>全局有序的 trajectory log</strong>，每条命令调用 + 结果都持久化。承担三件事：
+        </p>
+
+        <ol>
+          <li><strong>Client Fast-Forwarding（抢占恢复）</strong>：训练任务被 preempt 时 sandbox 资源保留；恢复时 client（agent）重新连接到 sandbox，<em>直接 replay 已完成命令的缓存结果</em>，避开 non-idempotent 重放错误（不会重新跑 <code>rm -rf temp/</code> 一遍）；</li>
+          <li><strong>Fine-Grained Provenance（细粒度溯源）</strong>：每个状态变更都可追溯到具体 trajectory 与 step。debug 训练数据时关键 —— "为什么这个 specialist 学到了奇怪行为"，可以一路回溯到具体的 sandbox session；</li>
+          <li><strong>Deterministic Replay（确定性重放）</strong>：任何历史 session 都能完全复现。这条与 Ch9 的 bit-identical 是同一思路：<em>训练出问题，只有可复现才能 debug</em>。</li>
+        </ol>
+
+        <div class="callout callout-good">
+          <div class="callout-title">为什么这是 V4 的"隐形护城河"</div>
+          <p>
+            Ch18 OPD 的算法在原理上不复杂；难的是<strong>同时跑 10+ 个 trillion teacher + student + reward + 10w+ sandbox</strong> 仍能 24/7 不掉链子。DSec 把"执行环境"工程化到与训练框架同一抽象层级，是 agentic post-training 真正能规模化的前提。
+            <br>
+            竞争对手可以读论文学 OPD 算法，但要复刻 V4 的 post-training 吞吐，必须自己重写一个 DSec 等价物 —— 这是开源社区里几乎没人做过的工程量级。
+          </p>
+        </div>
+
+        <!-- ================== §6 论文图占位 ================== -->
+        <h3 id="figs">6. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch20/01</span>
+          <p class="fig-want">需要：DSec 整体架构图 —— 四衬底（Function/Container/microVM/fullVM）→ libdsec SDK → 3FS 共享存储 + trajectory log。展示一个 agent 如何同时调用多种衬底。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3 DSec Sandbox（待补）</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch20/02</span>
+          <p class="fig-want">需要：分层镜像存储示意 —— 多个 sandbox 共享同一只读 base（EROFS / overlaybd），各自的 upper 层是 copy-on-write 的私有写区。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2（待补）</p>
+        </div>
+
+        <h3 id="summary">7. 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>DSec 把"沙箱"从 OPD 工作流的<em>外部依赖</em>提升到与训练框架同等抽象级别 —— <strong>四衬底覆盖"快"到"重"的全谱、单 SDK 让 agent 代码不感知底层、3FS + EROFS + overlaybd 让 10w+ sandbox 共享同一份 base、trajectory log 让抢占恢复 / 溯源 / 重放都成立</strong>。Part 4 至此结束 —— 从 Ch16 的 specialist 备料到 Ch20 的沙箱执行，五章合起来定义了 V4 在后训练阶段<em>"算法 + 工程 + 沙箱"</em>三位一体的护城河。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: 四种沙箱衬底的雷达图
+     ============================================================ -->
+<script>
+(function() {
+  // Center of radar
+  const CX = 220, CY = 200, R = 130;
+  // 4 axes: up=speed, right=isolation, down=compatibility, left=density
+  // angles: -90 (up), 0 (right), 90 (down), 180 (left)
+  const AXES = [
+    { name: '启动速度', angle: -Math.PI/2 },  // up
+    { name: '隔离强度', angle: 0 },           // right
+    { name: '兼容性',   angle: Math.PI/2 },  // down
+    { name: '密度',     angle: Math.PI },    // left
+  ];
+
+  // Substrate scores on [speed, isolation, compatibility, density] each 0..5
+  const SUBSTRATES = {
+    function:  { name: 'Function',  scores: [5.0, 1.0, 1.5, 5.0], color: '#16a34a' },
+    container: { name: 'Container', scores: [4.0, 2.5, 3.5, 4.0], color: '#71a4e1' },
+    microVM:   { name: 'microVM',   scores: [3.0, 4.5, 3.0, 3.5], color: '#fbbf24' },
+    fullVM:    { name: 'fullVM',    scores: [1.5, 5.0, 5.0, 1.5], color: '#dc2626' },
+  };
+
+  // Tasks → required priority on each axis
+  const TASKS = {
+    simple: {
+      name: '简单工具调用',
+      priorities: [5, 1, 1, 5],
+      rec: 'function',
+      reason: '无状态、亚毫秒响应；不需要强隔离',
+    },
+    code: {
+      name: '代码执行 / pip 装包',
+      priorities: [3, 3, 4, 4],
+      rec: 'container',
+      reason: '需要装依赖 + 可接受 ~百 ms 启动',
+    },
+    untrusted: {
+      name: '不可信代码',
+      priorities: [2, 5, 2, 4],
+      rec: 'microVM',
+      reason: 'VM 级隔离防 escape；仍可保持高密度',
+    },
+    os: {
+      name: '需要特定 OS',
+      priorities: [1, 5, 5, 1],
+      rec: 'fullVM',
+      reason: '只有 QEMU 能跑任意 guest OS',
+    },
+  };
+
+  function polarToXY(angle, r) {
+    return [CX + Math.cos(angle) * r, CY + Math.sin(angle) * r];
+  }
+
+  function buildRadarShape(scores) {
+    let d = '';
+    for (let i = 0; i < 4; i++) {
+      const r = (scores[i] / 5) * R;
+      const [x, y] = polarToXY(AXES[i].angle, r);
+      d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    }
+    return d + 'Z';
+  }
+
+  function renderRadar(highlightKey) {
+    const g = document.getElementById('sub-radar');
+    g.innerHTML = '';
+
+    // background grid (5 concentric polygons)
+    for (let level = 1; level <= 5; level++) {
+      const r = (level / 5) * R;
+      let d = '';
+      for (let i = 0; i < 4; i++) {
+        const [x, y] = polarToXY(AXES[i].angle, r);
+        d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+      }
+      d += 'Z';
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      p.setAttribute('d', d);
+      p.setAttribute('fill', 'none');
+      p.setAttribute('stroke', level === 5 ? '#cbd5e1' : '#e5e7eb');
+      p.setAttribute('stroke-width', '0.7');
+      g.appendChild(p);
+    }
+
+    // axis lines + labels
+    AXES.forEach(a => {
+      const [x, y] = polarToXY(a.angle, R);
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', CX); ln.setAttribute('y1', CY);
+      ln.setAttribute('x2', x); ln.setAttribute('y2', y);
+      ln.setAttribute('stroke', '#cbd5e1'); ln.setAttribute('stroke-width', '0.7');
+      g.appendChild(ln);
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      const [lx, ly] = polarToXY(a.angle, R + 22);
+      lbl.setAttribute('x', lx); lbl.setAttribute('y', ly + 4);
+      lbl.setAttribute('font-size', '11');
+      lbl.setAttribute('fill', '#1c2433');
+      lbl.setAttribute('font-weight', '600');
+      lbl.setAttribute('font-family', 'Inter');
+      lbl.setAttribute('text-anchor', 'middle');
+      lbl.textContent = a.name;
+      g.appendChild(lbl);
+    });
+
+    // each substrate's polygon
+    Object.entries(SUBSTRATES).forEach(([key, s]) => {
+      const isHi = key === highlightKey;
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      p.setAttribute('d', buildRadarShape(s.scores));
+      p.setAttribute('fill', s.color);
+      p.setAttribute('fill-opacity', isHi ? '0.32' : '0.10');
+      p.setAttribute('stroke', s.color);
+      p.setAttribute('stroke-width', isHi ? '2.5' : '1.2');
+      p.setAttribute('stroke-opacity', isHi ? '1' : '0.65');
+      g.appendChild(p);
+    });
+  }
+
+  function renderPriorities(task) {
+    const g = document.getElementById('sub-priorities');
+    g.innerHTML = '';
+    const baseY = 88;
+    const barX = 450, barMaxW = 200;
+    AXES.forEach((a, i) => {
+      const y = baseY + i * 18;
+      // axis name
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', barX); t.setAttribute('y', y);
+      t.setAttribute('font-size', '10'); t.setAttribute('fill', '#475569');
+      t.setAttribute('font-family', 'Inter');
+      t.textContent = a.name;
+      g.appendChild(t);
+      // bar
+      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('x', barX + 56); bg.setAttribute('y', y - 9);
+      bg.setAttribute('width', barMaxW - 56); bg.setAttribute('height', 10);
+      bg.setAttribute('fill', '#e5e7eb');
+      g.appendChild(bg);
+      const fill = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      fill.setAttribute('x', barX + 56); fill.setAttribute('y', y - 9);
+      fill.setAttribute('width', (task.priorities[i] / 5) * (barMaxW - 56)); fill.setAttribute('height', 10);
+      fill.setAttribute('fill', '#71a4e1');
+      g.appendChild(fill);
+    });
+  }
+
+  function applyTask(taskKey) {
+    const task = TASKS[taskKey];
+    document.getElementById('sub-task-name').textContent = task.name;
+    document.getElementById('sub-rec').textContent = SUBSTRATES[task.rec].name;
+    document.getElementById('sub-rec').setAttribute('fill', SUBSTRATES[task.rec].color);
+    document.getElementById('sub-rec-reason').textContent = task.reason;
+    renderRadar(task.rec);
+    renderPriorities(task);
+  }
+
+  document.getElementById('sub-task-simple').addEventListener('click', () => applyTask('simple'));
+  document.getElementById('sub-task-code').addEventListener('click', () => applyTask('code'));
+  document.getElementById('sub-task-untrusted').addEventListener('click', () => applyTask('untrusted'));
+  document.getElementById('sub-task-os').addEventListener('click', () => applyTask('os'));
+  applyTask('simple');
+})();
+</script>
+</body>
+</html>

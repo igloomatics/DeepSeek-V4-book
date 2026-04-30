@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 04 · CSA — 长上下文的快通道</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch4">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 04 · CSA</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part1.html">第一部分 · 架构</a><span class="sep">/</span>Ch 04</div>
+
+      <article id="ch4" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第一部分 · 架构 · 04</div>
+        <h2 class="chapter-title">CSA — 长上下文的快通道</h2>
+        <p class="chapter-sub">先把 1M 序列粗筛成 250K 个"超级 KV"，再让每个 query 只精读其中 1024 个 —— V4 长上下文的命脉。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂 CSA</div>
+          <p class="term-name">CSA = Compressed Sparse Attention（压缩 + 稀疏 注意力）</p>
+          <p>
+            把"每个 query 都要扫完 1M 个 KV"这个 $O(n^2)$ 的炸弹拆成两步：
+            <strong>(1) 把每 $m$ 个原始 KV 压成 1 个"超级 KV"</strong>（$n \to n/m$，$m=4$），
+            <strong>(2) 用一套轻量化打分器从 $n/m$ 个超级 KV 里选 top-$k$</strong>（$k=1024$）。
+            每个 query 实际只精读 $k$ 个超级 KV，对应 $k \cdot m = 4096$ 个原始细粒度 token —— 比 1M 少了三个数量级。
+          </p>
+          <dl>
+            <dt>MLA（Multi-head Latent Attention，V3 的方案）</dt>
+            <dd>把 KV 通过低秩投影压到 $d_c$ 维 latent 缓存（V3 取 $d_c=512$，$d=7168$，缓存压 14×）。<em>解决了"单 token KV 缓存大"</em>，但<em>没解决"序列变长后每 query 仍要扫全部 $n$ 个 token"</em>。1M context 下还是 $O(n^2)$。</dd>
+
+            <dt>Token-Level Compressor（CSA 第一步）</dt>
+            <dd>把相邻 $m$ 个原始 KV 用 softmax 加权平均成 1 个"超级 KV"（V4 paper 称 $C^{\text{Comp}}$）。$n=$ 1M $\to n/m=$ 250K。<strong>双流重叠</strong>：每个原始 token 同时贡献给两个相邻超级 KV，避免边界丢信息。</dd>
+
+            <dt>Lightning Indexer（CSA 第二步）</dt>
+            <dd>一套<em>更轻</em>的 query/key 投影（参数量是核心 attention 的 1/8），用 ReLU（不是 softmax）给 250K 个超级 KV 打分。"Lightning"指它两个性质：<em>计算便宜</em> + <em>支持流式 top-$k$</em>（不必把所有分数实例化到内存）。</dd>
+
+            <dt>Top-$k$ Selection</dt>
+            <dd>每个 query 用 indexer 分数选出最高的 $k$ 个超级 KV，只对它们做核心 attention。Pro 取 $k=1024$，Flash 取 $k=512$。<em>$k\cdot m$（4096 / 2048）就是每个 query 实际能"看清"的细粒度 token 数</em>。</dd>
+
+            <dt>Shared-KV MQA（共享 KV 的多查询注意力）</dt>
+            <dd>$n_h=128$ 个 head 共享同一份 KV，省去每 head 一份 KV 的开销。"Shared" 还有第二层意思：<em>indexer 与核心 attention 共用同一份 query latent $\mathbf{c}^Q$</em>，省一次大矩阵乘。</dd>
+
+            <dt>Grouped Output Projection（分组输出投影）</dt>
+            <dd>核心 attention 的输出维度 $n_h \cdot c = 128 \times 512 = 65536$，直接投回 $d=7168$ 要 4.7 亿参数 / 层。把 head 切成 $g=16$ 组，先<em>组内</em>降到 $d_g=1024$，再 concat 跨组融合。压到 1.24 亿参数 / 层，<strong>省 73%</strong>。</dd>
+
+            <dt>SWA（Sliding Window Attention，滑动窗口分支）</dt>
+            <dd>除了 top-$k$ 超级 KV，每个 query 额外读最近 $n_{\text{win}}=128$ 个<em>原始未压缩</em> KV。压缩 + top-$k$ 容易把"最近几十个 token"融成一两个超级 KV，丢掉局部细节；SWA 兜住这一点。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>压缩把 $n$ 砍 $m$ 倍，稀疏让 query 只看 $k$ 个超级 KV —— 1M 序列从 $O(n^2)$ 降到约 $O(n \log n + k m)$，单层 FLOPs 降 200×，但每个 query 的有效信息覆盖仍达 $k\cdot m=4096$ 个原始 token。</div>
+        </div>
+
+        <!-- ================== 章首论文图：CSA 架构总览 ================== -->
+        <figure class="paper-fig">
+          <img src="../figures/ch04/01.png" alt="CSA 架构总览：Token-Level Compressor + Lightning Indexer + Top-k Selector + Sliding Window + Shared KV MQA 的数据流">
+          <figcaption>
+            图 4-1 · <strong>CSA 整体架构</strong>。底层 Hidden States of KV Tokens 同时喂两条路：左路 Token-Level Compressor 输出 <em>Compressed KV Entries</em>（参与 Top-k 选择 + 主 attention），右路另一个 Compressor 输出 <em>Compressed Indexer Keys</em>，与 Indexer Queries 在 Lightning Indexer 内做 Multi-Query Attention 算 Index Scores → Top-k Selector 挑出 <em>Selected Compressed KV Entries</em>。Sliding Window KV Entries（左侧黄条）直接 concat，喂入最上层的 <strong>Shared Key-Value Multi-Query Attention</strong>。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 §2.3.1 Compressed Sparse Attention，Figure 3，p. 9。</span>
+          </figcaption>
+        </figure>
+
+        <!-- ================== §1 MLA 在 1M 上为什么不够 ================== -->
+        <h3 id="motivation">1. V3 的 MLA 在 1M 上为什么不够</h3>
+        <p>
+          V3 的注意力是 <strong>MLA</strong>（Multi-head Latent Attention）：通过低秩投影把 KV 压到 $d_c$ 维 latent，每个 head 再升回。它解决的是"<em>每个 token 的 KV 缓存太大</em>"这一项。
+        </p>
+        <ul>
+          <li>原版每 token 的 KV 缓存 $\approx 2 \cdot n_h \cdot d_h$ bytes；</li>
+          <li>MLA 只缓存 latent，缓存大小变 $d_c$，<em>压缩 10-20×</em>。</li>
+        </ul>
+
+        <p>但 MLA <strong>没解决</strong>的有三件事：</p>
+        <ul>
+          <li><strong>计算复杂度仍是 $O(n^2)$</strong>：每 query 仍要与所有 $n$ 个 KV 做点积；</li>
+          <li><strong>缓存总量仍 $O(n)$</strong>：1M token × 512-dim latent × 2(K,V) × bf16 × 61 层仍要几百 GB；</li>
+          <li><strong>注意力分布稀薄化</strong>：softmax 在 1M positions 上铺开，平均概率 $10^{-6}$，<em>信号被噪声淹没</em>。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 为什么 1M 跑不动</span>
+          单层 attention 的<strong>点积次数</strong> $= n_q \cdot n_k = n^2$。
+          序列长度从 V3 主流的 64K 涨到 V4-Pro 的 1M：
+          <br><br>
+          <strong>64K → 1M：</strong> $n^2$ 从 $4.3 \times 10^9$ 涨到 $10^{12}$，<strong>放大 244×</strong>；
+          再乘 61 层 = $6.1 \times 10^{13}$ 次点积 / 单 token 推理。即便 H100 满速 $10^{15}$ FLOPs/s，单 token 也要 60 ms 就花在 attention 上 —— <em>每生成一个 token 都比一次 forward 慢一倍</em>，无法接受。
+          <br><br>
+          缓存方面：MLA 每 token KV cache $\approx 2 \times 512 \times \text{bf16} = 2048$ B。1M tokens × 61 层 = $1.25 \times 10^{11}$ B = <strong>125 GB</strong>，单 GPU 装不下。
+        </div>
+
+        <p>所以 1M context 必须换思路 —— <em>不是把每个 KV 压更小，而是把 KV 的<strong>数量</strong>减少</em>。</p>
+
+        <!-- ================== §2 两个独立想法 ================== -->
+        <h3 id="two-ideas">2. 两个独立想法，单独用都不够</h3>
+
+        <p><strong>想法 A · 稀疏注意力</strong>：让每个 query 只看 $k$ 个位置（如 Longformer 的 sliding window、BigBird 的 random+global+window）。</p>
+        <p><em>问题</em>：要决定"哪 $k$ 个位置最相关"，需要先对所有 $n$ 个位置打分 —— <strong>打分本身就是 $O(n)$ per query，总成本仍是 $O(n^2)$</strong>。靠规则强行选 $k$（如固定窗口）会丢真正相关的远端信息。</p>
+
+        <p><strong>想法 B · 压缩注意力</strong>：把每 $m$ 个 KV 加权平均成 1 个超级 KV，序列长度 $n \to n/m$。</p>
+        <p><em>问题</em>：超级 KV 是<em>多个原始 token 的加权平均</em>，query 无法精确读出某一具体 token 的 KV —— <strong>细粒度访问能力丢了</strong>。</p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">CSA 的关键洞察</div>
+          <p>
+            <strong>把两个想法串起来，正好对消彼此的弱点</strong>：
+          </p>
+          <ul>
+            <li>先压缩（$n \to n/m$），<em>把"打分代价"从 $O(n)$ 降到 $O(n/m)$</em>；</li>
+            <li>再用稀疏（top-$k$ 选超级 KV），<em>避免 softmax 在大空间稀薄化</em>。</li>
+          </ul>
+          <p>
+            最终每个 query 看到的"有效细粒度信息"是 $k \cdot m$ 个原始 token，<em>但只为 $k$ 个超级 KV 付计算代价</em>。
+          </p>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 算一笔账</span>
+          1M 序列下 V4-Pro 的两步走（$m=4, k=1024$）：
+          <br><br>
+          <strong>Step 1（Indexer 打分）</strong>：每 query 对 $n/m = 250\text{K}$ 个超级 KV 打分。Indexer 用 1/8 量级的小 head，每分数代价约 $n^I_h \cdot c^I = 64 \times 128 = 8192$ FLOPs。一个 query 的总打分代价 $= 250\text{K} \times 8192 = 2 \times 10^9$ FLOPs。
+          <br><br>
+          <strong>Step 2（Core attention）</strong>：每 query 在 $k=1024$ 个超级 KV 上做核心 attention，代价 $\approx 1024 \times n_h \cdot c = 1024 \times 128 \times 512 = 6.7 \times 10^7$ FLOPs。
+          <br><br>
+          <strong>对比 dense MLA</strong>：每 query 对 1M 个 token 做核心 attention，代价 $\approx 10^6 \times 128 \times 512 = 6.7 \times 10^{10}$ FLOPs。
+          <br><br>
+          总和：CSA 的 $2 \times 10^9 + 6.7 \times 10^7 \approx 2 \times 10^9$ FLOPs，<strong>比 MLA 省 33×</strong>。Indexer 的小开销完全摊平。
+        </div>
+
+        <!-- ================== §3 Token-Level Compressor ================== -->
+        <h3 id="compress">3. Token-Level Compressor：每 $m$ 个 KV 压成 1 个</h3>
+
+        <p><strong>朴素压缩</strong>：把序列切成 $\lfloor n/m \rfloor$ 段，每段简单平均。</p>
+        <p><em>致命问题</em>：边界丢信息。位置 $m-1$ 和 $m$ 是相邻的，但它们落进<strong>不同段</strong>的超级 KV —— query 看任一段都只看到一半边界。</p>
+
+        <p><strong>V4 的双流重叠设计</strong>：生成两组并行 KV 投影 $C^a, C^b$ 配两组打分 $Z^a, Z^b$。每个超级 KV $C^{\text{Comp}}_i$ 是<em>两段相邻区间的混合</em>：</p>
+
+        <div class="math-block">
+          $$
+          \big[S^{a}_{mi:m(i+1)-1};\,S^{b}_{m(i-1):mi-1}\big]
+          \;=\; \mathrm{Softmax}_{\text{row}}\!\Big(\big[Z^{a}_{mi:m(i+1)-1}+B^{a};\, Z^{b}_{m(i-1):mi-1}+B^{b}\big]\Big)
+          $$
+        </div>
+
+        <div class="math-block">
+          $$
+          C^{\text{Comp}}_i \;=\;
+          \underbrace{\sum_{j=mi}^{m(i+1)-1} S^{a}_j \odot C^{a}_j}_{\text{右半段 a 流贡献}}
+          \;+\;
+          \underbrace{\sum_{j=m(i-1)}^{mi-1} S^{b}_j \odot C^{b}_j}_{\text{左半段 b 流贡献}}
+          $$
+        </div>
+
+        <p>每个符号的含义：</p>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>符号</th><th>形状 / 角色</th></tr></thead>
+            <tbody>
+              <tr><td>$C^a, C^b$</td><td>$n \times c$，两套独立的 KV 投影</td></tr>
+              <tr><td>$Z^a, Z^b$</td><td>$n$ 维，<em>每个 token 在自己流里的"重要性"打分</em></td></tr>
+              <tr><td>$B^a, B^b$</td><td>$m$ 维，<em>段内位置偏置</em>（中心 token 一般权重更高）</td></tr>
+              <tr><td>$S^a, S^b$</td><td>softmax 后的权重，<em>段内</em>归一化（每段 $m$ 个权重和为 1）</td></tr>
+              <tr><td>$\odot$</td><td>逐元素乘 —— $S_j$ 是标量、$C_j$ 是向量，每个超级 KV 是<em>段内 $m$ 个 KV 向量的凸组合</em></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>双流重叠这两条公式翻成大白话就是<strong>"每个原始 token 同时投影到两份独立的"信道"，再交叉打包"</strong>：</p>
+          <ol>
+            <li><strong>每个 token 投两份</strong>：$C^a_j$ 和 $C^b_j$ 是同一个 token 的两套独立 KV 投影 —— 像同一份文档拍两张不同角度的照片；</li>
+            <li><strong>$Z$ 给每个 token 打"重要性分"</strong>：$Z^a, Z^b$ 是两个流各自的打分，softmax 在<em>段内</em>把它们归一化（每段 $m=4$ 个权重和为 1）；</li>
+            <li><strong>超级 KV $i$ = 「这一段（a 流）的右半 + 上一段（b 流）的左半」加权平均</strong>：每个原始 token 一定在<em>两个相邻超级 KV</em>都有份额，边界没空洞；</li>
+            <li><strong>位置偏置 $B$ 让中心 token 占重</strong>：训练初期段中心 token 权重更高，避免 softmax 在没学好前给端点 token 极端权重。</li>
+          </ol>
+          <p>整体效果：压缩率仍是 $1/m$，但<em>每个原始 token 影响范围扩散到 $2m$ 个邻居</em>，等价于做了一遍隐式的 stride=$m$、kernel=$2m$ 的可学习池化。</p>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">具体例子 · $m=4$ 段是什么样</span>
+          假设原始序列 $\{x_0, x_1, \dots, x_{11}\}$（12 个 token），$m=4$。压缩后得到 3 个超级 KV：$C^{\text{Comp}}_0, C^{\text{Comp}}_1, C^{\text{Comp}}_2$。
+          <br><br>
+          按双流公式：
+          <br>
+          $C^{\text{Comp}}_0 = \sum_{j=0}^{3} S^a_j \odot C^a_j$（只有 a 流，因为没有上一段）
+          <br>
+          $C^{\text{Comp}}_1 = \sum_{j=4}^{7} S^a_j C^a_j + \sum_{j=0}^{3} S^b_j C^b_j$
+          <br>
+          $C^{\text{Comp}}_2 = \sum_{j=8}^{11} S^a_j C^a_j + \sum_{j=4}^{7} S^b_j C^b_j$
+          <br><br>
+          注意 token $x_4$（第二段开头）：通过 a 流进入 $C^{\text{Comp}}_1$，又通过 b 流进入 $C^{\text{Comp}}_2$。<em>它两边都有份</em> —— 这就是"重叠"。
+        </div>
+
+        <!-- ================== §4 Lightning Indexer + VIZ ================== -->
+        <h3 id="indexer">4. Lightning Indexer：怎么便宜地为 $n/m$ 个超级 KV 打分</h3>
+
+        <p>选 top-$k$ 之前要先对所有 $n/m$ 个超级 KV 打分。直接用核心 attention 的全 head 算太贵 —— Indexer 用一套<em>更轻</em>的参数：</p>
+
+        <div class="math-block">
+          $$
+          \mathbf{c}^Q_t \;=\; \mathbf{h}_t \cdot W^{DQ},\qquad
+          [\mathbf{q}^I_{t,1};\dots;\mathbf{q}^I_{t,n^I_h}] \;=\; \mathbf{c}^Q_t \cdot W^{IUQ}
+          $$
+        </div>
+
+        <p>每个符号：</p>
+        <ul>
+          <li>$\mathbf{h}_t$：第 $t$ 位的 hidden state（$d=7168$ 维）；</li>
+          <li>$W^{DQ}$：把 $\mathbf{h}_t$ 投到 query 低秩 latent $\mathbf{c}^Q_t$（维度 $d_c = 1536$）；</li>
+          <li>$W^{IUQ}$：把 $\mathbf{c}^Q_t$ 上升回 $n^I_h \cdot c^I = 64 \times 128$ 个 indexer query；</li>
+          <li>$n^I_h = 64$（vs 核心 $n_h = 128$），$c^I = 128$（vs 核心 $c = 512$）—— Indexer 的"信道数 $\times$ 每信道维度"是核心的 $1/8$。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · Indexer 比核心便宜多少</span>
+          单 query · 单 KV 打分 FLOPs：
+          <ul>
+            <li>核心 attention：$n_h \cdot c = 128 \times 512 = \mathbf{65{,}536}$</li>
+            <li>Lightning Indexer：$n^I_h \cdot c^I = 64 \times 128 = \mathbf{8{,}192}$ —— <strong>1/8 成本</strong></li>
+          </ul>
+          1M context 下 indexer 总 FLOPs $\approx 250\text{K} \times 8192 = 2 \times 10^9$，相当于核心 attention 在 4096 tokens 上的开销。<em>Indexer 的代价 $\approx$ 一次小型 attention</em>。
+        </div>
+
+        <p>Indexer 的关键设计：<strong>用 ReLU 而非 softmax 计算打分</strong>：</p>
+
+        <div class="math-block">
+          $$
+          I_{t,s} \;=\; \sum_{h=1}^{n^I_h} w^I_{t,h} \cdot \mathrm{ReLU}\!\big(\mathbf{q}^I_{t,h} \cdot K^{\text{IComp}}_s\big)
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条打分公式对每对 (query $t$, 超级 KV $s$) 算一个数 $I_{t,s}$，意思就是<strong>"这个 query 对这个超级 KV 有多感兴趣"</strong>：</p>
+          <ol>
+            <li><strong>每个 indexer head 算一个内积</strong>：$\mathbf{q}^I_{t,h} \cdot K^{\text{IComp}}_s$ —— 64 个 head 各算一次；</li>
+            <li><strong>过 ReLU</strong>：负相关的直接归 0，保留正相关那部分原始强度；</li>
+            <li><strong>head-wise 加权</strong>：$w^I_{t,h}$ 是模型学的"哪些 head 更可信"，重要 head 票权更大；</li>
+            <li><strong>所有 head 累加</strong>得到最终分数。</li>
+          </ol>
+          <p>关键差异 vs softmax：<em>softmax 要拿全 250K 个分数除以总和</em>（全局归一化），<em>ReLU 是逐元素函数</em>，每个 $I_{t,s}$ 独立 —— 算一个就能立刻丢进 max-heap，不必把 250K 全实例化。</p>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">为什么 ReLU 不是 softmax</div>
+          <ul>
+            <li><strong>softmax 需要全局归一化</strong>：要算 $s$ 上的 softmax，必须先<em>实例化所有 $n/m$ 个分数</em>到内存。1M context 下 $n/m = 250\text{K}$，纯 indexer 这一步就要 250K × batch × layer 个分数的内存。</li>
+            <li><strong>ReLU 是逐元素的</strong>：每个 $I_{t,s}$ 独立计算，可以<em>流式 + lazy top-$k$</em>。用 max-heap 边算边淘汰，峰值内存只需 $k$ 个分数。</li>
+            <li><strong>softmax 在长序列里"稀薄化"</strong>：1M 个位置上的 softmax 把概率铺得极薄，<em>top-1 与 top-1000 的绝对差距压到 $10^{-3}$ 量级</em>，区分能力消失。ReLU 不归一化，原始信号强度直接保留。下面的可视化亲自感受一下。</li>
+          </ul>
+        </div>
+
+        <!-- VIZ: Softmax 稀薄化 vs ReLU -->
+        <div class="viz" id="viz-relu-vs-softmax">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 序列变长时，softmax 怎么把信号"稀薄化"</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 340" id="rs-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- panel A: softmax (log y-axis) -->
+            <text x="220" y="22" text-anchor="middle" font-size="13" fill="#1c2433" font-family="Inter" font-weight="600">Softmax 概率（log y-axis）</text>
+            <rect x="80" y="40" width="280" height="250" fill="#fafbfd" stroke="#e5e7eb"/>
+
+            <!-- panel A grid lines: log 10^-5, 10^-4, ..., 10^0 -->
+            <line x1="80" y1="40"  x2="360" y2="40"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="80" y1="90"  x2="360" y2="90"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="80" y1="140" x2="360" y2="140" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="80" y1="190" x2="360" y2="190" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="80" y1="240" x2="360" y2="240" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="80" y1="290" x2="360" y2="290" stroke="#1c2433" stroke-width="1"/>
+
+            <text x="76" y="44"  text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">10⁰</text>
+            <text x="76" y="94"  text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">10⁻¹</text>
+            <text x="76" y="144" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">10⁻²</text>
+            <text x="76" y="194" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">10⁻³</text>
+            <text x="76" y="244" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">10⁻⁴</text>
+            <text x="76" y="294" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">10⁻⁵</text>
+
+            <!-- panel A bars (rendered by JS) -->
+            <g id="rs-bars-soft"></g>
+
+            <!-- panel B: ReLU (linear y-axis 0..5) -->
+            <text x="540" y="22" text-anchor="middle" font-size="13" fill="#1c2433" font-family="Inter" font-weight="600">ReLU 打分（线性 y-axis）</text>
+            <rect x="400" y="40" width="280" height="250" fill="#fafbfd" stroke="#e5e7eb"/>
+
+            <line x1="400" y1="40"  x2="680" y2="40"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="400" y1="90"  x2="680" y2="90"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="400" y1="140" x2="680" y2="140" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="400" y1="190" x2="680" y2="190" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="400" y1="240" x2="680" y2="240" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="400" y1="290" x2="680" y2="290" stroke="#1c2433" stroke-width="1"/>
+
+            <text x="396" y="44"  text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">5</text>
+            <text x="396" y="94"  text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">4</text>
+            <text x="396" y="144" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">3</text>
+            <text x="396" y="194" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">2</text>
+            <text x="396" y="244" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">1</text>
+            <text x="396" y="294" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono">0</text>
+
+            <g id="rs-bars-relu"></g>
+
+            <!-- x labels under both panels -->
+            <text x="220" y="308" text-anchor="middle" font-size="11" fill="#6b7280">top-20 候选位置（按打分降序）</text>
+            <text x="540" y="308" text-anchor="middle" font-size="11" fill="#6b7280">top-20 候选位置（按打分降序）</text>
+
+            <!-- annotations -->
+            <text x="220" y="328" text-anchor="middle" font-size="11" fill="#dc2626" font-style="italic" id="rs-soft-annot">Softmax 顶部值 …</text>
+            <text x="540" y="328" text-anchor="middle" font-size="11" fill="#16a34a" font-style="italic" id="rs-relu-annot">ReLU 顶部值 = 5.0（不变）</text>
+          </svg>
+          <div class="viz-controls">
+            <label>序列总长 $n$
+              <input type="range" id="rs-slider" min="1.3" max="6" step="0.05" value="3" style="width:240px">
+            </label>
+            <span class="viz-readout" id="rs-n-readout">n = 1,000</span>
+            <span class="viz-readout" id="rs-soft-readout">Softmax top-1 = …</span>
+          </div>
+          <p class="viz-caption">
+            场景：top-20 候选里有 <strong>5 个高相关 token（raw score = 5.0）</strong> + <strong>15 个中等相关（score ≈ 1.5 → 0.4）</strong>，序列其余 $n-20$ 个 token 是 score=0 的"噪声"。
+            <br>
+            拖滑条把 $n$ 从 20 调到 1M，观察：<strong>左面板（Softmax）峰值随 $n$ 增大而垮塌</strong> —— 1M 时连最高分的 token 都只拿到 $\sim 10^{-5}$ 的注意力权重；<strong>右面板（ReLU）完全不动</strong>，无论 $n$ 多大，5.0 就是 5.0。这就是 V4 选 ReLU 的物理直觉。
+          </p>
+        </div>
+
+        <p>$w^I_{t,h}$ 是<em>head-wise 重要性</em>，让模型学会哪些 indexer head 更可信。最终 top-$k$ 选择：</p>
+
+        <div class="math-block">
+          $$
+          C^{\text{SprsComp}}_t \;=\; \big\{\, C^{\text{Comp}}_s \,\big|\, I_{t,s} \in \mathrm{Top}\text{-}k \,\big\}
+          $$
+        </div>
+
+        <p>V4-Pro 取 $k = 1024$，V4-Flash 取 $k = 512$。</p>
+
+        <!-- ================== §5 k m 选择 ================== -->
+        <h3 id="k-choice">5. 为什么 $k$ 取 1024、$m$ 取 4</h3>
+
+        <p>
+          $k \cdot m$ 是<em>每个 query 实际看到的"细粒度 token 量"</em>：Pro 是 $1024 \times 4 = 4096$，Flash 是 $512 \times 4 = 2048$。
+        </p>
+
+        <div class="numex">
+          <span class="numex-tag">尺度律 · $k$ 和 $m$ 各司其职</span>
+          <ul>
+            <li><strong>4096 是经验上的"足够"</strong>：大量长文档实证显示，对任何特定 query，<em>真正相关的 token 集中在 $\sim$ 几千</em>。$k\cdot m$ 再加大边际增益不显著。</li>
+            <li><strong>$m=4$ 是"压缩 vs 细节"的平衡</strong>：$m=8$ 把 1M 压到 125K 但每个超级 KV 是 8 个 token 的平均，<em>单一超级 KV 携带的具体信息变模糊</em>；$m=2$ 压缩不够，250K（$m=4$）是 indexer 能高质量打分的上限。</li>
+            <li><strong>$k = n/(m \cdot 256)$</strong> 这个比例在 1M~10M 间的尺度律实验里相对稳定：$n=1\text{M}, m=4$ 时正好给 $k=1024$。</li>
+          </ul>
+        </div>
+
+        <!-- ================== §6 MQA + Grouped Output ================== -->
+        <h3 id="mqa">6. Shared-KV MQA + Grouped Output Projection</h3>
+
+        <p>top-$k$ 选完后，每 query 要在 $k=1024$ 个超级 KV 上做核心 attention。还有两个工程问题要处理。</p>
+
+        <p><strong>问题 ①：标准多头 attention 每个 head 一份 KV，太重</strong></p>
+        <p>解法是 <strong>MQA（Multi-Query Attention）</strong>：所有 $n_h=128$ 个 query head <em>共享</em>一份 KV。这样 KV 计算与缓存只算一次，head 间的差异完全靠 query 表达。</p>
+        <p>"<em>Shared</em>-KV" 还有一层意思：indexer 与核心 attention <strong>共享同一个 query latent $\mathbf{c}^Q$</strong> —— 不需要为 indexer 单独投一份 query，省一次大矩阵乘。</p>
+
+        <p><strong>问题 ②：输出投影维度爆炸</strong></p>
+        <p>核心 attention 的 head 总输出维度是 $n_h \cdot c = 128 \times 512 = 65536$。直接投回 $d=7168$ 需要的参数：</p>
+        <div class="math-block">
+          $$
+          65536 \times 7168 \;\approx\; 4.7 \times 10^{8}\;\;\text{参数 / 层}
+          $$
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 直接投影会吃掉模型 1/3</span>
+          61 层每层 4.7 亿参数 = $\mathbf{2.87 \times 10^{10}}$ = <strong>287 亿参数 / 仅输出投影</strong>。
+          <br>
+          V4-Pro 总参数约 800 亿，输出投影一项就占 <strong>36%</strong> —— 完全不能接受。
+        </div>
+
+        <p><strong>Grouped Output Projection</strong>：把 $n_h$ 个 head 切成 $g=16$ 组，每组先投到 $d_g=1024$ 维，最后 concat 16 组共 $g \cdot d_g = 16384$ 维，再投到 $d=7168$。</p>
+
+        <div class="math-block">
+          $$
+          \begin{aligned}
+          \text{Step 1:}\;\; & \mathbf{o}_g \;=\; \mathrm{concat}_h(\text{head}_h)_{h \in \text{group}\,g} \cdot W^{O,1}_g, \quad W^{O,1}_g \in \mathbb{R}^{(n_h/g \cdot c) \times d_g} \\
+          \text{Step 2:}\;\; & \mathbf{o} \;=\; \mathrm{concat}_g(\mathbf{o}_g) \cdot W^{O,2}, \quad W^{O,2} \in \mathbb{R}^{(g \cdot d_g) \times d}
+          \end{aligned}
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>"分组输出投影"做的事情就是<strong>把一次大矩阵乘拆成两层小矩阵乘</strong>，两层之间夹一个"瓶颈"：</p>
+          <ul>
+            <li><strong>Step 1（组内压缩）</strong>：把 128 个 head 分 16 组，每组 8 个 head（合计 $8 \times 512 = 4096$ 维）通过 $W^{O,1}_g$ 投到 $d_g=1024$ 维 —— <em>每组是一次小 4096→1024 投影</em>，16 组并行；</li>
+            <li><strong>Step 2（跨组融合）</strong>：把 16 组的 1024 维结果 concat 成 16384 维，再用 $W^{O,2}$ 投回 $d=7168$ —— <em>这一步让组与组之间能互相通信</em>。</li>
+          </ul>
+          <p>本质是个低秩分解：原本 65536 → 7168 一步走（4.7 亿参数），现在中间卡个 16384 维瓶颈，<em>瓶颈宽度决定容量损失</em>。Grouped 取 $g\cdot d_g = 16384$（瓶颈带宽够），实测和直接投影几乎无精度差。</p>
+        </div>
+
+        <p>参数量：$g \cdot (\tfrac{n_h}{g} c \cdot d_g) + (g d_g) d = 16 \times (8 \cdot 512 \cdot 1024) + 16384 \cdot 7168 \approx 6.7\text{M} + 117\text{M} = 124\text{M}$，相比直接投影 470M <strong>节省 73%</strong>。</p>
+
+        <!-- ================== §7 SWA ================== -->
+        <h3 id="window">7. Sliding Window 分支：保住最近 $n_{\text{win}}$ 个 token 的细节</h3>
+
+        <p>压缩 + top-$k$ 有个隐性弱点：<em>最近的几十个 token 大概率被压在某一两个超级 KV 里</em>，细粒度局部信息被融掉。但这些 token 对生成连贯性最关键。</p>
+
+        <p>CSA 给每个 query 额外加一条 SWA（Sliding Window Attention）分支：</p>
+
+        <div class="math-block">
+          $$
+          \mathbf{o}_{\text{CSA}}(t) \;=\; \mathrm{Attn}\big(q_t, \mathrm{TopK}(C^{\text{Comp}})\big)
+          \;+\; \mathrm{Attn}\big(q_t, \{K_{t-n_{\text{win}}+1:t}, V_{t-n_{\text{win}}+1:t}\}\big)
+          $$
+        </div>
+
+        <p>$n_{\text{win}} = 128$（V4-Pro）。这条分支用<em>原始</em>未压缩 KV，dense 跑（128 个 token cheap），与 top-$k$ 结果直接相加。</p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>CSA 的最终输出 = <strong>"远场注意力（top-$k$ 个超级 KV）"+ "近场注意力（最近 128 个原始 KV）"</strong>：</p>
+          <ul>
+            <li><strong>远场</strong>：top-$k$ 选出来的 1024 个超级 KV，承载 1M 范围内的"哪些段相关"；</li>
+            <li><strong>近场</strong>：滑窗 128 个原始未压缩 KV，承载"上一句 / 上一段的细节"。</li>
+          </ul>
+          <p>近场分支只有 128 个 token，dense attention 代价是 $128 \times n_h \cdot c \approx 8.4 \times 10^6$ FLOPs，不到核心分支的 1/8 ——<em>可忽略</em>，但补回了压缩丢掉的本地信息。</p>
+        </div>
+
+        <!-- ================== §8 代价 ================== -->
+        <h3 id="cost">8. 代价 / 还没解决的问题</h3>
+        <ul>
+          <li><strong>Indexer 是<em>近似</em>的</strong>：低秩 + ReLU 的打分有可能漏掉真正相关的远端 token。这是 sparse attention 系列方法的<em>共性</em>失误模式，CSA 没根本解决，只是把"漏选率"做到很低。</li>
+          <li><strong>压缩权重训练目标与最终任务对齐有 gap</strong>：$Z^a, Z^b$ 是与主 loss 一起端到端训练的，目标是<em>下游任务好</em>，<em>不是检索准</em>。所以超级 KV 不是 retrieval 优化解。</li>
+          <li><strong>Indexer 的 5% FLOPs 开销</strong>：相比 1M 上 $O(n^2)$ attention 的代价微不足道，但在 4K~64K 短上下文下，indexer 反而是<em>纯开销</em>（top-$k$ 几乎选了全部 KV）。所以 V4 在序列短时会动态切回 dense。</li>
+          <li><strong>Top-$k$ 的非 differentiable 性质</strong>：选哪 $k$ 个本身是离散决策。V4 的处理方式是"在前向选 top-$k$，反向不传梯度到选择本身，只传给被选中的 KV"—— 这是<em>稀疏 attention 流派</em>的标准做法，但意味着 indexer 的训练信号比理想稀薄。</li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>
+            <strong>1M 序列下 MLA 还是 $O(n^2)$，必须减 KV 数量。压缩单用丢细节，稀疏单用打分仍 $O(n)$ —— 把两者串起来：先压成 $n/m$ 个超级 KV（双流重叠避免边界空洞），再用 Lightning Indexer（ReLU 打分、流式 top-$k$）选 $k$ 个，每 query 实际看 $k\cdot m$ 个细粒度 token。配 Shared-KV MQA + Grouped Output Projection 把参数压到能接受的量级，再加 SWA 分支保最近 $n_{\text{win}}$ 个 token 的细节。代价是 indexer 5% FLOPs + top-$k$ 离散选择的近似误差。</strong>
+          </p>
+        </div>
+
+        <div class="diagram-wrap">
+          <div class="mermaid">
+flowchart LR
+  H["Hidden States<br/>n × d"] --> TC1["Token-Level<br/>Compressor (a/b 双流)"]
+  TC1 --> CC["Compressed KV<br/>n/m × c"]
+  CC --> TC2["Compressor 2<br/>(为 indexer)"]
+  TC2 --> IK["Indexer Keys"]
+  Q["Query Token h_t"] --> Down["Latent c^Q"]
+  Down --> IQ["Indexer Queries"]
+  IK --> Score["ReLU 打分"]
+  IQ --> Score
+  Score --> TopK["Top-k Selector<br/>k=1024 (Pro)"]
+  CC --> TopK
+  TopK --> SelComp["Selected Compressed KV"]
+  Down --> CoreQ["Core Queries"]
+  SelComp --> Core["Shared-KV MQA"]
+  CoreQ --> Core
+  Win["Sliding Window<br/>n_win=128 raw KV"] --> Core
+  Core --> GOP["Grouped<br/>Output Projection"]
+  GOP --> Out["CSA 输出"]
+
+  classDef hot fill:#71a4e1,stroke:#71a4e1,color:#fff
+  class TopK,Core,GOP hot
+          </div>
+        </div>
+        <p class="caption">图 4-2 · CSA 完整流程。Lightning Indexer 是"大脑"，Grouped Output Projection 是"压缩器"，Sliding Window 是"短期记忆"。</p>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: Softmax 稀薄化 vs ReLU 打分
+     ============================================================ -->
+<script>
+(function() {
+  const N_BARS = 20;
+  // fixed scores for top-20 visible bars
+  // - 5 peaks at 5.0
+  // - 15 mediums decreasing 1.5 → 0.4 (step 0.08)
+  const scores = [];
+  for (let i = 0; i < N_BARS; i++) {
+    if (i < 5) scores.push(5.0);
+    else scores.push(Math.max(0.4, 1.5 - 0.08 * (i - 5)));
+  }
+  const expScores = scores.map(s => Math.exp(s));
+  const sumTop = expScores.reduce((a, b) => a + b, 0);
+  // remaining n-20 hidden positions assumed score = 0, so each contributes exp(0) = 1
+
+  // Panel A: log y-axis from 10^-5 (y=290) to 10^0 (y=40), 250 px tall, 5 decades
+  // y_pixel = 290 - ((log10(p) + 5) / 5) * 250
+  function yLog(p) {
+    const v = Math.log10(Math.max(p, 1e-10));
+    let y = 290 - ((v + 5) / 5) * 250;
+    if (y < 40) y = 40;
+    if (y > 290) y = 290;
+    return y;
+  }
+  // Panel B: linear y-axis 0 → 5 mapped to y = 290 → 40
+  function yLin(s) {
+    return 290 - (s / 5) * 250;
+  }
+
+  const PANEL_A_X = 80;
+  const PANEL_B_X = 400;
+  const BAR_W = 12;
+  const BAR_GAP = 2;
+
+  const gSoft = document.getElementById('rs-bars-soft');
+  const gRelu = document.getElementById('rs-bars-relu');
+  const slider = document.getElementById('rs-slider');
+  const nReadout = document.getElementById('rs-n-readout');
+  const softReadout = document.getElementById('rs-soft-readout');
+  const softAnnot = document.getElementById('rs-soft-annot');
+
+  // create bars once
+  const softBars = [];
+  const reluBars = [];
+  for (let i = 0; i < N_BARS; i++) {
+    const x = i * (BAR_W + BAR_GAP) + 4;
+
+    const sb = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    sb.setAttribute('x', PANEL_A_X + x);
+    sb.setAttribute('width', BAR_W);
+    sb.setAttribute('fill', i < 5 ? '#dc2626' : '#fb923c');
+    sb.setAttribute('opacity', '0.85');
+    gSoft.appendChild(sb);
+    softBars.push(sb);
+
+    // ReLU bars are static — compute once
+    const yR = yLin(scores[i]);
+    const rb = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rb.setAttribute('x', PANEL_B_X + x);
+    rb.setAttribute('y', yR);
+    rb.setAttribute('width', BAR_W);
+    rb.setAttribute('height', 290 - yR);
+    rb.setAttribute('fill', i < 5 ? '#16a34a' : '#84cc16');
+    rb.setAttribute('opacity', '0.85');
+    gRelu.appendChild(rb);
+    reluBars.push(rb);
+  }
+
+  function fmtN(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return n.toFixed(0);
+  }
+  function fmtP(p) {
+    if (p >= 0.01) return p.toFixed(3);
+    return p.toExponential(2);
+  }
+
+  function update() {
+    const logN = parseFloat(slider.value);
+    const n = Math.round(Math.pow(10, logN));
+    const Z = sumTop + Math.max(0, n - N_BARS);
+
+    for (let i = 0; i < N_BARS; i++) {
+      const p = expScores[i] / Z;
+      const y = yLog(p);
+      softBars[i].setAttribute('y', y);
+      softBars[i].setAttribute('height', Math.max(0, 290 - y));
+    }
+
+    nReadout.textContent = 'n = ' + fmtN(n);
+    const peakP = expScores[0] / Z;
+    softReadout.textContent = 'Softmax top-1 = ' + fmtP(peakP);
+    softAnnot.textContent = 'Softmax 顶部值 = ' + fmtP(peakP);
+  }
+
+  slider.addEventListener('input', update);
+  update();
+})();
+</script>
+</body>
+</html>

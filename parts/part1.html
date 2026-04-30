@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>第一部分 · 架构</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="p1">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">第一部分 · 架构</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span>第一部分 · 架构</div>
+
+      <article class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>PART 1 · 6 章 · 架构</div>
+        <h2 class="chapter-title">第一部分 · 架构</h2>
+        <p class="chapter-sub">V4 的"形" —— 注意力、残差、优化器三条主线。先看清问题（百万 Token 之困），再逐个看清 mHC / CSA / HCA / Muon 这四把刀是怎么递进出来的。</p>
+
+        <div class="meta-row">
+          <span><strong>章节数</strong>6 章（Ch1–Ch6）</span>
+          <span><strong>预计阅读</strong>60–80 分钟</span>
+          <span><strong>难度</strong>★★★★☆</span>
+          <span><strong>前置</strong>Transformer 基础、残差连接、AdamW / Muon 概念、softmax / softmax-free 注意力</span>
+        </div>
+
+        <div class="part-jump">
+          <a href="#objectives">▸ 学习目标</a>
+          <a href="#roadmap">▸ 章节路线图</a>
+          <a href="#recap">▾ 本部分小结</a>
+          <a href="#quiz">▾ 自检题</a>
+        </div>
+
+        <div class="objectives" id="objectives">
+          <div class="objectives-eyebrow">▸ LEARNING OBJECTIVES</div>
+          <h3>读完这部分，你将能够</h3>
+          <ul>
+            <li>用一句话说清"为什么 1M 上下文必须改架构"，并说出 KV cache 与单 token FLOPs 的两条天花板。</li>
+            <li>区分 V3 → V4 在 MoE 路由打分、负载均衡、MTP 上的具体改动，并解释每一处改动想解决什么。</li>
+            <li>解释 mHC 把残差矩阵约束在 <em>Birkhoff 多面体</em>上的几何意义，说出谱范数 ≤ 1 与堆叠稳定性的因果关系。</li>
+            <li>画出 CSA 的"压缩 → 索引 → top-k → MQA"四段流水线，并指出 Lightning Indexer 为什么用 ReLU 不用 softmax。</li>
+            <li>说出 HCA 与 CSA 的"近视/远视"互补关系，理解为什么二者要交替穿插而不是择一。</li>
+            <li>背出 Muon 的 Hybrid NS 两段式系数，解释"前 8 步 + 后 2 步"为什么是收敛与稳定的折中。</li>
+            <li>面对一个新的"长序列效率"问题，能判断：先压、还是先稀疏、还是先换优化器。</li>
+          </ul>
+        </div>
+
+        <h3 id="roadmap">本部分章节路线图</h3>
+        <div class="roadmap">
+          <a class="roadmap-card" href="../chapters/ch01.html">
+            <div class="roadmap-num">CH 01</div>
+            <h4>百万 Token 之困</h4>
+            <p>O(n²) 是怎么把推理时代逼到墙角的。三条改造主线浮出水面。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch02.html">
+            <div class="roadmap-num">CH 02</div>
+            <h4>从 V3 继承的两件法宝</h4>
+            <p>DeepSeekMoE 与 MTP —— 哪些保留、哪些微调。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch03.html">
+            <div class="roadmap-num">CH 03 · ★</div>
+            <h4>mHC：流形约束的 Hyper-Connection</h4>
+            <p>Birkhoff 多面体 + Sinkhorn-Knopp，把残差锁进非膨胀流形。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch04.html">
+            <div class="roadmap-num">CH 04 · ★</div>
+            <h4>CSA：压缩稀疏注意力</h4>
+            <p>Token-level 压缩 + Lightning Indexer + top-k + Shared-KV MQA。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch05.html">
+            <div class="roadmap-num">CH 05</div>
+            <h4>HCA：重压缩注意力</h4>
+            <p>m'=128 的极致压缩。和 CSA 互补穿插。</p>
+          </a>
+          <a class="roadmap-card" href="../chapters/ch06.html">
+            <div class="roadmap-num">CH 06</div>
+            <h4>Muon 优化器</h4>
+            <p>Hybrid Newton–Schulz 把更新矩阵正交化。</p>
+          </a>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">如何阅读这部分</div>
+          <p>
+            按顺序读最容易：Ch1 给问题，Ch2 给基线，Ch3–6 给四把刀。
+            如果只想看明星章节，<strong>Ch3 (mHC) 与 Ch4 (CSA)</strong> 是必读 —— V4 一切下游优化（FP4、确定性 kernel、长上下文 CP）都是为这两件事服务的。
+          </p>
+        </div>
+
+        <div class="part-divider"><span>读完 6 章后,回来看这里</span></div>
+
+        <h3 id="recap">本部分小结</h3>
+        <div class="recap">
+          <div class="recap-eyebrow">▾ KEY TAKEAWAYS</div>
+          <h3>核心要点回顾</h3>
+          <ul>
+            <li><strong>问题（Ch1）</strong>：1M 上下文下 vanilla attention 的 O(n²) 与 KV cache 同时爆炸 ⇒ 必须从架构层动手。</li>
+            <li><strong>继承（Ch2）</strong>：DeepSeekMoE 与 MTP 保留，路由打分换成 Sqrt(Softplus)、加序列级 balance、首层换 Hash-MoE。</li>
+            <li><strong>残差（Ch3 · mHC）</strong>：把 B_l 投影到 Birkhoff 多面体，谱范数 ≤ 1 ⇒ 深堆叠数值稳定，无需改 LayerNorm。</li>
+            <li><strong>近视刀（Ch4 · CSA）</strong>：m=4 压缩 + Lightning Indexer + top-k=1024 ⇒ query 只为关心的块付计算。</li>
+            <li><strong>远视刀（Ch5 · HCA）</strong>：m'=128 极致压缩，dense 不稀疏，与 CSA 交替穿插提供全局粗概览。</li>
+            <li><strong>优化器（Ch6 · Muon）</strong>：Hybrid Newton–Schulz 两段式 10 步，把更新矩阵正交化到 UV<sup>T</sup>。</li>
+          </ul>
+        </div>
+
+        <h3>关键公式速查</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>位置</th><th>公式 / 约束</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>mHC 残差</td>
+                <td><code>X_{l+1} = B_l X_l + C_l F(A_l X_l), &nbsp; B_l ∈ Birkhoff</code></td>
+                <td>谱范数 ≤ 1，能量永不放大</td>
+              </tr>
+              <tr>
+                <td>CSA 索引</td>
+                <td><code>I_{t,s} = Σ_h w · ReLU(q · K^IComp)</code></td>
+                <td>用 ReLU 避免长序列 softmax 数值塌陷</td>
+              </tr>
+              <tr>
+                <td>HCA 压缩</td>
+                <td><code>C^Comp_i = Σ_j Softmax(Z+B) ⊙ C_j, &nbsp; m'=128</code></td>
+                <td>不做稀疏，dense 跑得起</td>
+              </tr>
+              <tr>
+                <td>Muon NS 迭代</td>
+                <td><code>M_k = a M + b MM^T M + c (MM^T)² M</code></td>
+                <td>前 8 步 (3.4445,-4.775,2.0315) + 后 2 步 (2,-1.5,0.5)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>设计直觉地图</h3>
+        <p>三条主线之间不是孤立的：</p>
+        <ul>
+          <li>mHC 让"更深的网"敢叠 ⇒ 给 CSA / HCA 提供"放进去也不炸"的载体。</li>
+          <li>CSA + HCA 让"更长的序列"敢算 ⇒ 给 Muon 提供"一次梯度值得正交化"的高维更新。</li>
+          <li>Muon 让"更猛的更新"敢用 ⇒ 给 mHC 静态偏置稳定的训练信号。</li>
+        </ul>
+
+        <h3 id="quiz">自检题</h3>
+
+        <div class="quiz">
+          <p class="quiz-q">Q1. 为什么 mHC 选择把 B_l 约束到 Birkhoff 多面体而不是改 LayerNorm？</p>
+          <details><summary>查看参考答案</summary>
+            <p>LayerNorm 是事后归一化，治不了"残差路径上能量被反复放大"的根因。Birkhoff 多面体保证 ‖B_l‖₂ ≤ 1 且乘法闭合，从源头让深堆叠不发散，60+ 层也能稳定训练。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q2. CSA 的 Lightning Indexer 为什么用 ReLU 而不是 softmax 来打分？</p>
+          <details><summary>查看参考答案</summary>
+            <p>1M 序列上做 softmax 会导致大量小概率被指数压平、数值塌陷，且无法快速 top-k。ReLU 直接保留正得分，零得分天然剪枝，配合 top-k=1024 既快又稳。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q3. 给定 V4-Pro 配置（m=4, m'=128, k=1024, n=1M），CSA 和 HCA 各自要看多少个压缩 token？</p>
+          <details><summary>查看参考答案</summary>
+            <p>CSA：1M / 4 = 256k 个压缩 token，但每个 query 只看 top-1024。<br>HCA：1M / 128 = 8k 个压缩 token，dense 全看。<br>所以 CSA 是"细粒度选 1024"，HCA 是"粗粒度看全 8k"。</p>
+          </details>
+        </div>
+
+        <div class="quiz">
+          <p class="quiz-q">Q4. Muon 的 Hybrid NS 为什么要分两段、不直接用同一组系数 10 步？</p>
+          <details><summary>查看参考答案</summary>
+            <p>(3.4445, -4.775, 2.0315) 在奇异值远离 1 时收敛极快，但接近 1 时会震荡；(2, -1.5, 0.5) 在 1 附近平稳但远处慢。两段式 = 先粗收敛 + 后精钉，10 步内得到接近正交的 UV^T。</p>
+          </details>
+        </div>
+
+        <div class="interactive-slot">
+          预留位：mHC 谱范数可视化、CSA top-k 滑块、Muon NS 迭代步进动画。读到具体位置时再确定要哪类交互。
+        </div>
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本页目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+</body>
+</html>

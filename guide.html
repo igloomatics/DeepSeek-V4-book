@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>阅读指南 — 学习路线图</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-base="" data-page="guide">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">阅读指南 · 学习路线图</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="index.html">封面</a><span class="sep">/</span>阅读指南</div>
+
+      <article id="guide" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>HOW TO READ · 学习路线图</div>
+        <h2 class="chapter-title">阅读指南 — 学习路线图</h2>
+        <p class="chapter-sub">不管你是只想知道"V4 改了什么"的研究爱好者，还是要把这套方法搬上自己集群的工程师，都能找到适合自己的学习路径。</p>
+
+        <p class="lead">
+          全书 <strong>20 章 + 两份附录</strong>，按"架构 → 基础设施 → 预训练 → 后训练 → 评测"五段铺开。但它不是必须从头读到尾。下面给出 <strong>4 条预设路线</strong>，每条路线都有目标读者、推荐顺序和大致工时。最后附一张 <em>核心知识图谱</em>，帮你看清章与章之间的依赖关系。
+        </p>
+
+        <h3>路线一：先看懂"V4 到底改了什么"（推荐入门）</h3>
+        <p>如果你只想用一个下午建立"V4 相对前代的全貌"，按这个顺序读：</p>
+        <pre style="background:var(--code-bg); padding:14px 18px; border-radius:6px; font-size:13px; line-height:1.7; overflow-x:auto;"><code>摘要与全景（abstract）
+  │  目标：5 分钟拿到一张"整体架构 + 关键数字"的小抄
+  ▼
+Ch01 演进地图（必读）
+  │  目标：把 V4 的六条改进主线一次串起来
+  ▼
+Ch03 mHC ＋ Ch04 CSA（要点速读）
+  │  目标：抓住 V4 的两个最重要架构创新
+  ▼
+附录 A 评测结果（浏览）
+  │  目标：看 V4 在闭源旗舰面前的真实排位
+  ▼
+感兴趣的其他章节</code></pre>
+        <p><strong>预计时间</strong>：4-6 小时（一个下午 + 一晚）。</p>
+
+        <h3>路线二：长上下文 / 注意力研究</h3>
+        <p>如果你正在做 long-context、稀疏注意力或 KV cache 优化：</p>
+        <pre style="background:var(--code-bg); padding:14px 18px; border-radius:6px; font-size:13px; line-height:1.7; overflow-x:auto;"><code>Ch01 演进地图（背景，必读）
+  │
+  ├──► Ch04 CSA — 长上下文的快通道（核心必读）
+  │      重点：压缩 KV、Lightning Indexer、top-k 选择
+  │
+  ├──► Ch05 HCA — 长上下文的全景镜（核心必读）
+  │      重点：m'=128 的重压缩、CSA/HCA 交替策略
+  │
+  ├──► Ch12 推理框架 — KV 的异构调度（重要）
+  │      重点：异构 KV 布局、PagedAttention 的局限、prefill 复用
+  │
+  ├──► Ch11 训练框架 — mHC 的工程脚手架（推荐）
+  │      重点：长上下文 CP、Tensor-level Checkpointing
+  │
+  └──► Ch14 Anticipatory + SwiGLU（推荐）
+         重点：4K → 1M 阶梯训练里的稳定性补丁</code></pre>
+        <p><strong>预计时间</strong>：1-2 周。</p>
+
+        <h3>路线三：MoE 与训练系统</h3>
+        <p>如果你在搭自己的 MoE 训练栈，关心通信、低精度、专家路由：</p>
+        <pre style="background:var(--code-bg); padding:14px 18px; border-radius:6px; font-size:13px; line-height:1.7; overflow-x:auto;"><code>Ch02 DeepSeekMoE 与 MTP（背景必读）
+  │
+  ├──► Ch07 MegaMoE — 让 all-to-all 消失（核心必读）
+  │      重点：把通信完全藏在计算下面、C/B ≤ 6144 阈值
+  │
+  ├──► Ch08 TileLang — 写给 GPU 的方言（核心必读）
+  │      重点：DSL 替掉成百上千 ATen 算子
+  │
+  ├──► Ch10 FP4 QAT — 显存的最后一刀（重要）
+  │      重点：FP4 量化感知训练实战
+  │
+  ├──► Ch09 批不变与确定性（重要）
+  │      重点：训练-推理一致性
+  │
+  └──► Ch14 Anticipatory + SwiGLU（推荐）
+         重点：负载均衡、loss spike 压制</code></pre>
+        <p><strong>预计时间</strong>：1-2 周。</p>
+
+        <h3>路线四：后训练 / RL 工程师</h3>
+        <p>如果你在做 SFT / RL / 蒸馏 / Agent，要的是"数据怎么造、目标怎么定、loss 怎么算"：</p>
+        <pre style="background:var(--code-bg); padding:14px 18px; border-radius:6px; font-size:13px; line-height:1.7; overflow-x:auto;"><code>Ch16 Specialist — 多面手的炼成（核心必读）
+  │      重点：双阶段 post-training、GRPO、三档 reasoning effort、GRM
+  │
+  ├──► Ch18 OPD — 多教师 → 单学生的合一（核心必读）
+  │      重点：reverse KL、全词表蒸馏、为什么不用混合 RL
+  │
+  ├──► Ch19 RL / OPD 工程（重要）
+  │      重点：teacher scheduling、preemptible rollout
+  │
+  ├──► Ch17 Tool 接口三件套（重要）
+  │      重点：DSML schema、Interleaved Thinking、Quick Instruction
+  │
+  ├──► Ch20 DSec — 代码沙箱与安全护城河（推荐）
+  │      重点：单集群 10w+ sandbox、四种执行衬底
+  │
+  └──► 附录 A 真实任务胜率（参考）
+         重点：Code Agent 67% pass、内部问卷</code></pre>
+        <p><strong>预计时间</strong>：1 周。</p>
+
+        <h3>核心知识图谱</h3>
+        <p>章与章不是孤立的，依赖关系大致如下。<em>蓝色实线</em>表示"前者是后者的基础"，<em>虚线</em>表示"互为参考"：</p>
+        <div class="diagram-wrap">
+          <div class="mermaid">
+flowchart TB
+  Abs["摘要 / Abstract"] --> Ch01
+
+  Ch01["Ch01 演进地图"] --> Ch02["Ch02 DeepSeekMoE+MTP"]
+  Ch01 --> Ch03["Ch03 mHC"]
+  Ch01 --> Ch04["Ch04 CSA"]
+
+  Ch04 --> Ch05["Ch05 HCA"]
+  Ch03 --> Ch06["Ch06 Muon"]
+
+  Ch02 --> Ch07["Ch07 MegaMoE"]
+  Ch07 --> Ch08["Ch08 TileLang"]
+  Ch08 --> Ch09["Ch09 批不变"]
+  Ch09 --> Ch10["Ch10 FP4 QAT"]
+
+  Ch03 --> Ch11["Ch11 训练框架"]
+  Ch04 --> Ch12["Ch12 推理框架"]
+  Ch05 --> Ch12
+
+  Ch11 --> Ch13["Ch13 32T Tokens"]
+  Ch13 --> Ch14["Ch14 Anticipatory+SwiGLU"]
+  Ch14 --> Ch15["Ch15 Base 评测"]
+
+  Ch15 --> Ch16["Ch16 Specialist"]
+  Ch16 --> Ch17["Ch17 Tool 接口"]
+  Ch16 --> Ch18["Ch18 OPD"]
+  Ch18 --> Ch19["Ch19 RL/OPD 工程"]
+  Ch19 --> Ch20["Ch20 DSec"]
+
+  Ch15 --> AppA["附录 A 评测"]
+  Ch20 --> AppA
+  AppA -.-> AppB["附录 B 参数速查"]
+
+  classDef hot fill:#71a4e1,stroke:#71a4e1,color:#fff;
+  classDef warm fill:#edf3fb,stroke:#71a4e1,color:#1f2532;
+  class Ch01,Ch04,Ch05,Ch16,Ch18 hot
+  class Ch03,Ch07,Ch12,Ch19 warm
+          </div>
+        </div>
+        <p class="caption">蓝底节点是"读完全书必看"的 5 个核心章；浅蓝节点是常被引用的支柱章。</p>
+
+        <h3>每章预计阅读时间</h3>
+        <div class="config-table">
+          <table>
+            <thead><tr><th>#</th><th>章节</th><th>所属部分</th><th>预计时间</th><th>难度</th></tr></thead>
+            <tbody>
+              <tr><td>01</td><td>演进地图</td><td>架构</td><td>1.5 小时</td><td>★★☆☆☆</td></tr>
+              <tr><td>02</td><td>DeepSeekMoE 与 MTP</td><td>架构</td><td>2 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>03</td><td>mHC</td><td>架构</td><td>3 小时</td><td>★★★★☆</td></tr>
+              <tr><td>04</td><td>CSA</td><td>架构</td><td>3 小时</td><td>★★★★☆</td></tr>
+              <tr><td>05</td><td>HCA</td><td>架构</td><td>2 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>06</td><td>Muon</td><td>架构</td><td>2.5 小时</td><td>★★★★☆</td></tr>
+              <tr><td>07</td><td>MegaMoE</td><td>基础设施</td><td>2.5 小时</td><td>★★★★☆</td></tr>
+              <tr><td>08</td><td>TileLang</td><td>基础设施</td><td>1.5 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>09</td><td>批不变与确定性</td><td>基础设施</td><td>1 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>10</td><td>FP4 QAT</td><td>基础设施</td><td>1.5 小时</td><td>★★★★☆</td></tr>
+              <tr><td>11</td><td>训练框架</td><td>基础设施</td><td>1.5 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>12</td><td>推理框架</td><td>基础设施</td><td>1.5 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>13</td><td>32T Tokens</td><td>预训练</td><td>1 小时</td><td>★★☆☆☆</td></tr>
+              <tr><td>14</td><td>Anticipatory + SwiGLU</td><td>预训练</td><td>1.5 小时</td><td>★★★★☆</td></tr>
+              <tr><td>15</td><td>Base 评测</td><td>预训练</td><td>1 小时</td><td>★★☆☆☆</td></tr>
+              <tr><td>16</td><td>Specialist</td><td>后训练</td><td>2 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>17</td><td>Tool 接口三件套</td><td>后训练</td><td>1.5 小时</td><td>★★★☆☆</td></tr>
+              <tr><td>18</td><td>OPD</td><td>后训练</td><td>2.5 小时</td><td>★★★★☆</td></tr>
+              <tr><td>19</td><td>RL / OPD 工程</td><td>后训练</td><td>2 小时</td><td>★★★★☆</td></tr>
+              <tr><td>20</td><td>DSec</td><td>后训练</td><td>1 小时</td><td>★★☆☆☆</td></tr>
+              <tr><td>A</td><td>评测结果</td><td>附录</td><td>1.5 小时</td><td>★★☆☆☆</td></tr>
+              <tr><td>B</td><td>参数速查</td><td>附录</td><td>10 分钟</td><td>★☆☆☆☆</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>合计约 <strong>38-42 小时</strong>（约一个月每天 1 小时）。难度评估按"已掌握 Transformer + 看过 V3 报告"作为基线。</p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">读法建议</div>
+          <ul>
+            <li><strong>不要按章节号顺序读</strong>。Ch01 之后，按上面的路线挑你需要的支线。</li>
+            <li><strong>遇到符号查不到含义</strong>，直接跳到 <a href="appendix_b.html">附录 B 参数速查</a>。</li>
+            <li>每章右上角的 hover 名词解释（KV cache / FLOPs / FFN 等）能让你不必频繁切窗口查百科。</li>
+            <li>如果只想看"V4 究竟比 V3.2 强多少"，<em>跳到 <a href="appendix_a.html">附录 A</a> 直接看跑分</em>。</li>
+          </ul>
+        </div>
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

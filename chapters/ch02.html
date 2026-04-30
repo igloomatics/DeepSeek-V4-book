@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 02 · DeepSeekMoE 与 MTP — V3 留下的两件遗产</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch2">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 02 · DeepSeekMoE 与 MTP</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part1.html">第一部分 · 架构</a><span class="sep">/</span>Ch 02</div>
+
+      <article id="ch2" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第一部分 · 架构 · 02</div>
+        <h2 class="chapter-title">DeepSeekMoE 与 MTP — V3 留下的两件遗产</h2>
+        <p class="chapter-sub">DeepSeekMoE 与 Multi-Token Prediction 仍是 V4 的脊梁；但 MoE 的细节被改了五处，每一处都对应一个具体的"V3 时代撞过的墙"。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂这两件遗产</div>
+          <p class="term-name">DeepSeekMoE + MTP = V3 留给 V4 的两根脊梁</p>
+          <p>FFN 层的稀疏激活骨架 + 训练信号致密化的辅助头。两者在 V3 上验证过，V4 完全保留主体，只在 MoE 的<strong>5 个细节</strong>上动刀以适配新规模（384 专家 / 1M 序列）。</p>
+          <dl>
+            <dt>MoE（Mixture-of-Experts，专家混合）</dt>
+            <dd>把单个 dense FFN 拆成 $N$ 个并行专家，每个 token 由<em>路由器</em> (router) 打分选 top-$k$ 个专家激活。<em>总参数大、激活参数小</em> —— 模型容量上去但单步算力没涨。</dd>
+
+            <dt>DeepSeekMoE（Dai 2024）</dt>
+            <dd>DeepSeek V2/V3 时代定下的 MoE 三件套：<strong>① 细粒度专家</strong>（256 个小专家替代 8 个大专家）+ <strong>② 共享专家</strong>（1 个 always-active 专家承通用能力）+ <strong>③ aux-loss-free 负载均衡</strong>（不靠 loss 项，靠每个专家的动态偏置 $b_i$ 调节）。</dd>
+
+            <dt>aux-loss-free 负载均衡</dt>
+            <dd>传统 MoE 在 loss 里加一项"惩罚不均衡"，会和主任务竞争。V3 改成给每个专家维护一个偏置 $b_i$，根据"被分配到的 token 数 vs 期望"<em>在线</em>调整 —— 不动主 loss、闭环平衡专家。</dd>
+
+            <dt>MTP（Multi-Token Prediction，多 token 预测）</dt>
+            <dd>主模型旁挂一个轻量 head，让它同时预测<em>未来第 2、3、… 个</em>token（不止下一个）。同一份 hidden state 给多份梯度，<em>训练信号密度 ×D</em>，且强迫 hidden state 编码更长程语义。V3 验证有效，V4 完全沿用，只调权重 schedule。</dd>
+
+            <dt>Hash Routing（Roller 2021）</dt>
+            <dd>不学习路由，按 token id 的 hash mod 专家数直接派单。用在<strong>前 3 层 MoE</strong>，避开"早期 router 没学好就抖"的问题，又享受 MoE 稀疏激活红利。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>V3 已经做对的不动；V4 只在 5 个被新规模暴露的细节上补漏 —— 打分函数、序列内均衡、路由通信预算、前几层路由方式、MTP 权重 schedule。</div>
+        </div>
+
+        <!-- ================== §1 V3 DeepSeekMoE ================== -->
+        <h3 id="moe-bg">1. 先看 V3 的 DeepSeekMoE 干了什么</h3>
+        <p>
+          MoE 的标准做法：FFN 层不再是单一稠密网络，而是 $N$ 个并行专家 $\{E_1, \ldots, E_N\}$。每个 token 由<em>路由器</em>打分，选出 top-$k$ 个专家激活。原始 GShard 用 $N=8$、$k=2$，专家间隔很粗。
+        </p>
+        <p>DeepSeekMoE（V2/V3）做了三个关键改造，这些 V4 完全继承：</p>
+        <ul>
+          <li><strong>细粒度专家</strong>：把 $N=8$ 个大专家切成 $N \cdot s = 64$ 个小专家（每个尺寸缩到 $1/s$），同时把 $k$ 也乘以 $s$。<em>同样总激活参数下，专家组合数指数级增加</em>。</li>
+          <li><strong>共享专家</strong>：另设 1 个 always-active 专家承担"通用知识"，让路由专家专注差异化能力。</li>
+          <li><strong>aux-loss-free 负载均衡</strong>：见上方名词速通。不动主 loss，闭环调控全局负载。</li>
+        </ul>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练</span>
+          细粒度专家的"组合数指数增长"具体多大？
+          GShard：$\binom{8}{2} = 28$ 种组合。
+          DeepSeekMoE V3（256 专家、激活 8）：$\binom{256}{8} \approx 4.1 \times 10^{14}$。
+          V4-Pro（<strong>384 专家、激活 9</strong>）：$\binom{384}{9} \approx 8.5 \times 10^{17}$ —— 比 GShard 多 16 个数量级。
+          组合数 ≈ 模型可表达的"专家分工模式数"，这就是细粒度的红利来源。
+        </div>
+
+        <p>
+          V4 的总专家数从 V3 的 256 涨到 <strong>384</strong>，激活专家从 8 涨到（Pro）9 / （Flash）8，总参数从 671B 涨到 1.6T。规模一上来，V3 的几个 trick 开始显出毛刺，于是 V4 在 5 个细节上动了刀。
+        </p>
+
+        <!-- ================== §2 改动 ① 打分函数 + Demo ================== -->
+        <h3 id="score">2. 改动 ① 路由打分：Sigmoid → Sqrt(Softplus)</h3>
+
+        <p><strong>V3 的做法</strong>：路由 logits 经过 $\text{Sigmoid}(\cdot)$ 得到打分，再做 top-$k$ 选择和重新归一化。</p>
+
+        <p><strong>它哪里不够</strong>：</p>
+        <ul>
+          <li>Sigmoid 上界是 1，<em>logits 大到一定程度就饱和</em>。当模型确信"这个 token 应该去专家 #42"时，logit 可能是 8、12、20 —— 但 Sigmoid 都吐 ≈1，不再有区分度。</li>
+          <li>专家数从 256 → 384，"top-9 专家间的细微优劣"更重要。Sigmoid 在饱和区<strong>梯度趋零</strong>，路由器学不到"这个专家比那个稍强一点"。</li>
+        </ul>
+
+        <p><strong>V4 改成</strong>：</p>
+        <div class="math-block">
+          $$
+          s_i \;=\; \sqrt{\, \mathrm{Softplus}(\ell_i)\,} \;=\; \sqrt{\,\log(1 + e^{\ell_i})\,}
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条公式是<strong>"两层活塞"</strong>：</p>
+          <ol>
+            <li><strong>下层 Softplus</strong>：$\log(1+e^{\ell_i})$ —— 把任意 logit 推到 $(0, +\infty)$，<em>没有上界</em>，logit 越大 score 越大，绝不饱和。logit 极小时趋零，自动屏蔽弱专家。</li>
+            <li><strong>上层 sqrt</strong>：把 Softplus 的"线性尾巴"压成"平方根尾巴"，<em>给一个软上界</em> —— score 仍单调上升，但增长率随 $\ell$ 越来越慢。</li>
+          </ol>
+          <p>没有上层 sqrt 的话，单个超强专家的分数会把其他专家在归一化后挤到接近 0，等同于"硬选 1 个专家"，丢掉了多专家协作。<strong>无上界解决饱和、软上界保多专家协作 —— 缺一不可</strong>。</p>
+        </div>
+
+        <!-- VIZ 1: Sigmoid vs Sqrt(Softplus) -->
+        <div class="viz" id="viz-score">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 三种打分函数在 logit ∈ [-4, 12] 上的对比</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 340" id="vs-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- background -->
+            <rect x="60" y="20" width="640" height="240" fill="#fafbfd" stroke="#e5e7eb" stroke-width="1"/>
+
+            <!-- horizontal grid lines: y from 0 to 4, ticks at 0,1,2,3,4 -->
+            <line x1="60" y1="260" x2="700" y2="260" stroke="#cbd5e1" stroke-width="1"/>
+            <line x1="60" y1="200" x2="700" y2="200" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="3,3"/>
+            <line x1="60" y1="140" x2="700" y2="140" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="80"  x2="700" y2="80"  stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="60" y1="20"  x2="700" y2="20"  stroke="#e5e7eb" stroke-width="1"/>
+
+            <!-- y axis labels -->
+            <text x="55" y="264" text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">0</text>
+            <text x="55" y="204" text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">1</text>
+            <text x="55" y="144" text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">2</text>
+            <text x="55" y="84"  text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">3</text>
+            <text x="55" y="24"  text-anchor="end" font-size="11" fill="#6b7280" font-family="JetBrains Mono">4</text>
+
+            <!-- x axis: logit from -4 to 12 -->
+            <!-- x_px(ℓ) = 60 + (ℓ + 4) * 640 / 16 = 60 + (ℓ+4)*40 -->
+            <line x1="60"  y1="20" x2="60"  y2="260" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="220" y1="20" x2="220" y2="260" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="380" y1="20" x2="380" y2="260" stroke="#cbd5e1" stroke-width="1"/>
+            <line x1="540" y1="20" x2="540" y2="260" stroke="#e5e7eb" stroke-width="1"/>
+            <line x1="700" y1="20" x2="700" y2="260" stroke="#e5e7eb" stroke-width="1"/>
+
+            <text x="60"  y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">-4</text>
+            <text x="220" y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">0</text>
+            <text x="380" y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">4</text>
+            <text x="540" y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">8</text>
+            <text x="700" y="278" text-anchor="middle" font-size="11" fill="#6b7280" font-family="JetBrains Mono">12</text>
+
+            <!-- axis labels -->
+            <text x="380" y="305" text-anchor="middle" font-size="12" fill="#1c2433">logit ℓ</text>
+            <text x="20" y="140" text-anchor="middle" font-size="12" fill="#1c2433" transform="rotate(-90 20 140)">score s</text>
+
+            <!-- precomputed curve paths (computed in JS to avoid mistakes) -->
+            <path id="vs-line-sig"    d="" fill="none" stroke="#dc2626" stroke-width="2"/>
+            <path id="vs-line-sp"     d="" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3"/>
+            <path id="vs-line-sqrtsp" d="" fill="none" stroke="#16a34a" stroke-width="2"/>
+
+            <!-- vertical marker line -->
+            <line id="vs-marker" x1="540" y1="20" x2="540" y2="260" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3"/>
+
+            <!-- legend -->
+            <rect x="80" y="32" width="280" height="62" fill="#ffffff" stroke="#e5e7eb" stroke-width="1" rx="4"/>
+            <line x1="92" y1="48" x2="116" y2="48" stroke="#dc2626" stroke-width="2"/>
+            <text x="122" y="51" font-size="11" fill="#1c2433" font-family="Inter">Sigmoid（V3，上界 1，饱和）</text>
+            <line x1="92" y1="68" x2="116" y2="68" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3"/>
+            <text x="122" y="71" font-size="11" fill="#1c2433" font-family="Inter">Softplus（无上界，线性尾）</text>
+            <line x1="92" y1="88" x2="116" y2="88" stroke="#16a34a" stroke-width="2"/>
+            <text x="122" y="91" font-size="11" fill="#1c2433" font-family="Inter">√Softplus（V4，软上界）</text>
+          </svg>
+          <div class="viz-controls">
+            <label>当前 logit ℓ
+              <input type="range" id="vs-slider" min="-4" max="12" step="0.1" value="8" style="width:200px">
+            </label>
+            <span class="viz-readout" id="vs-readout">…</span>
+          </div>
+          <p class="viz-caption">
+            <strong>把滑条拉到 ℓ=8 看三个读数</strong>：Sigmoid≈1.000（已饱和、梯度近零），Softplus≈8.000（无界），√Softplus≈2.83（软上界、仍可区分）。
+            两个专家的 logits 一个 8 一个 12，Sigmoid 都给 ≈1 看不出谁强；√Softplus 分别给 2.83 和 3.46，<em>仍保留区分度</em>。
+          </p>
+        </div>
+
+        <!-- ================== §3 改动 ② 序列内 balance ================== -->
+        <h3 id="balance">3. 改动 ② 序列内 balance loss：补 aux-free 在长序列上的盲区</h3>
+
+        <p><strong>V3 的 aux-loss-free 是怎么工作的</strong>：</p>
+        <div class="math-block">
+          $$
+          \tilde{s}_i = s_i + b_i, \qquad
+          b_i \leftarrow b_i + \alpha \cdot \big(\bar{f}^{*} - \bar{f}_i\big)
+          $$
+        </div>
+        <p>$b_i$ 是专家 $i$ 的动态偏置，$\bar{f}_i$ 是过去 $T$ 步内被分给专家 $i$ 的 token 比例，$\bar{f}^* = k/N$ 是均匀目标比例。如果 $i$ 被分得太少，$b_i$ 上调，下一步打分就提升一点 —— <em>不动主 loss，闭环调控全局负载</em>。</p>
+
+        <p><strong>它在 V4 规模上撞墙</strong>：$b_i$ 的更新粒度是<em>跨步全局</em>的。但 V4 的训练序列动辄 64K~1M 长，<strong>同一条序列内</strong>可能强烈偏好某些专家（比如一篇 Python 长文档全程偏向 code 专家）。aux-free 看不到这种"序列内偏置"—— 它只知道"过去 1024 步全局均衡"，对单序列内 6× 的不均衡袖手旁观。</p>
+
+        <div class="numex">
+          <span class="numex-tag">具体例子</span>
+          一条 256K 的 Python 训练序列、384 专家。理想分配：每个专家 $\sim 256\text{K} \times 9 / 384 = 6000$ 个 token-激活次。
+          实际：5 个 code-相关专家可能各拿 36000 次（6×），其余 379 个专家平均拿 5400 次。
+          aux-free 的统计窗口看的是<em>跨序列平均</em>：1024 步乘 256K → 全局尺度上 code 专家被均摊回去，看起来是均衡的。
+          于是 aux-free 不会调偏置，但单条序列内的 5 个 code 专家已经被严重过载 —— GPU expert parallelism 因此抖动。
+        </div>
+
+        <p><strong>V4 加了什么</strong>：</p>
+        <div class="math-block">
+          $$
+          \mathcal{L}_{\text{seq-bal}} \;=\; \beta \sum_{i=1}^{N} f_i^{(\text{seq})} \cdot p_i^{(\text{seq})}
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>这条 loss 是<strong>"在单序列尺度对 router 罚一下不均衡"</strong>：</p>
+          <ul>
+            <li>$f_i^{(\text{seq})}$ = 这条序列里被分给专家 $i$ 的 token 比例（离散的统计值，不可微）；</li>
+            <li>$p_i^{(\text{seq})}$ = 这条序列里 router 给专家 $i$ 的平均概率（可微，梯度从这里走）；</li>
+            <li>两者相乘求和：如果某个 $i$ 已经分得太多（$f_i$ 大），且 router 还在给它高概率（$p_i$ 大），loss 就大，反向传播会<em>让 router 降它的 $p_i$</em>。</li>
+          </ul>
+          <p><strong>aux-free 管全局，seq-bal 管局部</strong>，两层互补 —— 这是 V4 在长序列时代的必要补丁。$\beta$ 取 $10^{-4}$ 量级，仅作"温和提示"，不喧宾夺主。</p>
+        </div>
+
+        <!-- ================== §4 取消节点上限 ================== -->
+        <h3 id="cap">4. 改动 ③ 取消"路由目标节点上限"</h3>
+
+        <p><strong>V3 的限制</strong>：每个 token 路由的专家最多落在 $M$ 个不同的硬件节点上（V3 取 $M=4$）。这是为了控全节点 all-to-all 通信成本 —— 通信节点越多越贵。</p>
+
+        <p><strong>它的代价</strong>：当 token 真正"想去"的 top-9 专家分布在 5 个节点时，第 5 个节点的专家被强行替换成"次优 + 同节点"专家。<em>路由质量被通信预算扭曲</em>。</p>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练</span>
+          384 专家均匀分布在 32 个节点（每节点 12 专家）。token 选 top-9 时，"<em>最理想</em> 9 个专家恰好都在 4 个节点"的概率非常低（远低于 1%）。
+          也就是说：<strong>V3 的 $M=4$ 限制对绝大多数 token 都生效</strong>，被强制替换的"次优专家"占比可能高达 30%+。
+          V4 取消上限后，路由质量回到模型实际想要的分布，代价由下层 MegaMoE all-to-all 优化（Ch07）兜住。
+        </div>
+
+        <p><strong>V4 的解法</strong>：直接取消上限，让 token 路由到任何专家。代价由 Ch7 的 <strong>MegaMoE + DualPipe + 通信压缩</strong>承担 —— 基础设施够便宜了，所以模型层不需要再做这种妥协。这就是<em>架构与系统协设</em>：上层不给下层让步，下层兜住成本。</p>
+
+        <!-- ================== §5 Hash Routing ================== -->
+        <h3 id="hash">5. 改动 ④ 头几层 Dense FFN → Hash-Routed MoE</h3>
+
+        <p><strong>V3 的做法</strong>：前 1~3 层用 Dense FFN（不做 MoE），后面才开始 MoE。<em>常见的稳定性套路</em>：早期层负责低级特征，路由器还没学好，强行 MoE 容易抖。</p>
+
+        <p><strong>它的浪费</strong>：Dense FFN 在大模型里参数密度低 —— 早期层用了同样的 GPU 算力，却没享受 MoE 的"激活稀疏 + 总参数高"红利。</p>
+
+        <p><strong>V4 改成 Hash Routing（Roller 2021）</strong>：</p>
+        <div class="math-block">
+          $$
+          \text{expert}(t) \;=\; \mathrm{hash}(\mathrm{token\_id}(t)) \bmod N_{\text{hash}}
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>路由<strong>不学</strong>，由 token id 直接哈希到一个专家：</p>
+          <ul>
+            <li><em>不需要梯度</em>训练 router → 没有"早期 router 抖"问题；</li>
+            <li>哈希在统计上均匀 → 天然负载均衡，不需要 aux-free / seq-bal；</li>
+            <li>仍享受 MoE 的稀疏激活红利。</li>
+          </ul>
+          <p><strong>关键洞察</strong>：学习型路由的不稳定<em>主要发生在前 1-2 层</em>，因为这些层的 hidden state 还没成型，路由器拿到的特征噪声大。Hash 路由用"反正这层学不了好路由"的事实，干脆放弃学习 —— 是<em>"知道哪里不该学"</em>的典型应用。前 3 层用 Hash MoE，后续层用学习型 MoE。</p>
+        </div>
+
+        <!-- ================== §6 MTP ================== -->
+        <h3 id="mtp">6. MTP（Multi-Token Prediction）：为什么完全不动</h3>
+
+        <p>MTP 模块的工作机制：在主模型旁边接一个轻量 head $h_{\text{MTP}}$，让它预测<strong>未来第 2、3、… 个 token</strong>（不止下一个）。损失为：</p>
+        <div class="math-block">
+          $$
+          \mathcal{L}_{\text{MTP}} \;=\; \sum_{j=2}^{D} \alpha_j \cdot \mathrm{CE}\big(\hat{y}_{t+j},\; y_{t+j}\big), \quad \alpha_j \to 0\ \text{as}\ j\ \text{增大}
+          $$
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>三件事：</p>
+          <ul>
+            <li><strong>预测多个未来 token</strong>：$\hat y_{t+j}$ 是从位置 $t$ 出发预测未来第 $j$ 个；</li>
+            <li><strong>逐个算交叉熵</strong>：$\mathrm{CE}(\cdot)$ 是常规 LM loss；</li>
+            <li><strong>越远权重越低</strong>：$\alpha_j$ 随 $j$ 增大递减，远 token 监督信号弱（毕竟越远越难预测）。</li>
+          </ul>
+          <p>同一份 hidden state 给 $D$ 份梯度，<em>训练信号密度 $\times D$</em>；同时强迫 hidden state 编码"未来一段语义弧线"，而不只是"下一个词"。</p>
+        </div>
+
+        <p>V4 的 MTP loss 总权重维持 0.3，<em>学习率衰减阶段降到 0.1</em>。降权重的逻辑是：</p>
+        <ul>
+          <li>训练前期 hidden state 不稳，MTP 提供致密梯度有助于快速塑形；</li>
+          <li>训练后期主 loss 已经在精修，MTP 的"远 token 监督"开始与主目标产生小幅冲突 —— 降权让主 loss 主导。</li>
+        </ul>
+
+        <p>因此 V4 完全不改 MTP 模块本身，只调权重 schedule —— <strong>已经被 V3 反复验证、没有失效模式被暴露的组件，就不要动</strong>。</p>
+
+        <!-- ================== §7 汇总 ================== -->
+        <h3 id="summary">7. 五处改动的汇总</h3>
+
+        <div class="config-table">
+          <table>
+            <thead>
+              <tr><th>组件</th><th>V3 行为</th><th>V4 行为</th><th>对应解决的具体问题</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>路由打分</td><td>Sigmoid</td><td><strong>Sqrt(Softplus)</strong></td><td>384 专家间饱和区无区分度</td></tr>
+              <tr><td>负载均衡</td><td>仅 aux-free</td><td>aux-free + 序列内 balance loss</td><td>长序列内单序列偏置 aux-free 看不见</td></tr>
+              <tr><td>路由节点上限</td><td>$M=4$</td><td><strong>取消</strong></td><td>路由质量不再被通信预算扭曲</td></tr>
+              <tr><td>前几层 FFN</td><td>Dense</td><td>Hash-Routed MoE</td><td>避免学习型路由早期不稳，又享受 MoE 红利</td></tr>
+              <tr><td>MTP 模块</td><td>权重 0.3</td><td>权重 0.3，衰减期降 0.1</td><td>主 loss 后期减少 MTP 干扰</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>
+            <strong>V3 的 MoE 主体被完整继承，但 V4 在 5 个细节上"补漏"</strong>：
+            打分函数换成不饱和的 Sqrt(Softplus)、加序列内 balance、取消通信驱动的路由限制、把 dense 早层换成 hash MoE、MTP 权重做 schedule。
+            每一处改动都对应一个 V3 时代被新规模（384 专家、1M 序列）暴露出来的具体毛刺。
+          </p>
+        </div>
+
+        <!-- 论文图占位：DeepSeekMoE 论文中的细粒度专家示意 -->
+        <div class="fig-placeholder">
+          <div class="fig-tag">论文图占位</div>
+          <p class="fig-want">需要：DeepSeekMoE 原论文（Dai 2024）中"传统 MoE vs 细粒度+共享专家"的对比示意图（一张图同时展示 GShard 8 大专家的粗粒度、Switch Transformer 的 top-1、与 DeepSeekMoE 的 fine-grained + shared 三种结构）。</p>
+          <p class="fig-source">来源：Dai et al. 2024《DeepSeekMoE》Figure 2 或类似的 architectural comparison（待补）</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ================== Ch02 内联交互脚本 ================== -->
+<script>
+/* ---------- Viz: Sigmoid vs Softplus vs sqrt(Softplus) ---------- */
+(function () {
+  var slider  = document.getElementById('vs-slider');
+  var readout = document.getElementById('vs-readout');
+  var marker  = document.getElementById('vs-marker');
+  var lineSig    = document.getElementById('vs-line-sig');
+  var lineSp     = document.getElementById('vs-line-sp');
+  var lineSqrtSp = document.getElementById('vs-line-sqrtsp');
+  if (!slider) return;
+
+  var L_MIN = -4, L_MAX = 12;
+  var Y_MIN = 0,  Y_MAX = 4;
+  var PL = 60, PT = 20, PW = 640, PH = 240;
+
+  function xPx(l) { return PL + (l - L_MIN) / (L_MAX - L_MIN) * PW; }
+  function yPx(v) {
+    var clamped = Math.max(Y_MIN, Math.min(Y_MAX, v));
+    return PT + (Y_MAX - clamped) / (Y_MAX - Y_MIN) * PH;
+  }
+
+  function softplus(l) {
+    if (l > 30) return l; // numerical: log(1+e^l) ≈ l for large l
+    return Math.log(1 + Math.exp(l));
+  }
+  function sigmoid(l) { return 1 / (1 + Math.exp(-l)); }
+
+  // build static curve paths once
+  function buildPath(fn) {
+    var d = '';
+    var n = 200;
+    for (var i = 0; i <= n; i++) {
+      var l = L_MIN + (L_MAX - L_MIN) * i / n;
+      var v = fn(l);
+      var x = xPx(l), y = yPx(v);
+      d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
+    }
+    return d;
+  }
+  lineSig.setAttribute('d',    buildPath(sigmoid));
+  lineSp.setAttribute('d',     buildPath(softplus));
+  lineSqrtSp.setAttribute('d', buildPath(function (l) { return Math.sqrt(softplus(l)); }));
+
+  function update() {
+    var l = parseFloat(slider.value);
+    var x = xPx(l);
+    marker.setAttribute('x1', x.toFixed(1));
+    marker.setAttribute('x2', x.toFixed(1));
+
+    var sig = sigmoid(l);
+    var sp  = softplus(l);
+    var ssp = Math.sqrt(sp);
+    readout.textContent = 'ℓ=' + l.toFixed(1) +
+      '   Sigmoid=' + sig.toFixed(3) +
+      '   Softplus=' + sp.toFixed(2) +
+      '   √Softplus=' + ssp.toFixed(3);
+  }
+
+  slider.addEventListener('input', update);
+  update();
+})();
+</script>
+
+</body>
+</html>

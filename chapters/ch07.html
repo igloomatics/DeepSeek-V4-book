@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 07 · MegaMoE — 让 all-to-all 消失</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch7">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 07 · MegaMoE</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part2.html">第二部分 · 基础设施</a><span class="sep">/</span>Ch 07</div>
+
+      <article id="ch7" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 07</div>
+        <h2 class="chapter-title">MegaMoE — 让 all-to-all 消失</h2>
+        <p class="chapter-sub">为什么 MoE 在专家并行下天然被通信卡死，V4 是怎么把 5 个阶段切 wave 流水让"通信完全藏在计算下面"，以及那条 $C/B \le 6144$ FLOPs/Byte 的硬件协设公式到底在说什么。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂 MegaMoE</div>
+          <p class="term-name">MegaMoE = 把 MoE 的 dispatch / L1 / Activation / L2 / combine 五个阶段融成一个 pipelined kernel，用"专家波（wave）"为粒度调度</p>
+          <p>
+            一句话：<strong>把"通信"和"计算"切成多个等长 wave 交错排队</strong>，第一个 wave 在 GPU 算的同时，第二个 wave 已经在网络上传，于是 all-to-all 的 latency 完全被矩阵乘的 latency 盖住 —— 净效果就像 all-to-all 不存在。
+            最高 1.92× 理论加速，对应一条<em>给硬件厂商</em>的硬性建议：每 GBps 互联带宽要养 6.1 TFLOP/s 计算。
+          </p>
+          <dl>
+            <dt>EP（Expert Parallelism · 专家并行）</dt>
+            <dd>MoE 的标准切法：把 $E$ 个专家分散到 $G$ 个 GPU，每张卡只放 $E/G$ 个专家。<em>每个 token 的 router 选 top-$k$ 后必须把 token 发去那 $k$ 个专家所在的卡，算完再收回来</em> —— 这就是为什么 MoE 一定要 all-to-all。</dd>
+
+            <dt>all-to-all</dt>
+            <dd>每张卡都给所有其他卡发数据、同时也从所有其他卡收数据的集合通信。带宽随卡数线性增长，<em>但 latency 不降</em>，是 MoE 的头号瓶颈。一次 1.6T MoE 的 forward 要做 2 次（dispatch + combine），backward 还要 2 次。</dd>
+
+            <dt>Dispatch / L1 / Activation / L2 / Combine（MoE 5 段）</dt>
+            <dd><strong>Dispatch</strong>：按 router 决定把 token 发到目标专家的卡上（all-to-all 1）；<strong>L1</strong>：专家 FFN 的 up 投影 + activation 输入；<strong>Activation</strong>：SwiGLU 等非线性；<strong>L2</strong>：down 投影；<strong>Combine</strong>：把结果发回原 token 所在的卡（all-to-all 2）。<em>这 5 段在 naive 实现下是串行的</em>。</dd>
+
+            <dt>Wave（专家波）</dt>
+            <dd>把<em>本次 batch 命中的专家</em>切成若干组，每组里包含 $w$ 个专家。Wave-by-wave 流水：第 $i$ 个 wave 在算 L1 时，第 $i+1$ 个 wave 已经在做 dispatch；第 $i$ 个 wave 在做 combine 时，第 $i-1$ 个 wave 的 combine 早就发完。<strong>wave 数 ↑ → 流水深度 ↑ → 隐藏越彻底，但每段单次量越小、效率↓</strong>。</dd>
+
+            <dt>Comet（前驱方案，被 MegaMoE 替掉的对象）</dt>
+            <dd>2024 年的 fused MoE 方案，把 5 段切成 3 段并行（dispatch + L1 / activation + L2 / combine）。<em>问题</em>：只有 3 段，流水深度浅，combine 阶段 GPU 计算单元闲；wave 概念没引入，长尾专家拖整体。MegaMoE 在 Comet 基础上加 wave 调度 + 5 段切，深度从 3 加到 5+。</dd>
+
+            <dt>C/B 比（Compute-to-Bandwidth Ratio）</dt>
+            <dd>每发出 1 字节需要伴随多少 FLOPs 的计算才能"刚好"覆盖该字节的传输时间。$C/B = 2d$，$d$ 是 hidden dim。V4 取 $d=3072$（FFN 中 token 维），所以阈值 $= 6144$ FLOPs/Byte。<em>这是给 GPU 厂商的硬件协设公式</em>：超过这个值，再堆带宽是浪费。</dd>
+
+            <dt>Pull vs Push（通信原语）</dt>
+            <dd>Push = 我主动把 token 推给目标卡；Pull = 我准备好 token，目标卡来取。<em>细粒度通信下 pull 更友好</em>：发起方不用知道接收方何时空闲，接收方按自己节拍取，避免 push-side 排队等握手。MegaMoE 使用 NVLink/IBGDA pull 模式。</dd>
+
+            <dt>SwiGLU 简化（拿掉 exp/div）</dt>
+            <dd>标准 SwiGLU $= x\cdot\sigma(Wx)\cdot Vx$ 含 sigmoid。把它换成 $x\cdot Wx \cdot Vx$（不带 σ）能省掉 exp 与 div，<em>放更大中间维 d 还能保精度</em> —— 是 MegaMoE 给硬件的另一个建议。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>MoE 在 EP 下的瓶颈是 all-to-all 不能 overlap；MegaMoE 把 5 段切 wave 流水让 comm/compute 100% 重叠；副产品是给硬件厂商一条 $C/B \le 6144$ 的设计公式。读完这章你应能看着任意一段 MoE 实现指出"这里没切 wave"。</div>
+        </div>
+
+        <!-- ================== §1 为什么 MoE 一定卡在通信 ================== -->
+        <h3 id="motivation">1. 为什么 MoE 一定卡在 all-to-all</h3>
+        <p>
+          要理解 MegaMoE 为什么必要，先看 MoE 在 EP 下的<em>原始</em>时间线。设单 token 从进入 MoE 层到离开，要走五步：dispatch（all-to-all 1）→ L1（FFN up 投影）→ Activation（SwiGLU）→ L2（FFN down 投影）→ combine（all-to-all 2）。
+          每段都不能并行：dispatch 没完，L1 没数据；L2 没完，combine 没数据。
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>把"一次 MoE forward 时间"列成最朴素的式子：</p>
+          <div class="math-block">
+            $$
+            T_{\text{naive}} \;=\; T_{\text{disp}} + T_{L_1} + T_{\text{act}} + T_{L_2} + T_{\text{comb}}
+            $$
+          </div>
+          <ul>
+            <li><strong>$T_{\text{disp}} + T_{\text{comb}}$</strong>：纯通信时间，由<em>互联带宽 $B$</em>决定（NVLink ~900 GB/s，IB ~50 GB/s）；</li>
+            <li><strong>$T_{L_1} + T_{L_2}$</strong>：纯计算时间，由<em>GPU FLOPs $C$</em> 决定（H100 BF16 ~989 TFLOPs/s）；</li>
+            <li><strong>$T_{\text{act}}$</strong>：通常很小，可忽略。</li>
+          </ul>
+          <p>问题：通信和计算<strong>串行加总</strong>，只要其中一段慢，整体就慢。MoE 实测里 $T_{\text{comm}}/T_{\text{compute}}$ 常 $\ge 1$ —— 也就是<em>通信花的时间和计算一样多甚至更多</em>，相当于 GPU 一半时间在等网络。</p>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · naive MoE 一层有多惨</span>
+          假设 V4-Pro 一层 MoE：每张卡的 dispatch + combine 总共要发 ~24 MB（hidden=3072, 单卡处理 4096 token, BF16, top-8）。互联 IB 带宽 50 GB/s → $T_{\text{comm}} \approx 24\,\text{MB} / 50\,\text{GB/s} = 480\,\mu s$。
+          <br>
+          一层 FFN 计算 ~$2 \times 4096 \times 3072 \times 12288 \times 8 \approx 2.5 \times 10^{12}$ FLOPs，H100 989 TFLOPs/s → $T_{\text{compute}} \approx 2.5\,\text{ms}$。
+          <br><br>
+          看起来通信只占 480/(480+2500) ≈ <strong>16%</strong>。但 V4 里有 ~30 个 MoE 层，每层 forward + backward 各 2 次 all-to-all，<em>累计</em>: 30×4×480 = <strong>57.6 ms</strong> 纯通信。一个完整 step ~1 s，单是 MoE 通信占了 <strong>5–6%</strong>。再加上 dense 的 TP/PP 通信、router 的 ranking、长上下文 CP，通信总占比常 30%+。<strong>训练只跑 70% 的有效计算时间</strong>。这就是 MegaMoE 想要回收的部分。
+        </div>
+
+        <h3 id="comet">2. 前驱：Comet 把 3 段并行</h3>
+        <p>
+          MegaMoE 不是凭空出现的。2024 年的 <strong>Comet</strong> 已经把 MoE 5 段并到 3 段：
+        </p>
+        <ul>
+          <li><strong>Stage 1</strong>: dispatch + L1（dispatch 在做的同时，已收到的部分 token 立刻进 L1）</li>
+          <li><strong>Stage 2</strong>: activation + L2</li>
+          <li><strong>Stage 3</strong>: combine</li>
+        </ul>
+        <p>
+          Comet 的问题是 <em>流水深度只有 3</em> —— combine 是末尾，没人和它并行；而且没有"专家粒度"的概念，<strong>长尾专家</strong>（被极少 token 命中的专家）会让某个 stage 拖整体。MegaMoE 在 Comet 基础上做两件事：
+        </p>
+        <ol>
+          <li><strong>切深</strong>：把 5 段都暴露出来分别调度，流水深度从 3 加到 5+；</li>
+          <li><strong>切细</strong>：把"专家"切成 wave，每个 wave 是几个专家的集合，wave-by-wave 流水。</li>
+        </ol>
+
+        <h3 id="wave">3. Wave 调度：让通信完全藏在计算下面</h3>
+        <p>
+          关键的工程 trick：把<em>本次 batch 命中的专家</em>分组成 $W$ 个 wave，每个 wave 包含 $E_{\text{hit}}/W$ 个专家。每个 wave 单独跑一遍 5 段，但相邻 wave 的段错位排队：
+        </p>
+
+        <!-- ================== VIZ: Wave 调度甘特图 ================== -->
+        <div class="viz" id="viz-wave">
+          <div class="viz-head">
+            <div class="viz-title">Demo · MegaMoE wave 调度时间线（拖动 wave 数看流水深度变化）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 320" id="wave-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- title -->
+            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">Naive 串行（$W$=1，无 wave）</text>
+            <text x="20" y="156" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">MegaMoE 流水（<tspan id="wave-w-display" font-family="JetBrains Mono" fill="#dc2626">3</tspan> 个 wave）</text>
+
+            <!-- naive timeline (top) -->
+            <g id="naive-blocks"></g>
+            <line x1="20" y1="118" x2="700" y2="118" stroke="#cbd5e1" stroke-width="1"/>
+            <text x="20" y="135" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">total = <tspan id="naive-total">0</tspan> units</text>
+
+            <!-- megamoe timeline (bottom) -->
+            <g id="wave-blocks"></g>
+            <line x1="20" y1="288" x2="700" y2="288" stroke="#cbd5e1" stroke-width="1"/>
+            <text x="20" y="306" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">total = <tspan id="wave-total">0</tspan> units · 加速 <tspan id="wave-speedup" fill="#16a34a" font-weight="600">1.0×</tspan></text>
+
+            <!-- legend -->
+            <g transform="translate(440, 10)">
+              <rect x="0" y="0" width="14" height="10" fill="#fbbf24"/><text x="18" y="9" font-size="10" fill="#475569">Disp</text>
+              <rect x="56" y="0" width="14" height="10" fill="#3b82f6"/><text x="74" y="9" font-size="10" fill="#475569">L1</text>
+              <rect x="100" y="0" width="14" height="10" fill="#a78bfa"/><text x="118" y="9" font-size="10" fill="#475569">Act</text>
+              <rect x="146" y="0" width="14" height="10" fill="#10b981"/><text x="164" y="9" font-size="10" fill="#475569">L2</text>
+              <rect x="190" y="0" width="14" height="10" fill="#f97316"/><text x="208" y="9" font-size="10" fill="#475569">Comb</text>
+            </g>
+          </svg>
+          <div class="viz-controls">
+            <label>wave 数 W
+              <input type="range" id="wave-slider" min="1" max="8" step="1" value="3">
+              <span class="viz-readout" id="wave-readout">3</span>
+            </label>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：上方是 naive 串行（5 段排队加总），下方是 MegaMoE 切 $W$ 个 wave 后的时间线。每个 wave 自己内部仍然串行（5 段），<em>但相邻 wave 的同型段错位</em>：wave 2 的 dispatch 在 wave 1 还在做 L1 时就发出去了，wave 3 的 L1 在 wave 2 算 L2 时已经在 GPU 上跑。
+            <br>
+            $W$ 越大，时间线越紧凑（隐藏越彻底），<strong>但每段单次量变小</strong> —— 太碎会让矩阵乘的 tile 利用率掉、IB latency 占主导。所以 $W$ 在论文里取 <em>4–6</em> 之间。
+          </p>
+        </div>
+
+        <p>
+          数学上，naive 总时间 $T_{\text{naive}} = 5T$（设每段都耗 $T$）。MegaMoE 按 $W$ 个 wave 流水，最佳情况下每多一个 wave 只多 $T$（最后填满管线）：
+        </p>
+        <div class="math-block">
+          $$
+          T_{\text{wave}} \;=\; T \cdot (W + 4) \cdot \frac{1}{W} \;=\; T \cdot \left(1 + \frac{4}{W}\right)
+          $$
+        </div>
+        <p>
+          $W \to \infty$ 时下限 $T$，<strong>5× 的渐近加速</strong>。但实测最高只到 1.92×，因为 $W$ 大到一定程度后通信粒度太碎，IB latency 与 wave overhead 反吃掉收益。
+        </p>
+
+        <h3 id="cb">4. 那条公式：$C/B \le 6144$ FLOPs/Byte</h3>
+        <p>
+          MegaMoE 之所以能"通信被计算完全覆盖"，前提是<strong>本次计算的时间 $\ge$ 本次通信的时间</strong>。换算成单位字节：每发 1 字节，要伴随足够的 FLOPs 让计算时间盖住通信。把这个写成不等式：
+        </p>
+        <div class="math-block">
+          $$
+          \underbrace{\frac{\text{FLOPs/段}}{\text{Bytes/段}}}_{\text{算力需求}} \;\le\; \underbrace{\frac{C\,(\text{FLOPs/s})}{B\,(\text{Bytes/s})}}_{\text{硬件能给}}
+          $$
+        </div>
+        <p>
+          推导左边：单 wave 一段 L1 要算 $2 \cdot s \cdot d \cdot d_{\text{ff}}$ FLOPs（$s$ token 数，$d$ hidden，$d_{\text{ff}}$ 中间维），通信传 $s \cdot d$ Bytes（BF16 一个数 2 字节，但比例上抵消）。化简后<strong>每字节对应 $2d$ FLOPs</strong>。代入 $d=3072$：
+        </p>
+
+        <div class="callout callout-info">
+          <div class="callout-title">📖 公式白话翻译</div>
+          <p>$C/B \le 2d = 6144$ FLOPs/Byte 翻译成大白话就是：</p>
+          <ul>
+            <li><strong>左边 $C$（每秒能算多少）÷ $B$（每秒能传多少）</strong>：硬件提供的"每字节配多少 FLOPs"；</li>
+            <li><strong>右边 $2d$</strong>：MoE 工作负载真正需要的"每字节多少 FLOPs"；</li>
+            <li><strong>$\le$ 关系</strong>：硬件给的算力配比 ≤ 工作负载需要的，说明<em>计算还能跟上通信</em>，可以靠 wave 流水把通信藏起来。</li>
+          </ul>
+          <p>反过来如果硬件 $C/B \gg 6144$（GPU 计算太快、互联太慢），那么再切多少 wave、再 fuse 多少 kernel，都<em>无法把通信藏住</em> —— 这时只能加带宽。这就是给硬件厂商的<strong>"目标线"</strong>：把 $C/B$ 做到 ~6144，再多就是浪费 silicon。</p>
+        </div>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 这条线现在的硬件位置</span>
+          <ul>
+            <li><strong>H100 + NVLink（节点内）</strong>：$C=989$ TFLOPs/s, $B=900$ GB/s → $C/B \approx 1099$。<em>远低于 6144</em> —— 节点内 MegaMoE 能完美 overlap，通信几乎不可见。</li>
+            <li><strong>H100 + InfiniBand 400G（节点间）</strong>：$B \approx 50$ GB/s → $C/B \approx 19{,}780$。<em>远高于 6144</em> —— 跨节点 EP 时通信暴露，wave 也藏不住。这就是为什么 V4 的 MoE 几乎都尽量在节点内做 EP，跨节点用 PP/CP。</li>
+            <li><strong>下一代理想互联</strong>：$C/B \approx 6000$ → 跨节点 MoE 也能 overlap。论文呼吁"<em>每 GBps 配 6 TFLOPs/s</em>"，意思是这个比例。</li>
+          </ul>
+        </div>
+
+        <h3 id="advice">5. 给硬件的四条建议（论文 §6.1.4）</h3>
+        <div class="callout callout-good">
+          <div class="callout-title">DeepSeek 想让芯片厂商记住的事</div>
+          <ol>
+            <li><strong>计算-通信比 $C/B \approx 2d \approx 6144$</strong>：上面已展开，<em>不要无脑堆带宽，目标是 ~6 TFLOP/s/GBps</em>。</li>
+            <li><strong>功耗预算</strong>：MegaMoE 把 compute / mem / net 同时拉到 80%+，<em>极端融合下 GPU 会进入 power-cap</em>。要留 power headroom，不然 SM 会自动降频反吃 wave 流水的收益。</li>
+            <li><strong>通信原语：pull > push</strong>：细粒度 wave 通信里，pull 模式的<em>接收方按自己节拍取</em>，避免发起方的握手等待。NVIDIA IBGDA 的 GPU-initiated put 也算 pull 风格。</li>
+            <li><strong>激活函数：拿掉 SwiGLU 的 exp/div</strong>：把 $\sigma(\cdot)$ 换成线性门控，能省 ~30% 的 activation 算力，<em>把这部分算力分给更大的 $d_{\text{ff}}$</em> 在精度上反而更划算。</li>
+          </ol>
+        </div>
+
+        <h3 id="figs">6. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">V4 论文 Figure 5：MegaMoE 的 wave 调度时间线（5 段 × 多 wave），与 naive / Comet 三方对比的甘特图。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §6.1，Figure 5。本章 demo 是简化版可交互，论文图含真实测量数据。</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">FIG · 待补</span>
+          <p class="fig-want">V4 论文 Figure 6 / Table 5：MegaMoE 在不同 EP 拓扑下的实测加速比（vs naive、vs Comet），含 $C/B$ ~ overlap rate 的实测散点。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §6.1.3。</p>
+        </div>
+
+        <h3>本章小结</h3>
+        <ul>
+          <li>MoE 在 EP 下天然被 all-to-all 卡死：通信和计算串行，naive 实现下通信占 30%+ wall-time。</li>
+          <li>Comet 把 5 段并到 3 段，MegaMoE 进一步切 wave 让流水深度到 5+，<strong>实测 1.92× 加速</strong>。</li>
+          <li>$C/B \le 2d = 6144$ FLOPs/Byte 是"通信能被计算完全覆盖"的临界条件，超过它再加带宽是浪费。</li>
+          <li>四条硬件建议（C/B、power、pull、SwiGLU 简化）是 DeepSeek 把<em>训练经验反向输给芯片厂商</em>的尝试。</li>
+        </ul>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: MegaMoE wave 调度时间线
+     ============================================================ -->
+<script>
+(function() {
+  // 5 stages: dispatch(yellow), L1(blue), act(purple), L2(green), combine(orange)
+  const COLORS = ['#fbbf24', '#3b82f6', '#a78bfa', '#10b981', '#f97316'];
+  const NAMES = ['Disp', 'L1', 'Act', 'L2', 'Comb'];
+  // unit duration per stage in pixels per "time unit"
+  const UNIT_PX = 13;  // 1 time unit = 13 px
+  const X0 = 20;
+  const NAIVE_Y = 38;
+  const WAVE_Y = 172;
+  const ROW_H = 18;
+  const TOTAL_W = 680; // available width
+
+  function drawBlock(g, x, y, w, h, fill, label) {
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', y);
+    r.setAttribute('width', Math.max(2, w)); r.setAttribute('height', h);
+    r.setAttribute('fill', fill); r.setAttribute('stroke', '#ffffff'); r.setAttribute('stroke-width', '0.5');
+    g.appendChild(r);
+    if (w > 22 && label) {
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', x + w/2); t.setAttribute('y', y + h/2 + 3.5);
+      t.setAttribute('text-anchor', 'middle');
+      t.setAttribute('font-size', '9'); t.setAttribute('fill', '#ffffff');
+      t.setAttribute('font-family', 'JetBrains Mono'); t.setAttribute('font-weight', '600');
+      t.textContent = label;
+      g.appendChild(t);
+    }
+  }
+
+  function render(W) {
+    document.getElementById('wave-w-display').textContent = W;
+    document.getElementById('wave-readout').textContent = W;
+
+    const naiveG = document.getElementById('naive-blocks');
+    const waveG = document.getElementById('wave-blocks');
+    naiveG.innerHTML = '';
+    waveG.innerHTML = '';
+
+    // ---- Naive: 5 stages, each duration = 5 (so total = 25 units, single wave)
+    // To make widths comparable across W, we keep "per-stage cost = 5 units" baseline
+    // For wave version: per-wave each stage = 5/W units
+    const naiveStageDur = 5; // units
+    let x = X0;
+    for (let s = 0; s < 5; s++) {
+      const w = naiveStageDur * UNIT_PX;
+      drawBlock(naiveG, x, NAIVE_Y, w, ROW_H * 2, COLORS[s], NAMES[s]);
+      x += w;
+    }
+    const naiveTotal = naiveStageDur * 5; // = 25
+    document.getElementById('naive-total').textContent = naiveTotal;
+
+    // ---- Wave: W waves, each stage takes (5/W) units; offset by stage idx within wave
+    const waveStageDur = 5 / W; // units per single wave's single stage
+    // Each wave is one row in the visualisation (stacked); its 5 stages are sequential
+    // Adjacent waves offset by waveStageDur (=> pipelined)
+    const waveRowH = Math.max(8, Math.floor(72 / W)); // total height ~72 px
+    const waveStartY = WAVE_Y;
+    let waveTotalUnits = 0;
+    for (let w = 0; w < W; w++) {
+      const yRow = waveStartY + w * waveRowH;
+      let wx = X0 + w * waveStageDur * UNIT_PX;
+      for (let s = 0; s < 5; s++) {
+        const dur = waveStageDur * UNIT_PX;
+        drawBlock(waveG, wx, yRow, dur, waveRowH - 1, COLORS[s], W < 5 ? NAMES[s] : '');
+        wx += dur;
+      }
+      const finishUnits = (w + 5) * waveStageDur;
+      if (finishUnits > waveTotalUnits) waveTotalUnits = finishUnits;
+    }
+    // critical path = (W + 4) * (5/W) = 5 * (1 + 4/W)
+    const crit = 5 * (1 + 4 / W);
+    document.getElementById('wave-total').textContent = crit.toFixed(2);
+    const speedup = naiveTotal / crit;
+    document.getElementById('wave-speedup').textContent = speedup.toFixed(2) + '×';
+
+    // critical-path marker (vertical line)
+    const critX = X0 + crit * UNIT_PX;
+    const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    ln.setAttribute('x1', critX); ln.setAttribute('x2', critX);
+    ln.setAttribute('y1', waveStartY - 4); ln.setAttribute('y2', waveStartY + W * waveRowH + 4);
+    ln.setAttribute('stroke', '#dc2626'); ln.setAttribute('stroke-width', '1.5');
+    ln.setAttribute('stroke-dasharray', '4,3');
+    waveG.appendChild(ln);
+  }
+
+  document.getElementById('wave-slider').addEventListener('input', e => {
+    render(parseInt(e.target.value, 10));
+  });
+  render(3);
+})();
+</script>
+</body>
+</html>

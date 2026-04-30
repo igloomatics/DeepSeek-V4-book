@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ch 15 · Base 评测 — 出厂前的体检</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body data-base="../" data-page="ch15">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Ch 15 · Base 评测</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+
+      <div class="crumb"><a href="../index.html">封面</a><span class="sep">/</span><a href="../parts/part3.html">第三部分 · 预训练</a><span class="sep">/</span>Ch 15</div>
+
+      <article id="ch15" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>第三部分 · 预训练 · 15</div>
+        <h2 class="chapter-title">Base 评测 — 出厂前的体检</h2>
+        <p class="chapter-sub">为什么 V3.2-Base 用 671B 参数、V4-Flash-Base 只用 284B 反而压过它，FACTS Parametric 从 27.1 跳到 62.6 的"知识密度跃迁"意味着什么，以及为什么 Base 评测 — 而不是后训练分数 — 决定了 OPD 蒸馏的真实 ceiling。</p>
+
+        <!-- ================== 名词速通 ================== -->
+        <div class="term-card">
+          <div class="term-eyebrow">名词速通 · 一分钟看懂"Base 评测"</div>
+          <p class="term-name">Base 评测 = 在 SFT/RL/OPD 全部后训练之前，对纯预训练完成的 Base 模型做的体检；目的是隔离<em>架构红利 + 数据红利</em>，与"对齐红利"区分开</p>
+          <p>
+            一句话：<strong>SFT 后的分数会被对齐 trick 美化，Base 分数才是模型真实知识的"裸照"</strong>。V4 单列 Table 1 是为了让读者看清 —— Pro 在后训练前就<em>已经</em>把 V3.2 全面甩开，这意味着 Ch3-Ch14 累计的架构 + 数据红利是真的。
+          </p>
+          <dl>
+            <dt>Base Model（基座 / 预训练完成态）</dt>
+            <dd>只走完 pre-train + mid-training，<em>没做任何 SFT / RLHF / OPD</em> 的模型。文本输出是"补全风格"而非"对话风格"。<strong>是后训练 ceiling 的物理上限</strong> —— 后训练只能把 Base 已有能力激发出来，不能凭空创造。</dd>
+
+            <dt>FACTS Parametric（Google DeepMind 2024）</dt>
+            <dd>专门测<em>模型参数里"真"事实知识浓度</em>的 benchmark。问题：参数化知识，不允许检索，不允许推理。$\approx$ 模型脑子里到底装了多少事实。<strong>对 pre-train 数据规模与质量极敏感</strong>，对 SFT/RL 几乎不敏感 —— 这是 Base 评测的"试金石"。</dd>
+
+            <dt>Simple-QA Verified</dt>
+            <dd>简单事实问答，验证答案精确匹配。每题只考<em>是 / 不是</em>，无 partial credit。<strong>对幻觉极敏感</strong> —— 模型不知道就乱答的话，分数会塌。Pro-Base 从 28.3 跳到 55.2 说明<em>幻觉率显著下降</em>。</dd>
+
+            <dt>MMLU-Pro / MMLU-Redux</dt>
+            <dd>MMLU-Pro：MMLU 升级版，更难的多学科考试题，含 STEM / 人文 / 法律 / 医学。MMLU-Redux：去除 MMLU 中已知错误的修正版。<em>主流"综合智能"指标</em>。MMLU-Pro 比 MMLU 更难，分数更低更分散，更能区分模型能力。</dd>
+
+            <dt>MultiLoKo（Multilingual Long-tail Knowledge）</dt>
+            <dd>多语言长尾知识 benchmark，覆盖小语种 + 文化特定知识。Pro-Base 从 38.7 跳到 51.1 直接验证 V4 数据策展<em>"重点提升长尾文化语言"</em>这条策略真有效。</dd>
+
+            <dt>BBH（Big-Bench Hard, Suzgun 2022）</dt>
+            <dd>Big-Bench 中 23 个被认为"对当时模型最难"的子集。<em>主测多步推理</em>。这一项 V4-Pro 87.5 vs V3.2 87.6 几乎打平 —— 说明纯推理能力<strong>已经接近 ceiling</strong>，再大的模型在这个 benchmark 上也只能微涨。</dd>
+
+            <dt>LongBench-V2</dt>
+            <dd>长上下文 benchmark v2，128K-1M 上下文的问答 / 总结 / 代码任务。<em>对 V4 的 CSA / HCA 是命门测试</em>。Pro 从 V3.2 的 40.2 跳到 51.5（+11），<strong>证明 sparse attention 不只是"省 KV"，而是真的把长上下文能力提上去了</strong>。</dd>
+
+            <dt>知识密度（Knowledge Density / Tokens-per-Parameter）</dt>
+            <dd>非正式概念：相同参数量下能"记住"多少事实。$\propto$ 训练 token 数 / 激活参数数。V4-Flash 32T / 13B ≈ 2461 tokens/param，远高于 V3.2 14.8T / 37B ≈ 400。<em>这是 Flash 用更少参数赢更多 benchmark 的核心解释</em>。</dd>
+
+            <dt>Ceiling（后训练上限）</dt>
+            <dd>OPD（Ch18 反向 KL 蒸馏）的产出 = $\min$(student capacity, teacher knowledge)。Base 知识不够，再好的 teacher 蒸馏后学生也只能"知其名不知其详"。<strong>Pro-Base 的 FACTS +35.5 直接定义了 OPD 能蒸出多大的 Pro-Max</strong>。</dd>
+          </dl>
+          <div class="term-tagline"><strong>一句话定位：</strong>Base 评测是把"V4 比 V3 强"这件事的<em>原因</em>从架构 / 数据 / 后训练三层里隔离出来。结论：架构 + 数据红利在后训练之前就已经把分数推上去了，这意味着 Ch3-Ch14 不是表演。读完这章你应该能解释为什么 V4-Flash（284B）在大多数 benchmark 上反超 V3.2（671B）。</div>
+        </div>
+
+        <!-- ================== §1 三模型同框 ================== -->
+        <h3 id="three-model">1. 三模型同框：V3.2 / V4-Flash / V4-Pro</h3>
+        <p>
+          V4 报告的核心对比表 Table 1 把<em>三个 Base 模型</em>放在一起：
+        </p>
+        <ul>
+          <li><strong>V3.2-Base</strong>：671B 总参 / 37B 激活，14.8T tokens；</li>
+          <li><strong>V4-Flash-Base</strong>：284B 总参 / 13B 激活（< V3.2 一半），32T tokens；</li>
+          <li><strong>V4-Pro-Base</strong>：1.6T 总参 / 49B 激活，33T tokens。</li>
+        </ul>
+        <p>
+          这种三方对比的<em>实验设计意图</em>很清晰：Flash 与 V3.2 比"<strong>架构 + 数据红利</strong>"（参数减少但分数升），Pro 与 V3.2 比"<strong>规模红利</strong>"（参数加倍后能跳多少），Flash 与 Pro 比"<strong>架构 ceiling</strong>"（同架构不同尺寸的差距）。三方放一起读，才能把红利来源拆清楚。
+        </p>
+
+        <h3 id="table">2. 节选关键评测（Table 1）</h3>
+        <div class="config-table">
+          <table>
+            <thead>
+              <tr>
+                <th>类别</th><th>Benchmark</th>
+                <th>V3.2-Base<br/>(671B / 37B)</th>
+                <th>V4-Flash-Base<br/>(284B / 13B)</th>
+                <th>V4-Pro-Base<br/>(1.6T / 49B)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td rowspan="6">World Knowl.</td><td>MMLU-Pro</td><td>65.5</td><td>68.3</td><td><strong>73.5</strong></td></tr>
+              <tr><td>MMLU-Redux</td><td>87.5</td><td>89.4</td><td><strong>90.8</strong></td></tr>
+              <tr><td>C-Eval</td><td>90.4</td><td>92.1</td><td><strong>93.1</strong></td></tr>
+              <tr><td>MultiLoKo</td><td>38.7</td><td>42.2</td><td><strong>51.1</strong></td></tr>
+              <tr><td>Simple-QA Verified</td><td>28.3</td><td>30.1</td><td><strong>55.2</strong></td></tr>
+              <tr><td>FACTS Parametric</td><td>27.1</td><td>33.9</td><td><strong>62.6</strong></td></tr>
+              <tr><td rowspan="3">Lang. & Reas.</td><td>BBH</td><td><strong>87.6</strong></td><td>86.9</td><td>87.5</td></tr>
+              <tr><td>DROP</td><td>88.2</td><td>88.6</td><td><strong>88.7</strong></td></tr>
+              <tr><td>HellaSwag</td><td>86.4</td><td>85.7</td><td><strong>88.0</strong></td></tr>
+              <tr><td rowspan="3">Code & Math</td><td>HumanEval</td><td>62.8</td><td>69.5</td><td><strong>76.8</strong></td></tr>
+              <tr><td>GSM8K</td><td>91.1</td><td>90.8</td><td><strong>92.6</strong></td></tr>
+              <tr><td>MATH</td><td>60.5</td><td>57.4</td><td><strong>64.5</strong></td></tr>
+              <tr><td>Long Ctx</td><td>LongBench-V2</td><td>40.2</td><td>44.7</td><td><strong>51.5</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- ================== VIZ: 三模型对比 ================== -->
+        <div class="viz" id="viz-bench">
+          <div class="viz-head">
+            <div class="viz-title">Demo · 三模型 Base benchmark 对比（按类别 / 按提升幅度切换）</div>
+            <span class="viz-tag">交互</span>
+          </div>
+          <svg viewBox="0 0 720 380" id="bench-svg" xmlns="http://www.w3.org/2000/svg">
+            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">分数对比（横向条形 · 越长越高）</text>
+
+            <g id="bench-bars"></g>
+
+            <!-- legend -->
+            <g transform="translate(440, 12)">
+              <rect x="0" y="0" width="14" height="10" fill="#94a3b8"/><text x="18" y="9" font-size="10" fill="#475569">V3.2-Base (671B)</text>
+              <rect x="116" y="0" width="14" height="10" fill="#71a4e1"/><text x="134" y="9" font-size="10" fill="#475569">V4-Flash (284B)</text>
+              <rect x="222" y="0" width="14" height="10" fill="#dc2626"/><text x="240" y="9" font-size="10" fill="#475569">V4-Pro (1.6T)</text>
+            </g>
+          </svg>
+          <div class="viz-controls">
+            <button class="viz-btn" id="bench-cat-knowledge">World Knowledge</button>
+            <button class="viz-btn" id="bench-cat-reason">Lang & Reasoning</button>
+            <button class="viz-btn" id="bench-cat-code">Code & Math</button>
+            <button class="viz-btn" id="bench-cat-long">Long Context</button>
+            <button class="viz-btn" id="bench-cat-all">全部</button>
+          </div>
+          <p class="viz-caption">
+            <strong>读图法</strong>：每行一个 benchmark，三条横条分别对应 V3.2 / Flash / Pro。
+            <br>
+            切到 <strong>World Knowledge</strong> 看到 FACTS Parametric / Simple-QA / MultiLoKo 三项 Pro 跳得最远 —— <em>知识类的爆发式跃迁</em>。
+            切到 <strong>Lang & Reasoning</strong> 看 BBH 上 V3.2 与 V4-Pro 几乎打平 —— <em>纯推理能力已接近 ceiling</em>，更大模型也榨不出多少。
+            切到 <strong>Long Context</strong> 看 LongBench-V2 +11 —— <em>CSA/HCA 没白做</em>。
+          </p>
+        </div>
+
+        <!-- ================== §3 故事线 ================== -->
+        <h3 id="storyline">3. 两条故事线</h3>
+
+        <div class="callout callout-info">
+          <div class="callout-title">故事线 A：Flash 用一半参数压过 V3.2</div>
+          <p>
+            V4-Flash-Base 总参 284B（< V3.2 的 671B），激活参数 13B（< V3.2 的 37B），<strong>但在 13 项中赢 11 项</strong>（仅 BBH 与 GSM8K 微败）。
+          </p>
+          <ul>
+            <li>这<em>不是</em> "数据多 1.2× 就能超"那么简单 —— 同样数据量喂同样参数量级别的 V3.2 也不会跳这么多；</li>
+            <li>这<em>是</em> 架构 + 数据 + 训练优化三件事联动的复利：mHC 让深度堆叠不损能力、CSA/HCA 让长文档真训得动、长文档加权让知识密度提升、sample-level mask 切干净 packing 噪声、Anticipatory + Clamping 让 1.6T 路径稳住；</li>
+            <li>把这些单独贡献相加估算约 +3 ~ +5 分，<strong>但实际跳了 +5 ~ +25 分</strong>。差额来自三件事的相互放大。</li>
+          </ul>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-title">故事线 B：Pro 几乎全面统治</div>
+          <p>
+            Pro-Base 在 17 项中赢 14。两个数字尤其值得圈：
+          </p>
+          <ul>
+            <li><strong>FACTS Parametric: 27.1 → 62.6（+35.5）</strong>。这是 V4 报告里最显眼的跳分。FACTS 测的就是<em>"参数里装了多少事实"</em>，对训练数据质量极敏感。这条直接验证了"长文档优先 + 长尾多语言扩容"是真的有效的策略；</li>
+            <li><strong>Simple-QA Verified: 28.3 → 55.2（+27）</strong>。简单事实问答的精确匹配几乎翻倍。意味着<em>幻觉率</em>显著下降 —— 模型不再"不知道就乱答"。</li>
+          </ul>
+          <p>这两个数字直接<strong>定义了 Ch18 OPD 蒸馏能蒸出多大的 ceiling</strong>。OPD 是反向 KL 蒸馏，学生模型期望从 specialist teacher 学到工具使用、知识、推理。<em>teacher 知识密度高，student 才学得到</em>。</p>
+        </div>
+
+        <h3 id="why-base">4. 为什么 Base 评测最关键</h3>
+        <p>
+          很多读者会跳过 Base 直接看 SFT 后的成绩。论文之所以单列 Table 1，是为了让读者看到<em>无对齐 trick 干扰的真实能力</em>：
+        </p>
+
+        <ol>
+          <li><strong>SFT 会"做高分"</strong>：通过模仿 benchmark 风格的回答模板、对齐 prompt 格式可以涨 5-10 分，但这是<em>表层模仿</em>，不是真知识。Base 没经过 SFT，分数最诚实；</li>
+          <li><strong>OPD 的 ceiling = Base 的 ceiling</strong>：OPD（Ch18）通过 reverse-KL 把 teacher 的 logit 蒸馏给 student。<em>如果 student Base 不会某事实，OPD 也学不会</em>（teacher 给的 logit 里没有它的世界观）；</li>
+          <li><strong>架构变化的代价"不损能力"在 Base 上验证</strong>：CSA/HCA 把 KV 大幅压缩、FP4 QAT 砍精度、mHC 改残差结构 —— 任何一项都可能损能力。Base 评测<em>就是给这套激进改造的"无罪证明"</em>；</li>
+          <li><strong>Flash vs Pro 的能力差在 Base 阶段已定型</strong>：MMLU-Pro 差 5.2 分（68.3 vs 73.5）。<em>无论后训练怎么补，Flash-Max 在知识类弱于 Pro-Max 的根因就在这</em>。</li>
+        </ol>
+
+        <div class="numex">
+          <span class="numex-tag">数值演练 · 知识密度三连</span>
+          <ul>
+            <li><strong>V3.2</strong>: 14.8T tokens / 37B 激活 ≈ <em>400 tokens/param</em>；</li>
+            <li><strong>V4-Flash</strong>: 32T tokens / 13B 激活 ≈ <em>2461 tokens/param</em>（V3.2 的 6.2×）；</li>
+            <li><strong>V4-Pro</strong>: 33T tokens / 49B 激活 ≈ <em>673 tokens/param</em>（V3.2 的 1.7×）。</li>
+          </ul>
+          按知识密度论，Flash 反而最高。但 FACTS Pro 62.6 &gt; Flash 33.9 &gt; V3.2 27.1 —— <strong>知识容量最终仍由"激活参数 × 密度"共同决定</strong>，Pro 的总容量 49B × 673 ≈ 33000 单位，Flash 13B × 2461 ≈ 32000 单位，几乎相同；但 V3.2 仅 37B × 400 ≈ 15000 —— <em>两者都比 V3.2 多一倍容量</em>。这条估算解释了 Flash 为什么能逼平 Pro。
+        </div>
+
+        <h3 id="figs">5. 论文图复刻</h3>
+        <div class="fig-placeholder">
+          <div class="fig-tag">论文图占位</div>
+          <p class="fig-want">需要：V4 论文 Table 1 完整版（含 17 项 benchmark + 3 模型分数），最好渲染成 radar / heatmap 形式而非纯表格。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 Table 1（待补）</p>
+        </div>
+
+        <div class="fig-placeholder">
+          <div class="fig-tag">论文图占位</div>
+          <p class="fig-want">需要：FACTS Parametric / Simple-QA / MMLU-Pro 三项的"V3.2 → V4-Flash → V4-Pro"提升瀑布图，标注各跃迁的归因（架构 / 数据 / 规模）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.4 评测节（待补）</p>
+        </div>
+
+        <h3 id="summary">6. 一句话总结</h3>
+        <div class="callout callout-info">
+          <div class="callout-title">把整章压成一句话</div>
+          <p>Base 评测把"V4 比 V3 强"的<em>原因</em>从架构 / 数据 / 后训练三层里隔离开 —— V4-Flash 用一半参数压过 V3.2 的事实证明：<strong>架构红利 + 数据红利早在后训练之前就已经兑现</strong>，FACTS +35.5 / Simple-QA +27 直接定义了 Ch18 OPD 能蒸出多大的 ceiling。Part 3 至此结束，下面进入后训练 —— 但请记住：<em>后训练只能激发，无法创造</em>。</p>
+        </div>
+
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="../app.js"></script>
+
+<!-- ============================================================
+     VIZ: 三模型对比柱状图
+     ============================================================ -->
+<script>
+(function() {
+  const DATA = {
+    knowledge: [
+      { name: 'MMLU-Pro',         v32: 65.5, flash: 68.3, pro: 73.5 },
+      { name: 'MMLU-Redux',       v32: 87.5, flash: 89.4, pro: 90.8 },
+      { name: 'C-Eval',           v32: 90.4, flash: 92.1, pro: 93.1 },
+      { name: 'MultiLoKo',        v32: 38.7, flash: 42.2, pro: 51.1 },
+      { name: 'Simple-QA Verif.', v32: 28.3, flash: 30.1, pro: 55.2 },
+      { name: 'FACTS Parametric', v32: 27.1, flash: 33.9, pro: 62.6 },
+    ],
+    reason: [
+      { name: 'BBH',       v32: 87.6, flash: 86.9, pro: 87.5 },
+      { name: 'DROP',      v32: 88.2, flash: 88.6, pro: 88.7 },
+      { name: 'HellaSwag', v32: 86.4, flash: 85.7, pro: 88.0 },
+    ],
+    code: [
+      { name: 'HumanEval', v32: 62.8, flash: 69.5, pro: 76.8 },
+      { name: 'GSM8K',     v32: 91.1, flash: 90.8, pro: 92.6 },
+      { name: 'MATH',      v32: 60.5, flash: 57.4, pro: 64.5 },
+    ],
+    long: [
+      { name: 'LongBench-V2', v32: 40.2, flash: 44.7, pro: 51.5 },
+    ],
+  };
+
+  function categoryAll() {
+    return [...DATA.knowledge, ...DATA.reason, ...DATA.code, ...DATA.long];
+  }
+
+  const X0 = 200;            // bar starts at x=200
+  const BAR_MAX_W = 460;     // max horizontal length
+  const BAR_H = 8;
+  const ROW_GAP = 4;
+  const GROUP_GAP = 18;      // gap between benchmarks
+  const Y0 = 50;
+
+  function render(rows) {
+    const g = document.getElementById('bench-bars');
+    g.innerHTML = '';
+
+    // dynamic vertical fit: total rows * (3 bars + gap)
+    const groupH = 3 * (BAR_H + ROW_GAP) + GROUP_GAP;
+    let y = Y0;
+
+    for (const r of rows) {
+      // benchmark name
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lbl.setAttribute('x', X0 - 8); lbl.setAttribute('y', y + 14);
+      lbl.setAttribute('text-anchor', 'end');
+      lbl.setAttribute('font-size', '11'); lbl.setAttribute('fill', '#1c2433');
+      lbl.setAttribute('font-family', 'Inter'); lbl.setAttribute('font-weight', '600');
+      lbl.textContent = r.name;
+      g.appendChild(lbl);
+
+      const series = [
+        { v: r.v32,   color: '#94a3b8', tag: 'V3.2' },
+        { v: r.flash, color: '#71a4e1', tag: 'Flash' },
+        { v: r.pro,   color: '#dc2626', tag: 'Pro' },
+      ];
+      let yy = y;
+      for (const s of series) {
+        const w = (s.v / 100) * BAR_MAX_W;
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', X0); rect.setAttribute('y', yy);
+        rect.setAttribute('width', w); rect.setAttribute('height', BAR_H);
+        rect.setAttribute('fill', s.color);
+        g.appendChild(rect);
+        // value label at end
+        const v = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        v.setAttribute('x', X0 + w + 4); v.setAttribute('y', yy + BAR_H - 1);
+        v.setAttribute('font-size', '9'); v.setAttribute('fill', s.color);
+        v.setAttribute('font-family', 'JetBrains Mono'); v.setAttribute('font-weight', '600');
+        v.textContent = s.v.toFixed(1);
+        g.appendChild(v);
+        yy += BAR_H + ROW_GAP;
+      }
+
+      // separator
+      const sep = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      sep.setAttribute('x1', 20); sep.setAttribute('x2', 700);
+      sep.setAttribute('y1', y + groupH - 8); sep.setAttribute('y2', y + groupH - 8);
+      sep.setAttribute('stroke', '#e5e7eb'); sep.setAttribute('stroke-width', '0.5');
+      g.appendChild(sep);
+
+      y += groupH;
+    }
+
+    // x-axis ticks (0, 50, 100)
+    [0, 50, 100].forEach(p => {
+      const x = X0 + (p / 100) * BAR_MAX_W;
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('x', x); t.setAttribute('y', Y0 - 8);
+      t.setAttribute('font-size', '9'); t.setAttribute('fill', '#94a3b8');
+      t.setAttribute('font-family', 'JetBrains Mono'); t.setAttribute('text-anchor', 'middle');
+      t.textContent = p;
+      g.appendChild(t);
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', x); ln.setAttribute('x2', x);
+      ln.setAttribute('y1', Y0 - 4); ln.setAttribute('y2', y - GROUP_GAP);
+      ln.setAttribute('stroke', '#e5e7eb'); ln.setAttribute('stroke-width', '0.5');
+      g.appendChild(ln);
+    });
+  }
+
+  document.getElementById('bench-cat-knowledge').addEventListener('click', () => render(DATA.knowledge));
+  document.getElementById('bench-cat-reason').addEventListener('click', () => render(DATA.reason));
+  document.getElementById('bench-cat-code').addEventListener('click', () => render(DATA.code));
+  document.getElementById('bench-cat-long').addEventListener('click', () => render(DATA.long));
+  document.getElementById('bench-cat-all').addEventListener('click', () => render(categoryAll()));
+
+  render(DATA.knowledge);
+})();
+</script>
+</body>
+</html>
