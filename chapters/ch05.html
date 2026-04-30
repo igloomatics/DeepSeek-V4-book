@@ -72,7 +72,7 @@
           <img src="../figures/ch05/01.png" alt="HCA 架构：Sliding Window + Heavily Compressed KV via Token-Level Compressor，concat 后进 Shared KV MQA">
           <figcaption>
             图 5-1 · <strong>HCA 整体架构</strong>。与 CSA 对比，<em>没有 Lightning Indexer、没有 Top-k Selector</em> —— 只剩两条路：左侧 Sliding Window KV Entries 直接走，中间所有原始 KV 全部经过 Token-Level Compressor（$m'=128$ 重压缩）变成 <strong>Heavily Compressed KV Entries</strong>，concat 后进入 Shared Key-Value Multi-Query Attention。整张图比 CSA 简洁很多 —— 这就是"重压缩 + 不做 selection"的视觉体现：用<em>结构性的简单</em>换 CSA 漏掉的全局信息。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 Figure 4（§2.3.2，HCA 架构）。</span>
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 §2.3.2 Heavily Compressed Attention，Figure 4，p. 11。</span>
           </figcaption>
         </figure>
 
