@@ -142,11 +142,16 @@
           <p>这条对齐是<em>kernel 与 cache 协同的硬约束</em>：sparse attention kernel 假设访问的压缩条目按 cache line 对齐，错位会触发额外 load + reorder。block size 选 lcm 让"一个 block 是一个 kernel iteration 的最小单元"，同时 SWA 窗口 4096 也是 lcm 的整数倍 ($4096 = 32 \times 128$)，三者锁死。</p>
         </div>
 
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch12/01</span>
-          <p class="fig-want">需要：V4 论文 Figure 6 —— KV cache layout 示意：左半部 State Cache（按 Request 分配，每块含 SWA + 未完成压缩的 KV State）；右半部 KV Cache（按 lcm(m,m') 分块，每块含 CSA Indexer KV / CSA Main KV / HCA KV 三种条目）。下方 demo 是这张图随 token 增长的可拖动版本。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §3.6.1 KV Cache Structure and Management，Figure 6，p. 23。</p>
-        </div>
+        <figure class="paper-fig">
+          <img src="../figures/ch12/1.png" alt="V4 推理 KV 二分布局：左侧 State Cache 按请求切分，右侧 Block Cache 按块切分">
+          <figcaption>
+            <strong>图 12-1 · V4 推理 KV 的二分式布局。</strong>
+            <strong>左：State Cache</strong>。按 <em>请求</em> 维度切分，每个 Request $i$ 持有自己的 SWA KV（位置敏感、按 token 滚动窗口）和"未压缩 KV State"（in-flight tail，凑不满一个压缩块的尾部）。展开后是逐层结构：Layer-0 SWA、Layer-2 CSA State、Layer-3 HCA State、…、Layer-$n$ SWA。<em>同一请求多层共享一份 State Cache 配额</em>。
+            <strong>右：Block Cache（KV Cache）</strong>。按 <em>块</em> 维度切分（Block 0 / 1 / … / $N$），每块跨请求共享、生命周期与请求解耦。展开后内层是 Layer-2 / 3 / 4 / 5 …：每层放一组 <em>已压缩</em> 的 KV —— CSA Indexer KV（$k_1$ tokens）、CSA Main KV（$k_1$ tokens）、HCA KV（$k_2$ tokens）。块大小按 $\mathrm{lcm}(4, 128)=128$ 对齐。
+            下方 demo 是这张图随 token 增长的可拖动版本。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 §3.6.1 KV Cache Structure and Management，Figure 6，p. 23。</span>
+          </figcaption>
+        </figure>
 
         <!-- ================== VIZ: 异构 KV 布局 ================== -->
         <div class="viz" id="viz-kv">
