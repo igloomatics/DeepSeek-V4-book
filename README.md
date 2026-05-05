@@ -125,4 +125,5 @@ npx http-server -p 8000
 ## 致谢
 
 - DeepSeek-AI 团队公开模型权重与技术报告；
+- Claude 辅助打磨文字与生成可视化代码；
 - 所有为 mHC、CSA、Muon、TileLang、3FS、EROFS、overlaybd、Firecracker 这些零部件做出贡献的前人——这份剖析能站住，是站在他们肩上。
