@@ -183,11 +183,25 @@ score: 6/10</code></pre>
           </table>
         </div>
 
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch16/01</span>
-          <p class="fig-want">需要：V4 论文 Table 2 + Table 3 —— Table 2 三档 reasoning effort（Non-think / Think High / Think Max）的 Characteristics / Typical Use Cases / Response Format 三列对比；Table 3 是 Think Max 模式注入 system prompt 的完整原文（"Reasoning Effort: Absolute maximum..." 那段）。两表是论文 specialist 训练 reasoning effort 的官方定义。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training，Table 2 + Table 3，p. 30。</p>
-        </div>
+        <figure class="paper-fig">
+          <img src="../figures/ch16/1.png" alt="Reasoning Mode 三档表：Non-think / Think High / Think Max 的特征、用例、响应格式">
+          <figcaption>
+            <strong>图 16-1 · 三档 Reasoning Mode 的官方定义（论文 Table 2）。</strong>
+            <strong>Non-think</strong>：无 &lt;think&gt; 段，直接出答案，对应"凭直觉、按习惯做事"的低风险日常任务（如简短问答、紧急反应）。
+            <strong>Think High</strong>：&lt;think&gt;…&lt;/think&gt; 段做有意识的逻辑推理，慢但准，覆盖中等风险的复杂规划 / 问题求解。
+            <strong>Think Max</strong>：把推理推到极限 —— 除了正常 think 段，还在<em>系统 prompt 最前面</em>注入额外强约束（见图 16-2）；用于探索模型推理能力的边界。响应格式列里给出了三档对应的输出模板。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training，Table 2，p. 30。</span>
+          </figcaption>
+        </figure>
+
+        <figure class="paper-fig">
+          <img src="../figures/ch16/2.png" alt="Think Max 模式注入的 Injected Instruction 全文">
+          <figcaption>
+            <strong>图 16-2 · Think Max 模式的强约束 prompt 全文（论文 Table 3）。</strong>
+            注意三个关键短语：<em>Absolute maximum with no shortcuts permitted</em>（禁止任何捷径）、<em>rigorously stress-testing your logic against all potential paths, edge cases, and adversarial scenarios</em>（必须主动对抗自己的结论）、<em>Explicitly write out your entire deliberation process, documenting every intermediate step, considered alternative, and rejected hypothesis</em>（每一个被否决的假设都要写下来）。这段 prompt 是 Specialist 训练时<em>注入到 system 段</em>，用 length penalty 把模型的 thinking 段拉到普通模式的 5–10×。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training，Table 3，p. 30。</span>
+          </figcaption>
+        </figure>
 
         <p>
           Think Max 在 system prompt 前注入一段强制深度思考的指令（论文 Table 3，简言之就是"绝对最大推理强度，必须穷尽所有路径与对抗场景"）。这条 system prompt 不是简单的 hint，而是<em>训练时和推理时都用</em>的一致约束 —— RL 时模型在这个 prompt 下被 length penalty 弱化、context 拉到 384K，于是学会"在被允许长 think 时确实长 think"。
