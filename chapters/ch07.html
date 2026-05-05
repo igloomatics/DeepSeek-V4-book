@@ -125,16 +125,11 @@
           关键的工程 trick：把<em>本次 batch 命中的专家</em>分组成 $W$ 个 wave，每个 wave 包含 $E_{\text{hit}}/W$ 个专家。每个 wave 单独跑一遍 5 段，但相邻 wave 的段错位排队：
         </p>
 
-        <figure class="paper-fig">
-          <img src="../figures/ch07/1.png" alt="MegaMoE wave 调度时间线对比：Naive / Comet / Ours 三方甘特图">
-          <figcaption>
-            <strong>图 7-1 · 三种 MoE 重叠方案的时间线对比。</strong>
-            <strong>(a) Naive Solution</strong>：Dispatch → L1 GEMM → SwiGLU Act → L2 GEMM → Combine 严格串行，通信和计算各占自己的时段。
-            <strong>(b) Comet</strong>：把 dispatch / combine 与 L1 / Act / L2 重叠到通信和计算两条独立泳道，<em>理论加速 1.42×</em>，但仍受限于 5 段融合不足。
-            <strong>(c) Ours（MegaMoE）</strong>：把整个 expert FFN 切成多个 wave（图中 Expert Wave 1 / 2 / 3），<em>计算泳道每个 wave 输出立即喂到 Combine all-to-all</em>，相邻 wave 形成乒乓流水，理论加速 <strong>1.92×</strong>。颜色编码：紫=Dispatch / Combine all-to-all，蓝=L1 / L2 GEMM，浅蓝=SwiGLU + FP8 cast。下方 demo 是这张图的可调参数版本。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §3.1 Fine-Grained Communication-Computation Overlap，Figure 5，p. 15。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch07/01</span>
+          <p class="fig-want">需要：V4 论文 Figure 5 —— MegaMoE 的 EP scheme 三方对比甘特图：(a) Naive 串行，(b) Comet 三段并行（理论 1.42×），(c) Ours wave 切分流水（理论 1.92×）。下方互动 demo 是这张图的可调参数版本。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §3.1 Fine-Grained Communication-Computation Overlap，Figure 5，p. 15。</p>
+        </div>
 
         <!-- ================== VIZ: Wave 调度甘特图 ================== -->
         <div class="viz" id="viz-wave">

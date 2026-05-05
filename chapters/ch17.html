@@ -117,14 +117,11 @@
           <p>合起来：调用解析失败率从 ~10% 降到<em>接近 0</em>（实测 &lt; 0.1%），残留的失败几乎都是"工具不存在"或"参数语义错"，不再是"格式错"。</p>
         </div>
 
-        <figure class="paper-fig">
-          <img src="../figures/ch17/01.png" alt="DSML Tool Call Schema：模型在 system prompt 中收到的工具调用语法">
-          <figcaption>
-            <strong>图 17-1 · DSML 工具调用语法（论文 Table 4）。</strong>
-            模型从 system prompt 收到的就是这一段：用 <code>&lt;|DSML|tool_calls&gt;…&lt;/|DSML|tool_calls&gt;</code> 包住整段调用，每个调用用 <code>&lt;|DSML|invoke name="$TOOL_NAME"&gt;</code> 起手，参数走 <code>&lt;|DSML|parameter name="$PARAMETER_NAME" string="true|false"&gt;</code>。<em>string="true"</em> 时值是字符串原样，<em>string="false"</em> 时值要在 JSON 里走格式（数值 / bool / 数组 / 对象）。最后一句 <strong>If thinking_mode is enabled (triggered by &lt;think&gt;), you MUST complete your reasoning including &lt;/think&gt; BEFORE any tool calls or final response</strong> —— thinking 必须先收尾，再 tool call。整套 schema 用<em>特殊 token 边界</em>而非 JSON 分隔符，这就是 V4 比 OpenAI 的 JSON Function Calling 解析失败率低一个数量级的根因。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Tool-Call Schema），Table 4，p. 31。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch17/01</span>
+          <p class="fig-want">需要：V4 论文 Table 4 —— Tool-call schema 完整模板：嵌套的 <code>&lt;|DSML|tool_calls&gt;</code> / <code>&lt;|DSML|invoke&gt;</code> / <code>&lt;|DSML|parameter&gt;</code> 标签结构、string="true|false" 类型规则、与 think 段的位置约束。论文以代码块形式呈现，是<em>SFT 数据的官方对齐目标</em>。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Tool-Call Schema），Table 4，p. 31。</p>
+        </div>
 
         <!-- ================== §2 Interleaved Thinking ================== -->
         <h3 id="interleaved">2. Interleaved Thinking：让多轮 Agent 不丢解题状态</h3>
@@ -166,16 +163,11 @@
           </table>
         </div>
 
-        <figure class="paper-fig">
-          <img src="../figures/ch17/02.png" alt="Interleaved Thinking 时序对比：上方 Thinking with tools 多轮保留 thinking，下方 Thinking without tools 丢弃旧 thinking">
-          <figcaption>
-            <strong>图 17-2 · Interleaved Thinking 双轨时序对比（论文 Figure 7）。</strong>
-            <strong>(a) Thinking with tools</strong>：每个 Turn 都形如 Input(Tools + 之前所有 message + thinking + tool_call/result) → Output(Thinking + Tool call / Answer)。注意 Turn 1.3 / Turn 2.1 的 input 把 <em>Thinking 1.1 / 1.2 / 1.3</em> 全部保留进 context —— 第 $n$ 轮还能看到第 1 轮的解题状态。
-            <strong>(b) Thinking without tools</strong>：每轮 input 只保留前面轮的 <em>Answer</em>，<em>Thinking 段被丢弃</em>。Turn 2 看不到 Turn 1 的 Thinking 1，Turn 3 看不到 Thinking 1 / Thinking 2。这是普通多轮对话的标准做法 —— 因为 thinking 段会膨胀 context、且对话场景下不需要"长期解题状态"。
-            两种模式的差异是 V4 在 agentic 场景的关键拐点：tool-calling 必须串起跨轮的"思考轨迹"才能避免重新规划成本。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Interleaved Thinking），Figure 7，p. 32。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch17/02</span>
+          <p class="fig-want">需要：V4 论文 Figure 7 —— "Thinking management" 双轨时序图：上半 (a) Thinking with tools 模式下，Turn 1.1/1.2/1.3 与 Turn 2.1 输入框逐轮累积保留所有 Thinking 块；下半 (b) Thinking without tools 模式下，新 user message 到来时旧 Thinking 段不再纳入下一轮 input。两图横向并列对比。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Interleaved Thinking），Figure 7，p. 32。</p>
+        </div>
 
         <div class="callout callout-warn">
           <div class="callout-title">用 user message 模拟 tool result 的框架不会受益</div>
@@ -221,21 +213,11 @@
           </table>
         </div>
 
-        <figure class="paper-fig">
-          <img src="../figures/ch17/03.png" alt="Quick Instruction Special Tokens 表：action / title / query / authority / domain / extracted_url / read_url 七种">
-          <figcaption>
-            <strong>图 17-3 · Quick Instruction 特殊 token 完整定义（论文 Table 5）。</strong>
-            上表是简化语义版，这张原图给出的是<em>chat template 中确切的拼接位置</em>：
-            <strong>&lt;|action|&gt;</strong> 形如 <code>...&lt;|User|&gt;{prompt}&lt;think&gt;&lt;/think&gt;&lt;|action|&gt;</code>，决定是否联网搜索；
-            <strong>&lt;|title|&gt;</strong> 形如 <code>...&lt;|Assistant|&gt;{response}&lt;|end_of_sentence|&gt;&lt;|title|&gt;</code>，第一轮回答后追加生成对话标题；
-            <strong>&lt;|query|&gt;</strong> 把 user prompt 改写成搜索 query；
-            <strong>&lt;|authority|&gt;</strong> 给 prompt 打"对来源权威性的需求"标；
-            <strong>&lt;|domain|&gt;</strong> 给 prompt 分领域；
-            <strong>&lt;|extracted_url|&gt; / &lt;|read_url|&gt;</strong> 决定每个 URL 是否要抓取并读取。
-            这些副任务<em>不需要再叫一次模型</em>—— 主 prompt 末尾追加对应特殊 token，复用已经算好的 KV，输出几十个 token 就完事。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Quick Instruction），Table 5，p. 33。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch17/03</span>
+          <p class="fig-want">需要：V4 论文 Table 5 —— Quick Instruction 6 个特殊 token 的 Special Token / Description / Format 三列定义。论文 Format 列给出每个 token 在 user/assistant 序列中确切的拼接位置（含 <code>&lt;|User|&gt;{prompt}&lt;|Assistant|&gt;</code> 等 chat template 上下文）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Quick Instruction），Table 5，p. 33。</p>
+        </div>
 
         <div class="callout callout-info">
           <div class="callout-title">📖 为什么这能省 TTFT</div>

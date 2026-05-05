@@ -59,16 +59,12 @@
           <div class="term-tagline"><strong>一句话定位：</strong>V3 已经做对的不动；V4 只在 5 个被新规模暴露的细节上补漏 —— 打分函数、序列内均衡、路由通信预算、前几层路由方式、MTP 权重 schedule。</div>
         </div>
 
-        <!-- ================== 论文图：V4 整体架构 ================== -->
-        <figure class="paper-fig">
-          <img src="../figures/ch02/1.png" alt="DeepSeek-V4 整体架构：Embedding → CSA/HCA + Pre/Post-Block Mixing + Residual Mixing → DeepSeekMoE → MTP → Prediction Head">
-          <figcaption>
-            <strong>图 2-1 · DeepSeek-V4 整体架构（Transformer Block × $L$）。</strong>
-            底部 Embedding 上来后，每个 block 内部分两段：先进 <strong>CSA / HCA</strong>（Ch04 / Ch05 讲），输出经 <em>Pre-Block / Post-Block Mixing</em> 与 <em>Residual Mixing</em> 三个 mapping（也就是 Ch03 mHC 的三套 $\tilde A / \tilde B / \tilde C$）回到主 highway；再走第二段 <strong>DeepSeekMoE</strong>，同样经过一组 mixing 才合流。block 堆叠 $L$ 次后，顶部 Prediction Head 出 LM Loss，旁路 <strong>MTP Modules</strong> 出 MTP Loss（多 token 预测，本章 §3 / §4 讲）。
-            这张图就是后续 Ch03 / 04 / 05 的"目录索引"——三套 Mixing 是 mHC，左下 CSA / HCA 块就是新 attention，DeepSeekMoE 块是从 V3 继承下来的。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §2 Architecture，Figure 2，p. 6。</span>
-          </figcaption>
-        </figure>
+        <!-- ================== 论文图占位：V4 整体架构 ================== -->
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch02/01</span>
+          <p class="fig-want">需要：V4 论文 Figure 2 —— DeepSeek-V4 整体架构图，含 Embedding → CSA/HCA Attention（带 Pre-/Post-Block Mixing + Residual Mixing 模块）→ DeepSeekMoE FFN → MTP Modules → Prediction Head 全栈结构。这张图是后续 Ch03（mHC）/ Ch04（CSA）/ Ch05（HCA）三章的"目录索引"。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §2 Architecture，Figure 2，p. 6。</p>
+        </div>
 
         <!-- ================== §1 V3 DeepSeekMoE ================== -->
         <h3 id="moe-bg">1. 先看 V3 的 DeepSeekMoE 干了什么</h3>
@@ -82,17 +78,11 @@
           <li><strong>aux-loss-free 负载均衡</strong>：见上方名词速通。不动主 loss，闭环调控全局负载。</li>
         </ul>
 
-        <figure class="paper-fig">
-          <img src="../figures/ch02/2.png" alt="DeepSeekMoE 三段式演进：传统 Top-2 → +Fine-grained Expert Segmentation → +Shared Expert Isolation">
-          <figcaption>
-            <strong>图 2-2 · DeepSeekMoE 的三段式演进。</strong>
-            <strong>(a) Conventional Top-2</strong>：原始 GShard 风格，$N$ 个大专家、Router 选 $K=2$。专家粒度粗，组合数有限。
-            <strong>(b) +Fine-grained Expert Segmentation</strong>：每个专家切成更小的 $2N$ 个，对应把 $K$ 翻倍到 $4$ —— 同样的总激活参数下，专家组合数指数级增加。
-            <strong>(c) +Shared Expert Isolation（DeepSeekMoE）</strong>：在细粒度基础上额外抽出 1 个 always-on 共享专家（绿色块）承担"通用知识"，剩余 $K=3$ 个 routed expert 专注差异化能力。
-            V4 在 (c) 的基础上把规模拉到 384 routed + 1 shared，核心结构没变。
-            <span class="fig-source">来源：<strong>外部论文</strong> Dai et al. 2024《DeepSeekMoE: Towards Ultimate Expert Specialization》Figure 2。V4 报告 §2.1（p. 7）通过引用 (Dai et al., 2024) 复用此架构。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch02/02（外部论文）</span>
+          <p class="fig-want">需要：DeepSeekMoE 原论文中"传统 MoE vs 细粒度+共享专家"的对比示意图（GShard 8 大专家粗粒度 / Switch Transformer top-1 / DeepSeekMoE fine-grained + shared 三种结构并列）。这张图本身不在 V4 报告里，但 V4 §2.1 直接引用 DeepSeekMoE 作为基底。</p>
+          <p class="fig-source">来源：<strong>外部论文</strong> Dai et al. 2024《DeepSeekMoE: Towards Ultimate Expert Specialization》Figure 2。V4 报告 §2.1（p. 7）通过引用 (Dai et al., 2024) 复用此架构。</p>
+        </div>
 
         <div class="numex">
           <span class="numex-tag">数值演练</span>
