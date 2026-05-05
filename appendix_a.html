@@ -91,30 +91,19 @@
           </ul>
         </div>
 
-        <figure class="paper-fig">
-          <img src="figures/Appendix_A/1.png" alt="V4 论文 Figure 1：左侧 7 项 benchmark 柱状对比，右侧 single-token FLOPs 与 KV cache 随序列长度变化">
-          <figcaption>
-            <strong>图 A-1 · V4-Pro-Max 全景对比（论文 Figure 1，p. 1，封面图）。</strong>
-            <strong>左</strong>：在 7 个核心 benchmark 上 V4-Pro-Max（深蓝）vs Claude-Opus-4.6-Max / GPT-5.4-xHigh / Gemini-3.1-Pro-High 的柱状分数 —— Knowledge & Reasoning 段（SimpleQA-Verified / HLE / Apex Shortlist / Codeforces）+ Agentic Capabilities 段（SWE-Verified / TerminalBench 2.0 / Toolathlon）。
-            <strong>右上</strong>：single-token FLOPs vs token position（K），V4-Pro 在 1024K 时仅是 V3.2 的 <em>1/3.7</em>，V4-Flash 仅 <em>1/9.8</em>。
-            <strong>右下</strong>：累积 KV cache (GiB) vs 序列长度，V4-Flash 是 V3.2 的 <em>1/13.7</em>，V4-Pro 是 V3.2 的 <em>1/9.5</em>。这一张图把 Part 2（架构）和 Part 4（评测）的所有承诺压成一页。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告封面 Figure 1，p. 1。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/04</span>
+          <p class="fig-want">需要：V4 论文 Figure 1（封面图）—— 左子图：V4-Pro-Max 与 Opus-4.6-Max / GPT-5.4-xHigh / Gemini-3.1-Pro-High 在 7 个核心 benchmark 上的柱状对比（SimpleQA Verified / HLE / Apex / Codeforces / SWE Verified / TerminalBench 2.0 / Toolathlon）。右子图：V3.2 / V4-Pro / V4-Flash 三模型的 single-token FLOPs 与累积 KV cache 随 token position 变化的曲线（横轴 0–1024K，标注 V4-Pro 比 V3.2 低 3.7×、V4-Flash 低 9.8×；KV cache 9.5× / 13.7× smaller）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告封面 Figure 1，p. 1。</p>
+        </div>
 
         <h3 id="effort-curve">1. 三档 reasoning effort 的代价曲线（论文 Figure 10, p. 41）</h3>
 
-        <figure class="paper-fig">
-          <img src="figures/Appendix_A/2.png" alt="V4 论文 Figure 10：HLE 与 TerminalBench 2.0 在 None/High/Max 三档下的精度-token 散点">
-          <figcaption>
-            <strong>图 A-2 · HLE 与 TerminalBench 2.0 的精度-token 曲线（论文 Figure 10，§5.3.2，p. 41）。</strong>
-            横轴 Total Tokens（推理消耗），纵轴 Pass@1 (%)。
-            <strong>左 HLE</strong>：V4-Pro 与 V4-Flash 从 None → High → Max 三档逐档攀升，Pro-Max 摸到 ~38%，Flash-Max ~33%；V3.2-Speciale 仅在 Think 模式下 ~15%。
-            <strong>右 TerminalBench 2.0</strong>：V4-Pro Max 接近 70%，V4-Flash Max ~60%，V3.2 折合到 Think 也只 ~30%。
-            两张图都在告诉一个事实 —— <em>V4 三档 reasoning effort（Ch16）兑现了"同模型覆盖 100× token budget"的承诺</em>。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 10，p. 41。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/01</span>
+          <p class="fig-want">需要：V4 论文 Figure 10 —— 双子图（HLE 与 TerminalBench 2.0）的 Pass@1 vs Total Tokens 散点折线，含 V4-Pro / V4-Flash / V3.2-Speciale 三模型在 None / High / Max 三档下的位置标注。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 10，p. 41。</p>
+        </div>
 
         <p>
           论文 Figure 10（p. 41）的 HLE 与 TerminalBench 2.0 曲线：Non-think → Think High → Think Max 三档 token 成本接近线性，但 Pass@1 增量显著。这条曲线说明三件事：
@@ -138,15 +127,11 @@
 
         <h3 id="mrcr">2. MRCR 1M 衰减曲线（论文 Figure 9, p. 40）</h3>
 
-        <figure class="paper-fig">
-          <img src="figures/Appendix_A/3.png" alt="V4 论文 Figure 9：MRCR 8-needle 在 8K-1M 输入下 Average MMR 衰减曲线">
-          <figcaption>
-            <strong>图 A-3 · MRCR 8-needle 长上下文衰减曲线（论文 Figure 9，§5.3.2，p. 40）。</strong>
-            横轴 8K → 1024K 输入 token，纵轴 Average MMR。32K 处 V4-Pro-Max 摸到峰值 0.94，V4-Flash-Max 0.87；进入 256K 后两条曲线一起下滑，<strong>1024K 时 Pro 降至 0.59、Flash 降至 0.49</strong>。
-            <em>解读</em>：CSA + HCA + 长 context schedule（Ch13）让 128K 之内几乎无衰减、256K-512K 有可控下降；超过 512K 后召回准确率明显折损 —— 这是 V4 长上下文能力的<em>真实边界</em>，比厂商常说的"支持 1M"更诚实。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 9，p. 40。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/02</span>
+          <p class="fig-want">需要：V4 论文 Figure 9 —— "MRCR 8-needle" Average MMR vs Input Tokens（横轴 8K / 16K / 32K / 64K / 128K / 256K / 512K / 1024K，纵轴 0–1.0），含 V4-Pro-Max（深色实线）与 V4-Flash-Max（浅色实线）两条折线 + 每个点位数值标注。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 9，p. 40。</p>
+        </div>
 
         <p>
           论文 Figure 9（p. 40）展示 V4 在 MRCR 8-needle 任务上从 8K 到 1M 的衰减。Pro-Max 在 8K~128K 区间稳定在 0.85+，<strong>256K 后明显下滑，1M 时降至 0.59</strong>（Flash-Max 同长度从 0.87 衰减到 0.49）。
@@ -166,16 +151,11 @@
 
         <h3 id="putnam">3. 形式化数学：Putnam 双轨制（论文 Figure 8, p. 40）</h3>
 
-        <figure class="paper-fig">
-          <img src="figures/Appendix_A/4.png" alt="V4 论文 Figure 8：Putnam Practical / Frontier 双轨水平柱状对比">
-          <figcaption>
-            <strong>图 A-4 · Putnam 双轨评测（论文 Figure 8，§5.3.2，p. 40）。</strong>
-            <strong>左 Practical Regime</strong>（Putnam-200 Pass@8，受限 tools + bounded sampling）：Seed-1.5-Prover 26.50 / Gemini-3-Pro 26.50 / Seed-2.0-Pro 35.50 / <em>DeepSeek-V4-Flash-Max <strong>81.00</strong></em>。
-            <strong>右 Frontier Regime</strong>（Putnam-2025 hybrid formal-informal，大算力）：Aristotle 100/120 / Seed-1.5-Prover 110/120 / Axiom 120/120 / DeepSeek-V4 120/120。
-            两套规则下 V4 都摸到了天花板，体现 Specialist 阶段对数学专家的精雕。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 8，p. 40。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/03</span>
+          <p class="fig-want">需要：V4 论文 Figure 8 —— "Practical Regime"（左）与 "Frontier Regime"（右）双轨水平柱状对比；左半含 Seed-1.5-Prover / Gemini-3-Pro / Seed-2.0-Prover / DeepSeek-V4-Flash-Max 四条柱（DeepSeek-V4-Flash-Max 81.0 高亮蓝色）；右半含 Aristotle / Seed-1.5-Prover / Axiom / DeepSeek-V4 四条柱（V4 与 Axiom 并列 120/120）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 8，p. 40。</p>
+        </div>
 
         <div class="config-table">
           <table>
@@ -270,15 +250,11 @@
 
         <h3 id="white-collar">3. 白领任务（论文 §5.4.3, p. 42-43）</h3>
 
-        <figure class="paper-fig">
-          <img src="figures/Appendix_A/5.png" alt="V4 论文 Figure 11+12：白领任务胜率分布与四维度明细分">
-          <figcaption>
-            <strong>图 A-5 · 白领任务胜负平分布与维度细分（论文 Figure 11 + Figure 12，§5.4.3，p. 43）。</strong>
-            <strong>左 Figure 11 Win Rate</strong>：V4-Pro-Max vs Opus-4.6-Max，按 analysis / generation / editing / overall 四组堆叠 Win / Tie / Lose（蓝/灰/红）。<em>analysis 段 V4 win 39.0% / lose 33.0% 略微领先，generation 52.0% / 38.0% 明显领先，editing 47.0% / 25.0% 大幅领先，overall 53.0% / 37.0% 整体领先</em>。
-            <strong>右 Figure 12 Detailed Scores</strong>：四维度评分 Task Completion 99.13 / 96.88、Instruction Following 87.76 / 84.88、Content Quality 83.32 / 79.10、Formatting Aesthetics 72.68 / 84.06、Overall ~84 / ~83。<em>唯一明显落后的是 Formatting Aesthetics</em>—— 印证正文中提到的"slide / 视觉版面设计能力一般"。
-            <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.4.3 White-Collar Task，Figure 11 + Figure 12，p. 43。</span>
-          </figcaption>
-        </figure>
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/05</span>
+          <p class="fig-want">需要：V4 论文 Figure 11 + Figure 12 横向并列。Figure 11 是 V4-Pro-Max vs Opus-4.6-Max 在 analysis / generation / editing / overall 四组的胜负平堆叠条形（蓝-灰-红 三色 stacked bar）。Figure 12 是同一 pair 在 Task Completion / Instruction Following / Content Quality / Formatting Aesthetics / Overall 五维度的并列双柱评分（V4 蓝、Opus 红）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.4.3 White-Collar Task，Figure 11 + Figure 12，p. 43。</p>
+        </div>
 
         <p>30 个高级 Chinese Professional Workflows，覆盖金融、教育、法律、科技等 13 行业，由专业标注员对 V4-Pro-Max vs Opus-4.6-Max 做盲评。论文 Figure 11（§5.4.3, p. 43）提供胜负平分布：</p>
 
