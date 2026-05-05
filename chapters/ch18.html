@@ -284,21 +284,12 @@
           </p>
         </div>
 
-        <!-- ================== §7 论文图占位 ================== -->
-        <h3 id="figs">7. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch18/01</span>
-          <p class="fig-want">需要：V4 论文 §4.3 OPD 概念图 —— 学生 on-policy rollout → N 个 frozen teacher 同时算 logit → reverse KL 加权和 → 反向更新 student。配套 forward / reverse KL 的双峰对比示意。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.3，Figure 8 / 概念图（待补）</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §5.1.2 On-Policy Distillation（p. 32-33）<strong>是纯数学公式 + 文字章节，无配图</strong>。论文以方程 (29)（OPD 反向 KL 损失）作为唯一的视觉锚点。本章的双峰分布 demo（forward vs reverse KL 在容量受限下的最优 student）是为帮助理解 mode-seeking vs mass-covering 而做的可交互演示，不存在论文原图。</p>
         </div>
 
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch18/02</span>
-          <p class="fig-want">需要：OPD 训练曲线（loss vs step）+ 对应阶段的 student benchmark 提升曲线，与单纯 mixed RL 的 baseline 对比。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.3 / 附录 D（待补）</p>
-        </div>
-
-        <h3 id="summary">8. 一句话总结</h3>
+        <h3 id="summary">7. 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>OPD 把 V3 的"reward 期望"训练范式升级成 "<em>分布形状</em>"训练范式 —— <strong>reverse KL 的 mode-seeking 让多 teacher 合并不再是 mean of teachers，而是在每个 prompt 上选最强 teacher 的 mode；on-policy 让学生从自己的错误位置出发学习"如何被救"；全词表让 teacher 的整个分布信息无损传递</strong>。三件事缺一不可，工程代价由 Ch19 承担。</p>

@@ -204,18 +204,9 @@
           </p>
         </div>
 
-        <!-- ================== §5 论文图占位 ================== -->
-        <h3 id="figs">5. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">TileLang 编译流程图：Python DSL → IR → SMT 求解 → CUDA C → SASS。配套展示 host stub 与 kernel 的二段产物，以及 layout 注解如何钉死 lowering。</p>
-          <p class="fig-source">来源：Wang et al. 2026 《TileLang: A Tile-level DSL for GPU Kernels》 §3，或 V4 技术报告 §6.2 的简化版。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">实测对比图：同一段 mHC kernel 在 ATen / Triton / TileLang 三种实现下的 launch 时间分布（直方图）。</p>
-          <p class="fig-source">V4 技术报告 §6.2，或 TileLang 论文 Figure 7。</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §3.2 Flexible and Efficient Kernel Development with TileLang（p. 16-18）<strong>是纯文字章节，无配图</strong>。本章的 demo（ATen vs TileLang launch 时间堆叠）是为帮助理解原理而做的可交互简化版，不存在对应的论文原图。</p>
         </div>
 
         <h3>本章小结</h3>

@@ -91,7 +91,20 @@
           </ul>
         </div>
 
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/04</span>
+          <p class="fig-want">需要：V4 论文 Figure 1（封面图）—— 左子图：V4-Pro-Max 与 Opus-4.6-Max / GPT-5.4-xHigh / Gemini-3.1-Pro-High 在 7 个核心 benchmark 上的柱状对比（SimpleQA Verified / HLE / Apex / Codeforces / SWE Verified / TerminalBench 2.0 / Toolathlon）。右子图：V3.2 / V4-Pro / V4-Flash 三模型的 single-token FLOPs 与累积 KV cache 随 token position 变化的曲线（横轴 0–1024K，标注 V4-Pro 比 V3.2 低 3.7×、V4-Flash 低 9.8×；KV cache 9.5× / 13.7× smaller）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告封面 Figure 1，p. 1。</p>
+        </div>
+
         <h3 id="effort-curve">1. 三档 reasoning effort 的代价曲线（论文 Figure 10, p. 41）</h3>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/01</span>
+          <p class="fig-want">需要：V4 论文 Figure 10 —— 双子图（HLE 与 TerminalBench 2.0）的 Pass@1 vs Total Tokens 散点折线，含 V4-Pro / V4-Flash / V3.2-Speciale 三模型在 None / High / Max 三档下的位置标注。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 10，p. 41。</p>
+        </div>
+
         <p>
           论文 Figure 10（p. 41）的 HLE 与 TerminalBench 2.0 曲线：Non-think → Think High → Think Max 三档 token 成本接近线性，但 Pass@1 增量显著。这条曲线说明三件事：
         </p>
@@ -113,6 +126,13 @@
         </div>
 
         <h3 id="mrcr">2. MRCR 1M 衰减曲线（论文 Figure 9, p. 40）</h3>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/02</span>
+          <p class="fig-want">需要：V4 论文 Figure 9 —— "MRCR 8-needle" Average MMR vs Input Tokens（横轴 8K / 16K / 32K / 64K / 128K / 256K / 512K / 1024K，纵轴 0–1.0），含 V4-Pro-Max（深色实线）与 V4-Flash-Max（浅色实线）两条折线 + 每个点位数值标注。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 9，p. 40。</p>
+        </div>
+
         <p>
           论文 Figure 9（p. 40）展示 V4 在 MRCR 8-needle 任务上从 8K 到 1M 的衰减。Pro-Max 在 8K~128K 区间稳定在 0.85+，<strong>256K 后明显下滑，1M 时降至 0.59</strong>（Flash-Max 同长度从 0.87 衰减到 0.49）。
         </p>
@@ -130,6 +150,13 @@
         </div>
 
         <h3 id="putnam">3. 形式化数学：Putnam 双轨制（论文 Figure 8, p. 40）</h3>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/03</span>
+          <p class="fig-want">需要：V4 论文 Figure 8 —— "Practical Regime"（左）与 "Frontier Regime"（右）双轨水平柱状对比；左半含 Seed-1.5-Prover / Gemini-3-Pro / Seed-2.0-Prover / DeepSeek-V4-Flash-Max 四条柱（DeepSeek-V4-Flash-Max 81.0 高亮蓝色）；右半含 Aristotle / Seed-1.5-Prover / Axiom / DeepSeek-V4 四条柱（V4 与 Axiom 并列 120/120）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 8，p. 40。</p>
+        </div>
+
         <div class="config-table">
           <table>
             <thead><tr><th>设置（论文 Figure 8）</th><th>含义</th><th>V4-Flash-Max</th><th>对照</th></tr></thead>
@@ -222,6 +249,13 @@
         </ul>
 
         <h3 id="white-collar">3. 白领任务（论文 §5.4.3, p. 42-43）</h3>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · A/05</span>
+          <p class="fig-want">需要：V4 论文 Figure 11 + Figure 12 横向并列。Figure 11 是 V4-Pro-Max vs Opus-4.6-Max 在 analysis / generation / editing / overall 四组的胜负平堆叠条形（蓝-灰-红 三色 stacked bar）。Figure 12 是同一 pair 在 Task Completion / Instruction Following / Content Quality / Formatting Aesthetics / Overall 五维度的并列双柱评分（V4 蓝、Opus 红）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.4.3 White-Collar Task，Figure 11 + Figure 12，p. 43。</p>
+        </div>
+
         <p>30 个高级 Chinese Professional Workflows，覆盖金融、教育、法律、科技等 13 行业，由专业标注员对 V4-Pro-Max vs Opus-4.6-Max 做盲评。论文 Figure 11（§5.4.3, p. 43）提供胜负平分布：</p>
 
         <div class="config-table">
@@ -303,38 +337,7 @@
           </ul>
         </div>
 
-        <h3 id="figs-todo">A.3 论文图占位（待补真实图）</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · A/01</span>
-          <p class="fig-want">需要：论文 Figure 1（p. 1）—— 左图 V4-Pro-Max 与 Opus-4.6-Max / GPT-5.4 / Gemini-3.1-Pro 在 7 个核心 benchmark 上的柱状对比；右图 V4 与 V3.2 的 single-token FLOPs 与累积 KV cache 随序列长度变化曲线（V4-Pro 比 V3.2 低 3.7×、KV cache 小 9.5×）。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 1（p. 1）。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · A/02</span>
-          <p class="fig-want">需要：论文 Figure 8（p. 40）—— Putnam 双轨 Practical / Frontier 的水平柱状对比，含 Seed-1.5/2.0-Prover / Gemini-3-Pro / Aristotle / Axiom / DeepSeek-V4-Flash-Max 的具体得分。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 8（§5.3.2, p. 40）。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · A/03</span>
-          <p class="fig-want">需要：论文 Figure 9（p. 40）—— V4-Pro-Max 与 V4-Flash-Max 在 MRCR 8-needle 任务上的衰减曲线（8K → 1M），显示 128K 后明显下滑、1M 时降至 0.59 / 0.49。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 9（§5.3.2, p. 40）。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · A/04</span>
-          <p class="fig-want">需要：论文 Figure 10（p. 41）—— HLE 与 TerminalBench 2.0 在 Non-think / High / Max 三档下的精度-token 散点，含 V4-Pro / V4-Flash / V3.2 三模型。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 10（§5.3.2, p. 41）。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · A/05</span>
-          <p class="fig-want">需要：论文 Figure 11（p. 43）+ Figure 12（p. 43）—— 白领任务胜负平分布（analysis / generation / editing / overall）+ 四维度 Task Completion / Instruction Following / Content Quality / Formatting Aesthetics 的明细分。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 Figure 11 + Figure 12（§5.4.3, p. 43）。</p>
-        </div>
-
-        <h3 id="summary">A.4 一句话总结</h3>
+        <h3 id="summary">A.3 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>V4-Pro-Max 是<strong>第一份在 Codeforces / LiveCodeBench / Apex Shortlist 上压过闭源旗舰的开源模型</strong>，知识类落后 Gemini-3.1-Pro 约 18 分（SimpleQA-Verified）、长上下文 1M 落后 Opus 4.6 约 9 分（MRCR）；论文 §5.3.2（p. 38）自评开源相对前沿闭源仍有 <em>3-6 个月差距</em>。真实任务（§5.4, p. 41-44）里 V4 在中文写作 / 编码 Agent 上对 Opus 4.5 显著占优，多轮复杂 Instruction Following 与视觉版面设计仍是短板。</p>

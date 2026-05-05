@@ -257,21 +257,12 @@
           </p>
         </div>
 
-        <!-- ================== §6 论文图占位 ================== -->
-        <h3 id="figs">6. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch19/01</span>
-          <p class="fig-want">需要：Teacher Scheduling 时间线 —— X 轴是 step，Y 轴是 GPU；展示"按 teacher 排序的 batching"如何让每 GPU 在每 step 只装载一个 teacher head。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.2 OPD Infrastructure（待补）</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §5.2 RL and OPD Infrastructures（含 §5.2.1 FP4 / §5.2.2 Teacher Scheduling / §5.2.3 Preemptible Rollout / §5.2.4 Million-Token RL，p. 34-35）<strong>是纯文字章节，无配图</strong>。本章的 WAL "丢弃重跑 vs 续 decode" 时间线 demo 是为帮助理解 length bias 而做的可交互演示，无对应论文原图。</p>
         </div>
 
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch19/02</span>
-          <p class="fig-want">需要：WAL rollout 状态机示意：generating → preempted → checkpointing → resumed → completed，对比"discard and restart" 的 generating → preempted → discarded → restart 路径。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.2.3 Preemptible Rollout（待补）</p>
-        </div>
-
-        <h3 id="summary">7. 一句话总结</h3>
+        <h3 id="summary">6. 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>四个支柱解决四个独立物理瓶颈：<strong>FP4</strong> 砍 inference-only forward 的显存与带宽、<strong>Teacher Scheduling</strong> 把 N 个 trillion teacher 拆到中央存储 + buffer + 动态 head 三层、<strong>token 粒度 WAL</strong> 让 rollout 抢占可恢复同时消除 length bias、<strong>Million-Token RL</strong> 把 1M trajectory 拆轻重字段分层加载。这一章是 V4 在后训练领域<em>真正的护城河</em>。</p>

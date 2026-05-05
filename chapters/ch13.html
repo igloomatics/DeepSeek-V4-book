@@ -235,20 +235,12 @@
           实际带通信开销 + spike 重算 + multi-stage 切换，wall-time 约 60–80 天。这就是为什么 Ch11 的训练框架优化能省下来的每 1% 都极贵。
         </div>
 
-        <h3 id="figs">6. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <div class="fig-tag">论文图占位</div>
-          <p class="fig-want">需要：V4 论文 §5（数据）的数据成分饼图（web / 学术 / 代码 / 多语言 / agentic）+ 与 V3 的差量条形图。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1 数据章节（待补）</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §4.1 Data Construction（p. 24）与 §4.2 Pre-Training Setups（p. 25-26）<strong>均为纯文字章节，无配图</strong>。本章超参表（V4-Flash vs V4-Pro 双列对比）已对齐论文 §4.2.1 中两段 model setup 描述（p. 25）。本章的 sample-level mask 矩阵 demo 是为帮助理解 packing 内 cross-sample 噪声而做的可交互演示。</p>
         </div>
 
-        <div class="fig-placeholder">
-          <div class="fig-tag">论文图占位</div>
-          <p class="fig-want">需要：4K → 1M 序列长度阶梯的训练 schedule，含每段 token 比例、attention 模式切换时机、CP 并行度变化。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.2（待补）</p>
-        </div>
-
-        <h3 id="summary">7. 一句话总结</h3>
+        <h3 id="summary">6. 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>32T token 不是"加更多数据"那么简单，而是 <em>长文档加权 + 采样级 mask + 阶梯式扩长 + mid-training 注入</em> 四件事联动 —— 它们共同把 V3 的"短样本稳态"改造成 V4 的"长上下文默认"。Sample-level mask 是这套改造里最朴素也最关键的一步：它让 packing 这种工程必需不再污染长文档的语义。</p>

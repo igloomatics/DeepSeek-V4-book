@@ -226,18 +226,9 @@
           所以批不变 + 确定性<em>不是为了"理论纯洁"</em>，而是为了让前面所有奇技淫巧（CSA / HCA / Muon / FP4 QAT / MegaMoE）<strong>可被复现、可被调试、可被部署</strong>。它是看不见的护城河 —— 平时谁都不会感谢它，出 bug 的那一天它救命。
         </p>
 
-        <!-- ================== §5 论文图占位 ================== -->
-        <h3 id="figs">5. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">"批不变 vs split-K"对比示意：左图 split-K 的归约顺序随 batch_size 变化的树状图；右图 V4 单 SM prefix + 末尾 wave 的固定顺序示意。</p>
-          <p class="fig-source">V4 技术报告 §6.3，可能为 Figure 7 / 8。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">实测对比表：DeepGEMM vs cuBLAS 在 V4 典型 shape (M=4096, N=4096, K=7168) 下的吞吐 + bit-identity 检查（同一输入跑 1000 次的 hash 一致率）。</p>
-          <p class="fig-source">V4 技术报告 §6.3 表格。</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §3.3 High-Performance Batch-Invariant and Deterministic Kernel Libraries（p. 18-19）<strong>是纯文字章节，无配图</strong>。本章的浮点求和 demo（4 种顺序的 ULP 差异）是为帮助理解原理而做的可交互演示。</p>
         </div>
 
         <h3>本章小结</h3>

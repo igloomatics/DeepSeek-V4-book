@@ -142,6 +142,12 @@
           <p>这条对齐是<em>kernel 与 cache 协同的硬约束</em>：sparse attention kernel 假设访问的压缩条目按 cache line 对齐，错位会触发额外 load + reorder。block size 选 lcm 让"一个 block 是一个 kernel iteration 的最小单元"，同时 SWA 窗口 4096 也是 lcm 的整数倍 ($4096 = 32 \times 128$)，三者锁死。</p>
         </div>
 
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch12/01</span>
+          <p class="fig-want">需要：V4 论文 Figure 6 —— KV cache layout 示意：左半部 State Cache（按 Request 分配，每块含 SWA + 未完成压缩的 KV State）；右半部 KV Cache（按 lcm(m,m') 分块，每块含 CSA Indexer KV / CSA Main KV / HCA KV 三种条目）。下方 demo 是这张图随 token 增长的可拖动版本。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §3.6.1 KV Cache Structure and Management，Figure 6，p. 23。</p>
+        </div>
+
         <!-- ================== VIZ: 异构 KV 布局 ================== -->
         <div class="viz" id="viz-kv">
           <div class="viz-head">
@@ -232,17 +238,9 @@
           典型部署：长文档查询用 Periodic Checkpointing（命中频繁、重算可控），冷请求用 Zero（占用最小）。
         </p>
 
-        <h3 id="figs">4. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">V4 推理 KV 布局图：State Cache + Block Cache 二分结构，含 lcm(4, 128) 对齐示意、SWA 三档策略对比。</p>
-          <p class="fig-source">V4 技术报告 §6.6（推理框架）。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">盘上 KV 流程：prompt → hash → SSD lookup → mmap → GPU。配套 throughput 提升曲线（前缀复用率 vs 加速比）。</p>
-          <p class="fig-source">V4 技术报告 §6.6 + 性能附录。</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>本章已在 §2 末插入 V4 论文 Figure 6（KV cache 布局图）作为正文图。§3.6.2 On-Disk KV Cache Storage（p. 23-24，对应本章 §3 盘上 KV）<strong>是纯文字章节，无配图</strong>。</p>
         </div>
 
         <h3>本章小结</h3>

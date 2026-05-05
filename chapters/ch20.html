@@ -235,21 +235,12 @@
           </p>
         </div>
 
-        <!-- ================== §6 论文图占位 ================== -->
-        <h3 id="figs">6. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch20/01</span>
-          <p class="fig-want">需要：DSec 整体架构图 —— 四衬底（Function/Container/microVM/fullVM）→ libdsec SDK → 3FS 共享存储 + trajectory log。展示一个 agent 如何同时调用多种衬底。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3 DSec Sandbox（待补）</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §5.2.5 Sandbox Infrastructure for Agentic AI（p. 35-36）<strong>是纯文字章节，无配图</strong>。论文用 4 个加粗子标题（Four Execution Substrates / Fast Image Loading / Density Optimizations / Trajectory Logging）组织所有内容，没有架构图也没有时间线图。本章的四衬底雷达 demo 是为帮助理解四档权衡而做的可交互演示。</p>
         </div>
 
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch20/02</span>
-          <p class="fig-want">需要：分层镜像存储示意 —— 多个 sandbox 共享同一只读 base（EROFS / overlaybd），各自的 upper 层是 copy-on-write 的私有写区。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2（待补）</p>
-        </div>
-
-        <h3 id="summary">7. 一句话总结</h3>
+        <h3 id="summary">6. 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>DSec 把"沙箱"从 OPD 工作流的<em>外部依赖</em>提升到与训练框架同等抽象级别 —— <strong>四衬底覆盖"快"到"重"的全谱、单 SDK 让 agent 代码不感知底层、3FS + EROFS + overlaybd 让 10w+ sandbox 共享同一份 base、trajectory log 让抢占恢复 / 溯源 / 重放都成立</strong>。Part 4 至此结束 —— 从 Ch16 的 specialist 备料到 Ch20 的沙箱执行，五章合起来定义了 V4 在后训练阶段<em>"算法 + 工程 + 沙箱"</em>三位一体的护城河。</p>

@@ -78,6 +78,12 @@
           <li><strong>aux-loss-free 负载均衡</strong>：见上方名词速通。不动主 loss，闭环调控全局负载。</li>
         </ul>
 
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch02/02（外部论文）</span>
+          <p class="fig-want">需要：DeepSeekMoE 原论文中"传统 MoE vs 细粒度+共享专家"的对比示意图（GShard 8 大专家粗粒度 / Switch Transformer top-1 / DeepSeekMoE fine-grained + shared 三种结构并列）。这张图本身不在 V4 报告里，但 V4 §2.1 直接引用 DeepSeekMoE 作为基底。</p>
+          <p class="fig-source">来源：<strong>外部论文</strong> Dai et al. 2024《DeepSeekMoE: Towards Ultimate Expert Specialization》Figure 2。V4 报告 §2.1（p. 7）通过引用 (Dai et al., 2024) 复用此架构。</p>
+        </div>
+
         <div class="numex">
           <span class="numex-tag">数值演练</span>
           细粒度专家的"组合数指数增长"具体多大？
@@ -325,13 +331,6 @@
             打分函数换成不饱和的 Sqrt(Softplus)、加序列内 balance、取消通信驱动的路由限制、把 dense 早层换成 hash MoE、MTP 权重做 schedule。
             每一处改动都对应一个 V3 时代被新规模（384 专家、1M 序列）暴露出来的具体毛刺。
           </p>
-        </div>
-
-        <!-- 论文图占位：DeepSeekMoE 论文中的细粒度专家示意 -->
-        <div class="fig-placeholder">
-          <div class="fig-tag">论文图占位</div>
-          <p class="fig-want">需要：DeepSeekMoE 原论文（Dai 2024）中"传统 MoE vs 细粒度+共享专家"的对比示意图（一张图同时展示 GShard 8 大专家的粗粒度、Switch Transformer 的 top-1、与 DeepSeekMoE 的 fine-grained + shared 三种结构）。</p>
-          <p class="fig-source">来源：Dai et al. 2024《DeepSeekMoE》Figure 2 或类似的 architectural comparison（待补）</p>
         </div>
 
       </article>

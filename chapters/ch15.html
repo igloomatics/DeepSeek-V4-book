@@ -116,6 +116,14 @@
           </table>
         </div>
 
+        <figure class="paper-fig">
+          <img src="../figures/ch15/01.png" alt="V4 论文 Table 1 — V3.2-Base / V4-Flash-Base / V4-Pro-Base 在 World Knowl. / Lang. &amp; Reas. / Code &amp; Math / Long Context 四类 benchmark 的全量对比">
+          <figcaption>
+            图 15-1 · <strong>V4 论文 Table 1 全量版</strong>。上方节选表只保留了 13 项最有代表性的 benchmark；论文原表共 17 项，覆盖更细的多语种（CMMLU / MMMLU / TriviaQA）、更细的代码/数学（BigCodeBench / MGSM / CMath）、更细的语言推理（WinoGrande / CLUEWSC）。最高分加粗、第二高下划线。<em>差距 ≤ 0.3 视为同档</em>。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 §4.3.2 Evaluation Results，Table 1，p. 28。</span>
+          </figcaption>
+        </figure>
+
         <!-- ================== VIZ: 三模型对比 ================== -->
         <div class="viz" id="viz-bench">
           <div class="viz-head">
@@ -199,20 +207,7 @@
           按知识密度论，Flash 反而最高。但 FACTS Pro 62.6 &gt; Flash 33.9 &gt; V3.2 27.1 —— <strong>知识容量最终仍由"激活参数 × 密度"共同决定</strong>，Pro 的总容量 49B × 673 ≈ 33000 单位，Flash 13B × 2461 ≈ 32000 单位，几乎相同；但 V3.2 仅 37B × 400 ≈ 15000 —— <em>两者都比 V3.2 多一倍容量</em>。这条估算解释了 Flash 为什么能逼平 Pro。
         </div>
 
-        <h3 id="figs">5. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <div class="fig-tag">论文图占位</div>
-          <p class="fig-want">需要：V4 论文 Table 1 完整版（含 17 项 benchmark + 3 模型分数），最好渲染成 radar / heatmap 形式而非纯表格。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 Table 1（待补）</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <div class="fig-tag">论文图占位</div>
-          <p class="fig-want">需要：FACTS Parametric / Simple-QA / MMLU-Pro 三项的"V3.2 → V4-Flash → V4-Pro"提升瀑布图，标注各跃迁的归因（架构 / 数据 / 规模）。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.4 评测节（待补）</p>
-        </div>
-
-        <h3 id="summary">6. 一句话总结</h3>
+        <h3 id="summary">5. 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>Base 评测把"V4 比 V3 强"的<em>原因</em>从架构 / 数据 / 后训练三层里隔离开 —— V4-Flash 用一半参数压过 V3.2 的事实证明：<strong>架构红利 + 数据红利早在后训练之前就已经兑现</strong>，FACTS +35.5 / Simple-QA +27 直接定义了 Ch18 OPD 能蒸出多大的 ceiling。Part 3 至此结束，下面进入后训练 —— 但请记住：<em>后训练只能激发，无法创造</em>。</p>

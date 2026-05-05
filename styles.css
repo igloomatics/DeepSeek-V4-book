@@ -719,14 +719,73 @@ pre code { background: transparent; padding: 0; }
 
 /* ============= DIAGRAM ============= */
 .diagram-wrap {
-  margin: 22px 0;
+  /* 突破 760px 文本列限制，向两侧各扩 80px（内容列实际宽度由 .content 提供，
+     content gutter 56px + 一些余量），让 LR 流程图多挣横向空间 */
+  margin: 22px -80px;
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--bg);
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 80vh;          /* 防止超长图把页面拉成一柱擎天 */
+  cursor: zoom-in;
+  position: relative;
 }
-.diagram-wrap .mermaid { display: block; text-align: center; }
+.diagram-wrap .mermaid {
+  display: inline-block;     /* inline 让 svg 自然宽度生效，容器横向滚动 */
+  text-align: center;
+  min-width: 100%;
+}
+.diagram-wrap .mermaid svg {
+  max-width: none !important;  /* 强力覆盖 mermaid 内联样式，配合 useMaxWidth:false */
+  height: auto !important;
+}
+.diagram-wrap::after {
+  content: "🔍 点击放大";
+  position: absolute;
+  top: 8px; right: 14px;
+  font-size: 11px;
+  color: var(--fg-3);
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  pointer-events: none;
+  opacity: 0.7;
+}
+/* 滚动条样式 */
+.diagram-wrap::-webkit-scrollbar { height: 8px; width: 8px; }
+.diagram-wrap::-webkit-scrollbar-track { background: var(--bg-soft); border-radius: 4px; }
+.diagram-wrap::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+.diagram-wrap::-webkit-scrollbar-thumb:hover { background: var(--rule); }
+
+/* 全屏放大模式（点击触发，由 JS 加 .diagram-zoomed 类） */
+.diagram-zoomed {
+  position: fixed !important;
+  inset: 5vh 5vw;
+  z-index: 100;
+  margin: 0 !important;
+  max-height: 90vh;
+  background: var(--bg-elev);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  cursor: zoom-out;
+}
+.diagram-zoomed::after {
+  content: "✕ 点击或按 ESC 关闭";
+}
+.diagram-zoom-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15,20,30,0.55);
+  z-index: 99;
+  cursor: zoom-out;
+}
+
+/* 移动端：放弃负 margin 破列，避免横向溢出全屏 */
+@media (max-width: 1140px) {
+  .diagram-wrap { margin: 22px 0; }
+}
 .caption {
   font-size: 12.5px;
   color: var(--fg-3);
@@ -1087,6 +1146,7 @@ pre code { background: transparent; padding: 0; }
   border-top: 1px dashed var(--line-soft);
   font-size: 13.5px;
   color: var(--fg);
+  font-weight: 500;
 }
 
 /* 数值演练块（公式之后举具体数字） */

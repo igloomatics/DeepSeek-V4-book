@@ -229,17 +229,9 @@
           总体显存 ↓ ~40%，重算开销 ~3% wall-time，<strong>无需手动标 ckpt 边界</strong>。
         </p>
 
-        <h3 id="figs">5. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">DualPipe 1F1B 时间线 + mHC 融合 kernel 嵌入示意：可见 mHC backward 与下一个 micro-batch 的通信重叠。</p>
-          <p class="fig-source">V4 技术报告 §6.5（训练框架），Figure 10 / 11。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">Two-stage CP 的双阶段示意：Stage 1 邻居 KV 桥接、Stage 2 all-gather 重组。</p>
-          <p class="fig-source">V4 技术报告 §6.5。</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §3.5 Training Framework（含 §3.5.1 Muon 实现 / §3.5.2 mHC / §3.5.3 Contextual Parallelism / §3.5.4 Tensor 级 ckpt，p. 20-22）<strong>是纯文字章节，无配图</strong>。本章的 ZeRO 切分 demo（稠密 / MoE 二分 + 显存条）是为帮助理解原理而做的可交互演示。</p>
         </div>
 
         <h3>本章小结</h3>

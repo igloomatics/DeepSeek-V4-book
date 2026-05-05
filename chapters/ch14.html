@@ -250,20 +250,12 @@
           <p>这与 mHC（Ch3）"残差矩阵从主干隔出"、Ch9 "批不变换可调试性"是同一种姿态：<strong>把"难驯服"的子系统物理隔离，而不是花无穷力气让它"完美"</strong>。这就是 V4 工程文化的核心。</p>
         </div>
 
-        <h3 id="figs">5. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <div class="fig-tag">论文图占位</div>
-          <p class="fig-want">需要：V4 论文 §5.3 (训练稳定性) 中的 loss 曲线对比图 —— 无 anticipatory + 无 clamping 的 spike 频率 vs 全开后的曲线。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3，Figure 12 / 13（待补）</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §4.2.3 Mitigating Training Instability（p. 26-27）<strong>是纯文字章节，无配图</strong>。论文老实说"underlying principles remain insufficiently understood"，仅文字记录两个 trick。本章的 SwiGLU 钳前/钳后输出曲线 demo 是为帮助理解原理而做的可交互演示。</p>
         </div>
 
-        <div class="fig-placeholder">
-          <div class="fig-tag">论文图占位</div>
-          <p class="fig-want">需要：spike 触发时 router output 熵的下降曲线 + anticipatory 启停的时间标记。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.3 附录或 Figure 14（待补）</p>
-        </div>
-
-        <h3 id="summary">6. 一句话总结</h3>
+        <h3 id="summary">5. 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>spike 是"outlier → router 塌陷 / SwiGLU 放大"两条正反馈环的合谋；<strong>Anticipatory 把 router 那条延迟 $\Delta t$ 步打断，Clamping 把 SwiGLU 那条加电压保护</strong>。两者都不治本（outlier 仍然存在），但都"治标"得极好 —— 这就是 V4 在 1.6T 规模下能稳定训练 60 天的关键之一。</p>

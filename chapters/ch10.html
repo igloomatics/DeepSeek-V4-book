@@ -217,17 +217,9 @@
           实测<strong>recall@k 99.7%</strong> —— 即和 FP32 indexer 选出来的 top-k 重合 99.7%。剩下 0.3% 的差异是 "BF16 score 排序产生的<em>边界 token 翻号</em>"，由于 sparse attention 本身对 top-k 边缘不敏感，下游 logits 损失忽略不计。
         </p>
 
-        <h3 id="figs">6. 论文图复刻</h3>
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">FP4 QAT 信号链图：FP32 master → FP4 quant → FP8 dequant → forward GEMM → output；backward 梯度 STE 回到 FP32 master 的箭头。</p>
-          <p class="fig-source">V4 技术报告 §6.4，Figure 9 或附录 C。</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">FIG · 待补</span>
-          <p class="fig-want">Sub-block scale 嵌套示意：128×128 FP8 块切分为 16 个 1×32 FP4 sub-block，每层 scale 标注。</p>
-          <p class="fig-source">V4 技术报告 §6.4。</p>
+        <div class="callout callout-info">
+          <div class="callout-title">论文配图情况</div>
+          <p>V4 技术报告 §3.4 FP4 Quantization-Aware Training（p. 19-20）<strong>是纯文字章节，无配图</strong>。本章的 FP4 量化网格 demo（16 码点 + 32 权重散点）是为帮助理解 sub-block scale 嵌套机制而做的可交互演示，不存在论文原图。</p>
         </div>
 
         <h3>本章小结</h3>

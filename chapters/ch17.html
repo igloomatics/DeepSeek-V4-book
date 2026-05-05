@@ -117,6 +117,12 @@
           <p>合起来：调用解析失败率从 ~10% 降到<em>接近 0</em>（实测 &lt; 0.1%），残留的失败几乎都是"工具不存在"或"参数语义错"，不再是"格式错"。</p>
         </div>
 
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch17/01</span>
+          <p class="fig-want">需要：V4 论文 Table 4 —— Tool-call schema 完整模板：嵌套的 <code>&lt;|DSML|tool_calls&gt;</code> / <code>&lt;|DSML|invoke&gt;</code> / <code>&lt;|DSML|parameter&gt;</code> 标签结构、string="true|false" 类型规则、与 think 段的位置约束。论文以代码块形式呈现，是<em>SFT 数据的官方对齐目标</em>。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Tool-Call Schema），Table 4，p. 31。</p>
+        </div>
+
         <!-- ================== §2 Interleaved Thinking ================== -->
         <h3 id="interleaved">2. Interleaved Thinking：让多轮 Agent 不丢解题状态</h3>
 
@@ -155,6 +161,12 @@
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch17/02</span>
+          <p class="fig-want">需要：V4 论文 Figure 7 —— "Thinking management" 双轨时序图：上半 (a) Thinking with tools 模式下，Turn 1.1/1.2/1.3 与 Turn 2.1 输入框逐轮累积保留所有 Thinking 块；下半 (b) Thinking without tools 模式下，新 user message 到来时旧 Thinking 段不再纳入下一轮 input。两图横向并列对比。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Interleaved Thinking），Figure 7，p. 32。</p>
         </div>
 
         <div class="callout callout-warn">
@@ -199,6 +211,12 @@
               <tr><td><code>&lt;|extracted_url|&gt;</code> / <code>&lt;|read_url|&gt;</code></td><td>判断 URL 是否需要抓取</td><td>带 URL 的 prompt 后</td></tr>
             </tbody>
           </table>
+        </div>
+
+        <div class="fig-placeholder">
+          <span class="fig-tag">📐 论文图占位 · ch17/03</span>
+          <p class="fig-want">需要：V4 论文 Table 5 —— Quick Instruction 6 个特殊 token 的 Special Token / Description / Format 三列定义。论文 Format 列给出每个 token 在 user/assistant 序列中确切的拼接位置（含 <code>&lt;|User|&gt;{prompt}&lt;|Assistant|&gt;</code> 等 chat template 上下文）。</p>
+          <p class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Quick Instruction），Table 5，p. 33。</p>
         </div>
 
         <div class="callout callout-info">
@@ -273,22 +291,7 @@
           <p>这三件事少了哪一件，agentic post-training 都跑不起来 —— 每多一个外部组件，就多一份运维成本、版本对齐成本、TTFT 成本、错误模式。<strong>把控制平面压进数据平面</strong>是 V4 在交互层与 Ch12 KV 异构、Ch6 Muon 删 QK-Clip 一脉相承的工程哲学。</p>
         </div>
 
-        <!-- ================== §5 论文图占位 ================== -->
-        <h3 id="figs">5. 论文图复刻</h3>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch17/01</span>
-          <p class="fig-want">需要：V4 论文 Figure 7 —— Interleaved Thinking 时序图：tool-calling 模式下第 3 轮 input 含第 1-2 轮所有 thinking trace；普通对话模式下旧 thinking 被丢弃。两种模式并列对比。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.2.2，Figure 7（待补）</p>
-        </div>
-
-        <div class="fig-placeholder">
-          <span class="fig-tag">📐 论文图占位 · ch17/02</span>
-          <p class="fig-want">需要：Table 4 完整 DSML schema 模板（开闭标签、parameter 类型、嵌套结构示例）。</p>
-          <p class="fig-source">来源：DeepSeek-V4 技术报告 §4.2.1，Table 4（待补）</p>
-        </div>
-
-        <h3 id="summary">6. 一句话总结</h3>
+        <h3 id="summary">5. 一句话总结</h3>
         <div class="callout callout-info">
           <div class="callout-title">把整章压成一句话</div>
           <p>三件套都是"把控制平面压进数据平面"的具体实现 —— DSML 让工具调用<strong>没有解析失败</strong>、Interleaved Thinking 让多轮 Agent <strong>不丢解题状态</strong>、Quick Instruction 让辅助任务<strong>共享主 KV</strong>。配合 Ch4-5 的 1M context 与 Ch12 的 KV 异构调度，V4 才真正能让 agentic 工作流跑得起、跑得顺。</p>

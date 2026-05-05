@@ -155,6 +155,11 @@ const BRAND_SVG = `
         startOnLoad: false,
         theme: t === "dark" ? "dark" : "default",
         fontFamily: "Inter, sans-serif",
+        // 关闭 useMaxWidth：让图按自然尺寸渲染、容器横向滚动
+        // 否则 LR 流程图会被压成"宽不够、纵向堆叠"的窄长条
+        flowchart: { useMaxWidth: false, htmlLabels: true, curve: "basis", nodeSpacing: 40, rankSpacing: 50 },
+        sequence: { useMaxWidth: false },
+        gantt:    { useMaxWidth: false },
         themeVariables: t === "dark"
           ? { background: "#10151e", primaryColor: "#1a2130", primaryBorderColor: "#71a4e1",
               primaryTextColor: "#e8ecf3", lineColor: "#5b6b85", tertiaryColor: "#0f1115" }
@@ -171,6 +176,33 @@ const BRAND_SVG = `
 
   document.querySelectorAll(".mermaid").forEach(el => {
     el.dataset.source = el.textContent;
+  });
+
+  // ========== 流程图点击放大 ==========
+  // 点 .diagram-wrap → 全屏 modal；ESC 或点背景 → 关闭
+  let zoomBackdrop = null;
+  function closeZoom() {
+    document.querySelectorAll(".diagram-zoomed").forEach(el => el.classList.remove("diagram-zoomed"));
+    if (zoomBackdrop) { zoomBackdrop.remove(); zoomBackdrop = null; }
+    document.documentElement.style.overflow = "";
+  }
+  document.addEventListener("click", e => {
+    const wrap = e.target.closest(".diagram-wrap");
+    if (!wrap) return;
+    if (wrap.classList.contains("diagram-zoomed")) {
+      closeZoom();
+    } else {
+      closeZoom();  // 关掉其它先
+      wrap.classList.add("diagram-zoomed");
+      zoomBackdrop = document.createElement("div");
+      zoomBackdrop.className = "diagram-zoom-backdrop";
+      zoomBackdrop.addEventListener("click", closeZoom);
+      document.body.appendChild(zoomBackdrop);
+      document.documentElement.style.overflow = "hidden";
+    }
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape") closeZoom();
   });
 
   let saved = "light";
