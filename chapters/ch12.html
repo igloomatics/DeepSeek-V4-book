@@ -238,11 +238,6 @@
           典型部署：长文档查询用 Periodic Checkpointing（命中频繁、重算可控），冷请求用 Zero（占用最小）。
         </p>
 
-        <div class="callout callout-info">
-          <div class="callout-title">论文配图情况</div>
-          <p>本章已在 §2 末插入 V4 论文 Figure 6（KV cache 布局图）作为正文图。§3.6.2 On-Disk KV Cache Storage（p. 23-24，对应本章 §3 盘上 KV）<strong>是纯文字章节，无配图</strong>。</p>
-        </div>
-
         <h3>本章小结</h3>
         <ul>
           <li>PagedAttention 假设所有层 KV 同构、可独立回收。V4 四类 KV（SWA / CSA / HCA / Indexer）体积比 128:32:1:1，过期策略不同，必须分治。</li>

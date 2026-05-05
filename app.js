@@ -126,7 +126,7 @@ const BRAND_SVG = `
       <div class="side-bottom">
         <div class="side-controls">
           <button id="theme-toggle" class="icon-btn" aria-label="切换主题" title="切换主题">☾</button>
-          <a class="gh-btn" href="https://github.com/deepseek-ai" target="_blank" rel="noopener">
+          <a class="gh-btn" href="https://github.com/igloomatics/DeepSeek-V4-book" target="_blank" rel="noopener">
             <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.32c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.81.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.19c0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
             GitHub
           </a>
@@ -357,7 +357,115 @@ const BRAND_SVG = `
     "DSec": "DeepSeek Secure。V4 用于代码沙箱与工具调用安全的单集群 10w+ sandbox 平台。",
     "TileLang": "V4 的内核 DSL：用 tile-level 抽象写 GPU kernel，比 Triton 更贴近 NVIDIA 硬件。",
     "Specialist": "Specialist Model。V4 后训练阶段为每个能力域（数学/代码/推理/对话/安全等）训一个专家教师模型，再蒸馏到统一学生。",
-    "GRM": "Generative Reward Model，生成式奖励模型。V4 用 GRM 替代标量奖励模型，让 reward 自带链式思考。"
+    "GRM": "Generative Reward Model，生成式奖励模型。V4 用 GRM 替代标量奖励模型，让 reward 自带链式思考。",
+
+    /* ===== 训练并行 ===== */
+    "ZeRO": "Zero Redundancy Optimizer。把 optimizer state、gradient、param 沿数据维切到不同 rank，每 rank 只存一片，极大压低显存。",
+    "ZeRO-3": "ZeRO 的最激进版本：optimizer/grad/param 三件全切，forward 前 all-gather param、backward 后 reduce-scatter grad。",
+    "DualPipe": "DeepSeek-V3 引入的双向流水线并行：每个 micro-batch 走 forward → backward 循环，前后向之间留出通信 overlap 窗口。",
+    "1F1B": "One-Forward-One-Backward。流水线并行的调度模式：1 个 forward 紧跟 1 个 backward 排队，让中间显存稳定。",
+    "Tensor Parallelism": "TP，张量并行。把单个权重矩阵沿行或列切到多个 GPU，前向反向都需 all-reduce。",
+    "TP": "Tensor Parallelism，张量并行。把权重矩阵切到多 GPU。",
+    "Pipeline Parallelism": "PP，流水线并行。把模型按层切到多 GPU，micro-batch 在各阶段之间流动。",
+    "PP": "Pipeline Parallelism，流水线并行。把模型按层切到多 GPU。",
+    "Context Parallelism": "CP，上下文并行。把序列维切到多 rank，每 rank 处理一段 token 范围；CSA/HCA 改为 two-stage CP 以对齐压缩边界。",
+    "CP": "Context Parallelism，上下文并行。沿序列维切到多 rank。",
+    "DP": "Data Parallelism，数据并行。每 GPU 持一份完整模型，batch 拆到不同 GPU。",
+    "EP": "Expert Parallelism，专家并行。MoE 的专家分布到不同 GPU，配 all-to-all 通信。",
+    "all-reduce": "集合通信原语：N 个 rank 各持一份数据，求和后所有 rank 都拿到结果。",
+    "reduce-scatter": "集合通信原语：N 个 rank 各持一份数据，求和后切成 N 片各 rank 拿一片。",
+    "all-gather": "集合通信原语：N 个 rank 各持一片，互相收齐每个 rank 都拿完整数据。",
+    "stochastic rounding": "随机舍入。把高精度数舍入到低精度时按距离比例随机选邻近码点，期望无偏；V4 用它把 BF16 跨 rank 通信减半带宽。",
+    "SR": "Stochastic Rounding，随机舍入。跨 rank 同步梯度时把 FP32 随机舍入到 BF16，无偏减半带宽。",
+
+    /* ===== 内核 / 编译器 ===== */
+    "ATen": "PyTorch 的算子库（A Tensor library）。每 op 经 Python → C++ dispatcher → kernel 选择，per-call host 开销 30–100 µs。",
+    "CUDA": "NVIDIA 的 GPU 并行计算平台与编程语言。",
+    "CUDA Graph": "把一系列 kernel launch 录制成图后整图重放，省掉每次 launch 的 host 开销。",
+    "SASS": "NVIDIA GPU 的最底层汇编（Streaming ASSembler）。verifying bit-identical SASS 就是检查编译产物字节相同。",
+    "PTX": "NVIDIA 的中间汇编（Parallel Thread eXecution）。介于 CUDA C 与 SASS 之间。",
+    "SM": "Streaming Multiprocessor。NVIDIA GPU 的核心调度单元，H100 有 132 个 SM。",
+    "GEMM": "General Matrix Multiply。通用矩阵乘，深度学习里最重的一类 kernel。",
+    "HBM": "High Bandwidth Memory。GPU 显存的物理层，H100 用 HBM3。",
+    "SMT": "Satisfiability Modulo Theories。可决性逻辑求解器；TileLang 用 Z3 SMT 来证明索引唯一、合并访存。",
+    "Z3": "Microsoft 出品的 SMT 求解器。TileLang 编译期用它做精确判定，替代启发式优化。",
+    "QF_NIA": "Quantifier-Free Nonlinear Integer Arithmetic。Z3 支持的一阶理论分支，处理无量词整数非线性算术。",
+    "DSL": "Domain-Specific Language，领域专用语言。TileLang 是嵌入 Python 的 GPU kernel DSL。",
+    "fast-math": "编译器把浮点结合律视作可重排（如 a+b+c 拆树形归约）以换速度，结果不可逐 bit 复现。",
+    "IEEE-754": "IEEE 浮点数标准。规定浮点表示与运算行为，结合律不严格成立但每步可预测。",
+    "fma": "Fused Multiply-Add，融合乘加。一条指令算 a×b+c，比拆开少一次舍入误差。",
+    "ULP": "Unit in the Last Place。浮点最后一位的单位，量化舍入误差用。",
+    "batch-invariant": "批不变。同一输入不论 batch 中处于哪个位置、和谁同 batch，输出 bit-identical；V4 把它做到内核级。",
+    "bit-identical": "位级一致。同代码同输入每次跑结果逐 bit 相同，是 V4 工程化调试的根基。",
+    "deterministic": "确定性。同代码同输入产出同输出，是 bit-identical 的较弱形式（允许同一硬件上稳定但跨硬件不保证）。",
+
+    /* ===== 后训练 / RL ===== */
+    "DPO": "Direct Preference Optimization。绕过显式 reward 模型，直接用偏好对比来优化策略。",
+    "RM": "Reward Model，奖励模型。RLHF 中给 trajectory 打分的模型；V4 用 GRM 替代。",
+    "ORM": "Outcome Reward Model。只对最终结果打分（vs PRM 对每一步打分）。",
+    "PRM": "Process Reward Model。对每个推理步骤打分。",
+    "CoT": "Chain-of-Thought，链式思考。让模型显式输出中间步骤再给答案。",
+    "Reasoning Effort": "推理强度。同一模型用不同长度 thinking chain 解题；V4 训练成 Non-think / High / Max 三档。",
+    "Non-think": "V4 reasoning effort 最低档。无显式 thinking chain，直接出答案。",
+    "Think Max": "V4 reasoning effort 最高档。允许最长 thinking chain，bench 上限模式。",
+    "trajectory": "RL/agent 中模型一次完整生成的序列（含状态、动作、reward）。",
+    "rollout": "用当前策略生成一段 trajectory 的过程；on-policy 学习里 rollout = 训练数据。",
+    "on-policy": "采样分布与当前学习策略一致。OPD 是 on-policy distillation：trajectory 由当前学生采样。",
+    "off-policy": "采样分布与当前学习策略不一致（例如用 teacher 采样训学生），存在分布偏移。",
+    "mode-seeking": "Reverse KL 的性质：让学生在 teacher 高概率区聚焦一个 mode，舍弃其他 mode。",
+    "mass-covering": "Forward KL 的性质：学生必须覆盖 teacher 所有概率质量，多 teacher 时倾向均值化。",
+    "forward KL": "正向 KL：KL(教师‖学生)。Mass-covering，要求学生覆盖教师所有概率质量。",
+    "WAL": "Write-Ahead Log。先写日志再做实际状态变更；V4 在 token 级与 sandbox 级各做一份 WAL 用于抢占恢复。",
+    "BBPE": "Byte-level BPE。在字节层面做 BPE 分词，避免 Unicode 边界问题；DeepSeek 词表 128K BBPE。",
+    "FIM": "Fill-In-the-Middle。把序列切成 prefix/middle/suffix 重排成 prefix→suffix→middle 训练，让模型学会从两端补中间。",
+    "packing": "把多条短样本打包到一个固定长度序列里减少 padding；V4 对 packing 做 sample-level mask。",
+    "cold-start": "RL 训练前的初始化阶段。V4 用 SFT 数据冷启动让 RL 有合理起点。",
+
+    /* ===== 评测 / 基准 ===== */
+    "Pass@1": "代码/数学评测：单次采样答对的概率。",
+    "Pass@k": "k 次采样里至少 1 次答对的概率，k=1 是单次命中率。",
+    "Pass Rate": "DeepSeek 内部 Code Agent 评测的单次跑通率（≠ Pass@1，因为任务多文件多步执行）。",
+    "MRCR": "Multi-Round Coreference Resolution。1M 长上下文核心 benchmark，多 needle 多指代解析。",
+    "HLE": "Humanity's Last Exam。2025 年推出的前沿研究级超难测试，覆盖数理化生史法，对 reasoning effort 极敏感。",
+    "AIME": "American Invitational Mathematics Examination。美国数学邀请赛，高难数学竞赛 benchmark。",
+    "GPQA": "Graduate-level Google-Proof QA。研究生级别封闭知识问答 benchmark。",
+    "MMLU": "Massive Multitask Language Understanding。覆盖 57 学科的多选题 benchmark。",
+    "SimpleQA": "OpenAI 的简单事实问答 benchmark。SimpleQA-Verified 是其精确匹配版，对幻觉极敏感。",
+    "RAG": "Retrieval-Augmented Generation。检索一次后把结果喂模型生成；vs Agentic Search 的多轮迭代。",
+    "Agentic Search": "Agent 式搜索：模型可迭代调用 search/fetch 工具直到满意，对应 Think 模式。",
+
+    /* ===== 沙箱 / 系统 ===== */
+    "sandbox": "隔离的执行环境。一次 agentic rollout 对应一个 sandbox，模型在其中跑 bash / 改文件 / 跑测试。",
+    "Firecracker": "AWS Lambda 同款的 microVM 引擎。基于 KVM 但裁掉 QEMU 大部分，亚秒级启动 + VM 级隔离。",
+    "microVM": "微型虚拟机。VM 级隔离 + 容器级启动速度，DSec 第 3 档衬底。",
+    "EROFS": "Enhanced Read-Only File System。Linux 内核里的只读 FS，专为 immutable 镜像设计；多 sandbox 共享同一份只读基础层。",
+    "overlaybd": "Overlay Block Device。块设备级分层格式，VM 等价于 EROFS；只读基础层在 3FS 上跨实例共享。",
+    "overlayfs": "Linux 的联合文件系统：lowerdirs 只读 + upper 可写，container 衬底用它做镜像分层。",
+    "3FS": "DeepSeek Fire-Flyer File System。DeepSeek 自研分布式文件系统（V3 时代开源），提供 RDMA 直读，是沙箱镜像与 KV checkpoint 的后端。",
+    "spinlock": "自旋锁。线程在锁上忙等，并发起多个 container 时 runC/containerd 内部 spinlock 竞争是单 sandbox CPU 主开销。",
+    "copy-on-write": "COW。读时共享、写时复制，分层文件系统与镜像分层的核心机制。",
+    "RDMA": "Remote Direct Memory Access。绕过 CPU 直接读写远端内存，3FS 用 RDMA 实现高吞吐。",
+    "KVM": "Kernel-based Virtual Machine。Linux 内核虚拟化模块，Firecracker 基于 KVM。",
+
+    /* ===== 数学 / 矩阵 ===== */
+    "spectral norm": "谱范数 ‖A‖₂。矩阵最大奇异值，等价于矩阵作为线性映射的最大放大因子。",
+    "谱范数": "矩阵最大奇异值，等价于矩阵作为线性映射的最大放大因子。mHC 强制残差混合矩阵谱范数 ≤ 1。",
+    "polar decomposition": "极分解。任意矩阵 M 分解为正交矩阵 U 与正定矩阵 P 的乘积 M=UP；Muon 的 NS 迭代就是在算 U。",
+    "SVD": "Singular Value Decomposition，奇异值分解。把矩阵分解为 U Σ V^T；Muon 避开 SVD 改用 NS 迭代近似极分解。",
+    "doubly stochastic": "双随机矩阵。元素非负、每行每列和为 1 的方阵；其集合即 Birkhoff 多面体。",
+    "凸组合": "Convex combination。一组向量的非负权重和为 1 的加权平均。",
+
+    /* ===== 杂项 ===== */
+    "checkpoint": "检查点。训练中定期保存模型/optimizer 状态以便恢复；activation checkpoint 是另一回事——为省显存 backward 时重算 activation。",
+    "activation checkpointing": "激活值检查点。forward 时不存中间 activation，backward 重算；V4 用 tensor 级 ckpt 把粒度切到最细。",
+    "preempt": "抢占。训练任务被打断让出资源；V4 后训练抢占发生时 sandbox/rollout 状态需保留以便 fast-forward 恢复。",
+    "fast-forward": "快进恢复。从 trajectory log replay 已完成步骤而不重跑，是抢占恢复的关键。",
+    "knapsack": "背包问题。把不同体积的物品装到固定数量的桶里求均衡；V4 用背包近似算法把稠密层均衡到 P_max 个 rank。",
+    "loss spike": "训练 loss 突然向上跳跃。V4 用 Anticipatory Routing + SwiGLU Clamping 抑制；位级可复现是定位 loss spike 的前提。",
+    "outlier": "异常值。指激活/梯度中数量级远超主分布的值，残差通路会原样累积 outlier 给后续层。",
+    "embedding": "嵌入。把离散 token id 映射到连续向量；模型最底层。",
+    "latent": "隐空间表示。MLA / CSA 的低维压缩 KV 都是 latent。",
+    "sparse": "稀疏。每个 query 只关注少量位置；CSA 是 V4 的稀疏注意力代表。"
   };
 
   function applyGlossary() {

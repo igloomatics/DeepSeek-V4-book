@@ -217,11 +217,6 @@
           实测<strong>recall@k 99.7%</strong> —— 即和 FP32 indexer 选出来的 top-k 重合 99.7%。剩下 0.3% 的差异是 "BF16 score 排序产生的<em>边界 token 翻号</em>"，由于 sparse attention 本身对 top-k 边缘不敏感，下游 logits 损失忽略不计。
         </p>
 
-        <div class="callout callout-info">
-          <div class="callout-title">论文配图情况</div>
-          <p>V4 技术报告 §3.4 FP4 Quantization-Aware Training（p. 19-20）<strong>是纯文字章节，无配图</strong>。本章的 FP4 量化网格 demo（16 码点 + 32 权重散点）是为帮助理解 sub-block scale 嵌套机制而做的可交互演示，不存在论文原图。</p>
-        </div>
-
         <h3>本章小结</h3>
         <ul>
           <li>1.6T MoE 权重在 BF16 下 2.8 TB，FP4 砍到 700 GB，<strong>单节点 8×H100 可装</strong>。</li>

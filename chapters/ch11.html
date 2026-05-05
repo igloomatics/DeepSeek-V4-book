@@ -229,11 +229,6 @@
           总体显存 ↓ ~40%，重算开销 ~3% wall-time，<strong>无需手动标 ckpt 边界</strong>。
         </p>
 
-        <div class="callout callout-info">
-          <div class="callout-title">论文配图情况</div>
-          <p>V4 技术报告 §3.5 Training Framework（含 §3.5.1 Muon 实现 / §3.5.2 mHC / §3.5.3 Contextual Parallelism / §3.5.4 Tensor 级 ckpt，p. 20-22）<strong>是纯文字章节，无配图</strong>。本章的 ZeRO 切分 demo（稠密 / MoE 二分 + 显存条）是为帮助理解原理而做的可交互演示。</p>
-        </div>
-
         <h3>本章小结</h3>
         <ul>
           <li>Muon 要完整梯度，ZeRO 切分梯度 → V4 把"稠密限制 $P_{\max}$ + MoE 不限"二分；通信精度 BF16 SR 减半带宽。</li>

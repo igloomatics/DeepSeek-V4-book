@@ -226,11 +226,6 @@
           所以批不变 + 确定性<em>不是为了"理论纯洁"</em>，而是为了让前面所有奇技淫巧（CSA / HCA / Muon / FP4 QAT / MegaMoE）<strong>可被复现、可被调试、可被部署</strong>。它是看不见的护城河 —— 平时谁都不会感谢它，出 bug 的那一天它救命。
         </p>
 
-        <div class="callout callout-info">
-          <div class="callout-title">论文配图情况</div>
-          <p>V4 技术报告 §3.3 High-Performance Batch-Invariant and Deterministic Kernel Libraries（p. 18-19）<strong>是纯文字章节，无配图</strong>。本章的浮点求和 demo（4 种顺序的 ULP 差异）是为帮助理解原理而做的可交互演示。</p>
-        </div>
-
         <h3>本章小结</h3>
         <ul>
           <li>浮点不结合是一切非确定性的根源；GPU 一切并行归约优化默认它结合。</li>

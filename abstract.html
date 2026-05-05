@@ -61,29 +61,14 @@
         </div>
 
         <h3>整体架构示意</h3>
-        <div class="diagram-wrap">
-          <div class="mermaid">
-flowchart TB
-  Tokens["Input Tokens"] --> Emb["Embedding"]
-  Emb --> BlockIn(["Transformer Block × L"])
-  subgraph TB1 ["每一层 Transformer Block"]
-    direction LR
-    R1(("Residual / mHC")) -- preMix --> Attn["CSA / HCA<br/>混合注意力"]
-    Attn -- postMix --> R1
-    R1 -- preMix --> MoE["DeepSeekMoE<br/>FFN 层"]
-    MoE -- postMix --> R1
-  end
-  BlockIn --> TB1
-  TB1 --> Head["LM Head"]
-  TB1 --> MTP["MTP Modules"]
-  Head --> LMLoss["LM Loss"]
-  MTP --> MTPLoss["MTP Loss"]
-
-  classDef hot fill:#71a4e1,stroke:#71a4e1,color:#fff
-  class Attn,MoE hot
-          </div>
-        </div>
-        <p class="caption">图 0-1 · 复刻论文 Figure 2。注意力层与 FFN 层之间，残差通路被 mHC 取代了普通残差连接。</p>
+        <figure class="paper-fig">
+          <img src="figures/ch02/1.png" alt="DeepSeek-V4 整体架构：Embedding → CSA/HCA + Pre/Post-Block Mixing + Residual Mixing → DeepSeekMoE → MTP → Prediction Head">
+          <figcaption>
+            <strong>图 0-1 · DeepSeek-V4 整体架构（Transformer Block × $L$）。</strong>
+            底部 Embedding 上来后，每个 block 内部分两段：先走 <strong>CSA / HCA</strong> 混合注意力（Ch04 / Ch05），输出经 <em>Pre-Block / Post-Block Mixing</em> 与 <em>Residual Mixing</em> 三个 mapping（即 Ch03 mHC 的三套 $\tilde A / \tilde B / \tilde C$）回到主 highway；再走第二段 <strong>DeepSeekMoE</strong>（Ch07），同样经过一组 mixing 才合流。block 堆叠 $L$ 次后，顶部 Prediction Head 出 LM Loss，旁路 <strong>MTP Modules</strong> 出 MTP Loss。这张图就是 Part 1 各章的"目录索引"——三套 Mixing 是 mHC、CSA/HCA 是新注意力、DeepSeekMoE 从 V3 继承。
+            <span class="fig-source">来源：DeepSeek-V4 技术报告 Figure 2。</span>
+          </figcaption>
+        </figure>
 
         <h3 style="margin-top:48px;">局限与未来方向</h3>
         <p>预览版不是终点。论文 Conclusion 给出了 DeepSeek 团队自己写下的"To-do"，正好对应 V4 当前的几条短板：</p>
