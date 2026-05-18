@@ -108,7 +108,7 @@
 
         <div class="math-block">
           $$
-          \mathcal{L}_{\text{OPD}}(\theta) \;=\; \sum_{i=1}^{N} w_i \cdot \mathbb{E}_{x \sim \mathcal{D}_i,\; y \sim \pi_\theta(\cdot \mid x)} \!\left[\, D_{\text{KL}}\!\big(\pi_\theta(\cdot \mid x, y_{<t}) \,\big\|\, \pi_{E_i}(\cdot \mid x, y_{<t})\big) \,\right]
+          \mathcal{L}_{\text{OPD}}(\theta) \;=\; \sum_{i=1}^{N} w_i \cdot \mathbb{E}_{x \sim \mathcal{D}_i,\; y \sim \pi_\theta(\cdot \mid x)} \!\left[\, D_{\text{KL}}\!\big(\pi_\theta(\cdot \mid x, y_{&lt;t}) \,\big\|\, \pi_{E_i}(\cdot \mid x, y_{&lt;t})\big) \,\right]
           $$
         </div>
 
@@ -231,7 +231,7 @@
 
         <div class="math-block">
           $$
-          A_t^{\text{token}} \;=\; \log \frac{\pi_E(y_t \mid x, y_{<t})}{\pi_\theta(y_t \mid x, y_{<t})}
+          A_t^{\text{token}} \;=\; \log \frac{\pi_E(y_t \mid x, y_{&lt;t})}{\pi_\theta(y_t \mid x, y_{&lt;t})}
           $$
         </div>
 
