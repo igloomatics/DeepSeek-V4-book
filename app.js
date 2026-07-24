@@ -16,7 +16,8 @@ const BOOK_TOC = [
     items: [
       { num: "00", title: "封面 · Cover",                  href: "index.html",     id: "home"     },
       { num: "·",  title: "摘要与全景",                     href: "abstract.html",  id: "abstract" },
-      { num: "·",  title: "阅读指南 — 学习路线图",           href: "guide.html",     id: "guide"    }
+      { num: "·",  title: "阅读指南 — 学习路线图",           href: "guide.html",     id: "guide"    },
+      { num: "·",  title: "Pro 与 Flash — 双版本怎么选",     href: "pro-vs-flash.html", id: "variants" }
     ]
   },
   {
@@ -93,6 +94,17 @@ const BRAND_SVG = `
   /* ---------- Sidebar render ---------- */
   const sidebar = document.getElementById("sidebar");
   if (sidebar) {
+    const sideLabel = (title) => {
+      const divider = " — ";
+      const splitAt = title.indexOf(divider);
+      if (splitAt === -1) {
+        return `<span class="side-link-copy"><span class="side-link-title">${title}</span></span>`;
+      }
+      const main = title.slice(0, splitAt);
+      const sub = title.slice(splitAt + divider.length);
+      return `<span class="side-link-copy"><span class="side-link-title">${main}</span><span class="side-link-sub"> — ${sub}</span></span>`;
+    };
+
     const brand = `
       <a href="${base}index.html" class="brand" aria-label="返回封面">
         <span class="brand-logo" aria-hidden="true">${BRAND_SVG}</span>
@@ -107,7 +119,7 @@ const BRAND_SVG = `
         const href = base + it.href;
         const active = it.id === pageId ? " active" : "";
         return `<a href="${href}" class="side-link${active}">
-                  <span class="num">${it.num}</span><span>${it.title}</span>
+                  <span class="num">${it.num}</span>${sideLabel(it.title)}
                 </a>`;
       }).join("");
       const head = s.overview
@@ -291,7 +303,7 @@ const BRAND_SVG = `
     "GQA": "Grouped Query Attention。每组头共享一份 K/V（介于 MHA 与 MQA 之间），是 LLaMA-2 等模型的事实标准。",
     "MLA": "Multi-head Latent Attention。DeepSeek-V2 提出的 KV 低秩压缩注意力，将 K/V 投影到低维潜变量空间，KV cache 降至原来 ~1/4。",
     "DSA": "DeepSeek Sparse Attention。V3.2 上线的稀疏注意力前身，是 V4 CSA 的祖先。",
-    "CSA": "Compressed Sparse Attention。V4 核心注意力之一：每 m=4 个 token 压成一个超 KV，再用 Lightning Indexer 选 top-k=1024 个超 KV。",
+    "CSA": "Compressed Sparse Attention。V4 核心注意力之一：以 m=4 的步幅生成重叠窗口压缩条目，再由 Lightning Indexer 选择 top-k；Pro 取 1024，Flash 取 512。",
     "HCA": "Heavy Compressed Attention。V4 另一注意力分支：每 m'=128 个 token 压成一个重超 KV，对全部重超 KV 做稠密注意力，管全局摘要。",
     "RoPE": "Rotary Position Embedding。通过对 Q/K 做位置相关的旋转矩阵乘法注入相对位置信息，是当前主流 LLM 的位置编码方案。",
     "YaRN": "Yet another RoPE eNhancement。RoPE 频率缩放外推方法，把训练时的位置编码线性 + NTK 插值到更长上下文。",
@@ -350,8 +362,8 @@ const BRAND_SVG = `
     "QAT": "Quantization-Aware Training，量化感知训练。训练时模拟量化误差，让模型适应低精度部署，避免 PTQ 的精度损失。",
 
     /* ===== 评测 ===== */
-    "Codeforces Elo": "Codeforces 在线编程比赛的 Elo 评分体系。Top 选手 ~3500，V4-Pro 拿到 3206。",
-    "Putnam-2025": "2025 年 Putnam 数学竞赛。V4-Pro 在该形式化推理基准上拿下 120/120 完美分数。",
+    "Codeforces Elo": "Codeforces 在线编程比赛的评分体系。报告在 14 场比赛、114 道题的评测中给出 V4-Pro-Max 3206 分，对应参赛人类选手中的第 23 名。",
+    "Putnam-2025": "2025 年 Putnam 数学竞赛。报告中的 Frontier Mathematical Reasoning 评测给 DeepSeek-V4 120/120；另一个 Practical Reasoning 设置下，V4-Flash-Max 为 81.0。两套设置不能混为同一成绩。",
 
     /* ===== V4 系统 ===== */
     "DSec": "DeepSeek Secure。V4 用于代码沙箱与工具调用安全的单集群 10w+ sandbox 平台。",

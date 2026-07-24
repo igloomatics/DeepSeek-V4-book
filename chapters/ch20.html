@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ch 20 · DSec — 代码沙箱与安全护城河</title>
+<title>Ch 20 · DSec — Agentic AI 的执行底座</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch20">
 
@@ -32,8 +32,8 @@
 
       <article id="ch20" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第四部分 · 后训练 · 20</div>
-        <h2 class="chapter-title">DSec — 代码沙箱与安全护城河</h2>
-        <p class="chapter-sub">为什么 V4 后训练必须自建沙箱平台而不能用现成 Docker 集群，"四衬底 + 单 SDK"如何用一个抽象同时满足"零冷启动函数调用"和"完整 OS 隔离"两个极端，3FS + EROFS + overlaybd 三层叠出来的镜像存储如何让 10w+ 沙箱共享同一份基础层，以及为什么 trajectory log 是 sandbox 级 WAL 的关键。</p>
+        <h2 class="chapter-title">DSec — Agentic AI 的执行底座</h2>
+        <p class="chapter-sub">V4 如何用统一 SDK 管理 Function Call、Container、microVM 与 fullVM 四种执行衬底，怎样借助 3FS、EROFS 和 overlaybd 加速镜像加载，以及 trajectory log 如何支持恢复、溯源与重放。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
@@ -41,70 +41,64 @@
           <p class="term-name">DSec = DeepSeek 自研代码沙箱平台：四种执行衬底（Function / Container / microVM / fullVM）背后是统一 SDK <code>libdsec</code>；分层镜像存储（EROFS + overlaybd）架在 3FS 上；trajectory log 提供 client fast-forward + 抢占恢复 + deterministic replay</p>
           <p>
             一句话：<strong>把"沙箱"工程化到与训练框架同一抽象层级</strong>。
-            agentic post-training 每条 trajectory 都要在隔离环境里执行 bash / 改文件 / 跑测试，单集群同时跑 10w+ 沙箱才能跟上 OPD 的 rollout 吞吐。"用现成 Docker 起容器"在 1000 并发就开始崩，10w 是另一个量级 —— 必须重写镜像存储、装箱密度、抢占恢复每一层。
+            Agentic post-training 的 trajectory 往往需要在隔离环境里执行命令、修改文件和运行测试。报告称 DSec 可支撑数十万个并发沙箱，并针对镜像加载、装箱密度和抢占恢复做了专门设计；报告没有给出现成 Docker 集群的并发失效点。
           </p>
           <dl>
             <dt>Sandbox（沙箱）</dt>
-            <dd>隔离的执行环境，<em>一次 agentic rollout 对应一个 sandbox</em>。模型生成命令 → 在 sandbox 里执行 → 把 stdout/stderr 喂回模型 → 下一步生成。<em>必须隔离</em>：模型可能跑 <code>rm -rf /</code>、可能尝试访问其它训练任务的文件、可能 fork bomb。生命周期与 GPU 训练 step 同步。</dd>
+            <dd>隔离的执行环境。模型生成命令，在 sandbox 中执行，再把结果返回给模型继续推理。隔离可以限制错误或恶意代码对宿主机和其他任务的影响。</dd>
 
             <dt>Function Call 衬底（DSec 第 1 档）</dt>
-            <dd>常驻容器池分发：维护几千个<em>预热好的容器</em>，agent 调用时分配一个，用完归还。<strong>零冷启动</strong>（毫秒级），无状态。适合简单工具调用（calculator、format checker、纯函数 API）。<em>缺点</em>：不能装新依赖，环境固定。</dd>
+            <dd>通过预热池承接无状态函数调用，从而消除按请求创建执行环境的冷启动开销。它适合计算器、格式检查器等短小、环境固定的工具调用。</dd>
 
             <dt>Container 衬底（DSec 第 2 档）</dt>
-            <dd>Docker + EROFS 分层镜像。每个 agent 任务有独立 container，按需加载镜像层。<em>大多数 agent 任务都用这一档</em>：可以装 pip、apt 包、跑测试。冷启动几百毫秒（取决于镜像层下载量）。</dd>
+            <dd>提供 Docker 兼容的容器环境，并用 EROFS 分层镜像按需加载数据。它适合需要文件系统、依赖安装和测试执行的常规代码任务。</dd>
 
             <dt>microVM 衬底（DSec 第 3 档）</dt>
-            <dd>Firecracker（AWS Lambda 同款）+ overlaybd 磁盘格式。<em>VM 级隔离 + 容器级启动速度</em>（亚秒），用 KVM 虚拟化但裁掉了 QEMU 大部分功能。适合<strong>安全敏感 + 高密度</strong>场景 —— 敌对代码、不可信网络访问。</dd>
+            <dd>以 Firecracker 提供更强的虚拟机隔离，并使用 overlaybd 管理分层块设备。它适合需要比容器更强隔离的代码执行场景。</dd>
 
             <dt>fullVM 衬底（DSec 第 4 档）</dt>
-            <dd>QEMU 全虚拟化。能跑任意 guest OS（Windows、BSD、自定义 kernel）。冷启动秒级，开销最大但最通用。<em>极少数任务需要</em>（系统级测试、跨架构编译）。</dd>
+            <dd>以 QEMU 提供完整虚拟机环境，适合需要特定操作系统或系统级能力的任务。它的通用性更高，但资源开销也更大。</dd>
 
             <dt>libdsec（统一 SDK）</dt>
-            <dd>Python 接口，<strong>一行参数切换衬底</strong>。背后抽象掉 (1) 命令执行；(2) 文件传输；(3) TTY 交互 三件事。Agent 代码不感知底层是 Function 还是 microVM —— 这是工程上 <em>fail-soft</em> 的关键：高密度任务出问题时可以快速降级到更重的衬底。</dd>
+            <dd>统一的 Python 接口，抽象命令执行、文件传输和 TTY 交互。调用方可通过参数选择执行衬底，而不必为四种后端分别编写一套交互逻辑。</dd>
 
             <dt>EROFS（Enhanced Read-Only File System）</dt>
-            <dd>Linux 内核里的<em>只读</em>文件系统，专为 immutable 镜像设计。Container 衬底的基础层用它挂载到 overlayfs <code>lowerdirs</code>，写操作落到 upper 层。<strong>多个 sandbox 共享同一份只读基础层</strong>，节省海量重复存储。</dd>
+            <dd>Linux 的只读文件系统。Container 衬底把 EROFS 镜像层挂载为 overlayfs 的 <code>lowerdirs</code>，写操作进入 upper 层，使多个 sandbox 可以复用只读基础层。</dd>
 
             <dt>overlaybd（Overlay Block Device）</dt>
-            <dd>microVM 衬底用的<em>块设备级</em>分层格式，类比 EROFS 但工作在 block 而非 file 层。只读基础层在 3FS 上跨实例共享，写操作落到本地 copy-on-write 层。<em>VM 不能用 overlayfs 因为它需要 file system 层访问</em>，overlaybd 是 VM 等价物。</dd>
+            <dd>microVM 衬底使用的块设备级分层方案。只读基础层存放在 3FS，写操作进入本地 copy-on-write 层；这种设计适配虚拟机看到块设备而非宿主文件树的接口。</dd>
 
             <dt>3FS（DeepSeek Fire-Flyer File System）</dt>
-            <dd>DeepSeek 自研分布式文件系统（V3 时代已开源）。本章把它用作<strong>沙箱镜像层的后端存储</strong> + 训练 / KV checkpoint 后端。横向扩到上千节点，提供 RDMA 直读。让单集群 10w+ 沙箱共享同一份镜像 base 成立。</dd>
+            <dd>DeepSeek 的分布式文件系统。本章涉及的用途是保存沙箱镜像的只读数据层，让不同实例按需读取数据块；这里不把它与其他章节中的训练存储用途混为同一项结论。</dd>
 
             <dt>Memory Reclamation（内存回收）</dt>
-            <dd>虚拟化环境下页缓存常被重复占用（host kernel 一份、guest kernel 一份），10w 并发时浪费数 TB。DSec 的优化让 host 能<em>定期回收</em> guest 不再使用的页，把 overcommit 安全可行 —— 物理内存能装下的 sandbox 数翻倍。</dd>
+            <dd>虚拟化环境中，宿主机和 guest 的缓存会增加内存压力。DSec 通过内存回收缓解重复缓存，使安全的内存超配更可行；报告没有量化其节省比例。</dd>
 
             <dt>Spinlock 抢占（spinlock contention）</dt>
-            <dd>container runtime（runC、containerd）内部有大量 spinlock，并发起多个 container 时<em>线程在 lock 上自旋等待</em>，单 sandbox CPU 开销主要来源。DSec 改写关键路径让锁竞争降到极低，<strong>per-host 装箱密度大幅提升</strong>。</dd>
+            <dd>高并发启停容器时，运行时内部的自旋锁可能形成 CPU 瓶颈。DSec 针对相关竞争进行优化，以提高单机装箱密度；报告未披露具体倍数。</dd>
 
             <dt>Trajectory Log（轨迹日志）</dt>
-            <dd>每个 sandbox 维护一份<em>全局有序日志</em>，每条命令调用 + 结果都持久化。承担三件事：(1) <strong>Client Fast-Forwarding</strong> —— 训练抢占时 sandbox 资源保留，恢复时直接 replay 已完成命令的缓存结果；(2) <strong>Provenance</strong> —— 每个状态变更可追溯；(3) <strong>Deterministic Replay</strong> —— 任何历史 session 完全可复现。<em>是 sandbox 级 WAL，与 Ch19 token-WAL 同思路</em>。</dd>
+            <dd>每个 sandbox 维护一份有序日志，记录命令调用及结果。它用于 client fast-forwarding、细粒度溯源和确定性重放；能否逐位复现仍取决于外部依赖、时间和随机源是否也受控。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>DSec 把 agentic 工作流的<em>执行环境</em>提升到与训练框架同等抽象级别。"四衬底 + 单 SDK + 3FS 后端 + trajectory log"四件事少一件 OPD 就跑不到 10w+ 并发。这是 V4 在<em>非模型层</em>构建的最大工程资产。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>DSec 用统一接口组织四种执行衬底，并把镜像加载、资源密度与执行日志纳入同一套沙箱平台，为大规模 agentic post-training 提供基础设施支持。</div>
         </div>
 
         <!-- ================== §1 为什么 ================== -->
         <h3 id="motivation">1. 为什么需要专门的沙箱平台</h3>
         <p>
-          V4 的 post-training 阶段 OPD 与 RL 都依赖 <strong>agentic rollout</strong>：模型生成"调 bash 跑测试"、"读 README 写代码"这种 trajectory，每条都需要一个隔离执行环境。论文给出四个动机：
+          V4 的 post-training 包含需要实际执行工具或代码的 <strong>agentic rollout</strong>。这类 trajectory 要在隔离环境中运行命令、访问文件并收集结果。报告强调了四类工程需求：
         </p>
 
         <ul>
-          <li><strong>Workload 极度异构</strong>：从 5ms 的 calculator 调用到几小时的完整 software engineering pipeline，单一衬底覆盖不了；</li>
-          <li><strong>Image 又多又大</strong>：N 个领域 specialist × M 个工具版本 = 数千份镜像，每份数 GB，必须 lazy 加载；</li>
-          <li><strong>高密度部署</strong>：rollout 吞吐要求 10w+ 并发 sandbox / 集群；</li>
-          <li><strong>生命周期与训练协同</strong>：rollout 被 preempt 时 sandbox 状态要保留、checkpoint 时要能恢复 —— 与 Ch19 的 WAL 是同一姿态在 sandbox 层的体现。</li>
+          <li><strong>工作负载异构</strong>：短小的函数调用与完整软件工程任务需要不同的隔离强度和系统能力；</li>
+          <li><strong>镜像规模大</strong>：领域和工具环境带来大量镜像，完整预取会放大启动延迟与存储开销；</li>
+          <li><strong>高密度部署</strong>：报告称平台需要支撑数十万个并发 sandbox；</li>
+          <li><strong>生命周期与训练协同</strong>：任务被抢占或 client 重连时，需要保留或恢复已执行步骤。</li>
         </ul>
 
-        <div class="numex">
-          <span class="numex-tag">数值演练 · 为什么 10w 是另一个量级</span>
-          普通 Kubernetes 集群单节点 ~100 pods 是上限。10w sandbox / 集群假设 1000 节点 → 100 sandbox/节点 → 看起来 OK。但：
-          <ul>
-            <li>每 sandbox 平均寿命 ~30 秒（rollout step 时间），<strong>每秒新建 / 销毁 ~3000 个</strong>；</li>
-            <li>普通 Docker daemon 单进程吞吐 ~10 启动/秒，<em>差 300×</em>；</li>
-            <li>每镜像 ~5GB，3000/秒 × 5GB = 15TB/s 镜像传输 → 远超任何单机网络。</li>
-          </ul>
-          <strong>普通方案根本起不来</strong>，必须把"镜像 base 层共享"做到极致 + 把"启动 / 销毁"做到亚毫秒。这就是 DSec 整章的存在理由。
+        <div class="callout callout-warn">
+          <div class="callout-title">论文边界</div>
+          <p>报告给出了“数十万个并发沙箱”这一总体规模，但没有披露单节点 pod 上限、sandbox 平均寿命、Docker daemon 启动吞吐或镜像带宽。因此无法用假设数字反推系统瓶颈；论文明确讨论的优化包括按需镜像加载、内存回收与锁竞争缓解。</p>
         </div>
 
         <!-- ================== §2 四衬底 ================== -->
@@ -115,18 +109,18 @@
 
         <div class="config-table">
           <table>
-            <thead><tr><th>衬底</th><th>底层</th><th>典型用途</th><th>冷启动</th><th>隔离强度</th></tr></thead>
+            <thead><tr><th>衬底</th><th>底层</th><th>典型用途</th><th>启动特征</th><th>隔离强度</th></tr></thead>
             <tbody>
-              <tr><td><strong>Function Call</strong></td><td>常驻容器池分发</td><td>无状态简单调用</td><td>~ms（零冷启动）</td><td>进程级</td></tr>
-              <tr><td><strong>Container</strong></td><td>Docker + EROFS</td><td>大多数 agent 任务</td><td>~100-500ms</td><td>容器级</td></tr>
-              <tr><td><strong>microVM</strong></td><td>Firecracker + overlaybd</td><td>安全敏感、高密度</td><td>~亚秒</td><td>VM 级</td></tr>
-              <tr><td><strong>fullVM</strong></td><td>QEMU</td><td>需要任意 guest OS</td><td>~秒</td><td>完整 VM</td></tr>
+              <tr><td><strong>Function Call</strong></td><td>预热执行池</td><td>无状态简单调用</td><td>避免按请求冷启动</td><td>轻量</td></tr>
+              <tr><td><strong>Container</strong></td><td>Docker 兼容 + EROFS</td><td>常规代码任务</td><td>镜像数据按需加载</td><td>容器级</td></tr>
+              <tr><td><strong>microVM</strong></td><td>Firecracker + overlaybd</td><td>需要更强隔离的任务</td><td>支持快照恢复</td><td>VM 级</td></tr>
+              <tr><td><strong>fullVM</strong></td><td>QEMU</td><td>需要完整 OS 能力</td><td>通用性优先</td><td>完整 VM</td></tr>
             </tbody>
           </table>
         </div>
 
         <p>
-          切换衬底只需改 SDK 一个参数 —— Agent 代码不感知。这条抽象的工程价值：<strong>fail-soft</strong>。Function Call 衬底跑某个任务出现资源不足 → SDK 自动 fallback 到 Container；Container 撞到 syscall 黑名单 → fallback 到 microVM。<em>失败的代价是慢一点而非崩溃</em>。
+          调用方可以通过 SDK 参数选择衬底，而命令执行、文件传输和 TTY 交互保持同一套接口。报告说明了这种可切换性，但没有描述 Function、Container 与 microVM 之间的自动 fallback 机制。
         </p>
 
         <!-- ================== VIZ: 四衬底雷达图 ================== -->
@@ -171,15 +165,15 @@
         </div>
 
         <!-- ================== §3 分层镜像 ================== -->
-        <h3 id="layered">3. 分层镜像存储：让 10w 沙箱共享同一份 base</h3>
+        <h3 id="layered">3. 分层镜像存储：复用只读基础层</h3>
         <p>
-          如果每个 sandbox 独立装一份 5GB 镜像，10w 并发 = 500TB 存储 + 海量重复传输。DSec 的核心优化：<strong>"只读基础层 + 写时复制 upper 层"的两级分层</strong>，base 层在所有 sandbox 间共享。
+          为避免每个 sandbox 重复下载和保存完整镜像，DSec 使用<strong>"只读基础层 + 写时复制层"</strong>的分层设计，让不同实例复用基础数据。
         </p>
 
         <ul>
           <li><strong>Container 衬底</strong>：base image 与 filesystem commit 作为只读 EROFS 层挂载到 overlayfs <code>lowerdirs</code>；3FS 提供后端存储；元数据放本地、数据块按需 fetch；</li>
           <li><strong>microVM 衬底</strong>：使用 <code>overlaybd</code> 磁盘格式 —— 只读基础层在 3FS 上跨实例共享，写操作落到本地 copy-on-write 层；</li>
-          <li>这种 snapshot 是<em>可链式</em>的：base → middle → leaf，迭代镜像版本时新版只需新增一层 middle，几毫秒就能起一个新 sandbox。</li>
+          <li>快照可以形成 base → middle → leaf 的链式层级；报告称这种设计支持毫秒级恢复，但没有给出创建新 sandbox 的统一启动时间。</li>
         </ul>
 
         <div class="callout callout-info">
@@ -189,29 +183,21 @@
             <li><strong>EROFS（文件系统层）</strong>：Container 衬底是 Linux namespace + cgroup，guest 进程<em>直接访问 host kernel 的 file system</em>。所以分层用<em>文件粒度</em> overlay：base 层提供只读文件树，upper 层接收写。<em>简单高效，但需要 host kernel 信任 guest</em>；</li>
             <li><strong>overlaybd（块设备层）</strong>：microVM 衬底是真正的 VM，guest 看到的是<em>虚拟硬盘</em>。host 不能直接给 file system，必须给"块设备"。所以分层在<em>block 粒度</em>：base 层是只读 disk image，upper 层接收 block 级 CoW。<em>开销稍高，但隔离更彻底（guest 不能 escape 到 host fs）</em>。</li>
           </ol>
-          <p>合起来：<strong>同一份 base 镜像在 3FS 上存一次，被任意多个 Container（通过 EROFS）和 microVM（通过 overlaybd）共享</strong>。3FS 的角色是"中央分布式存储"，和 Ch19 teacher weight offload 是同一个 3FS 集群 —— 复用基础设施。</p>
+          <p>合起来看，Container 通过 EROFS、microVM 通过 overlaybd 使用 3FS 上的只读数据，并把各自的写入留在本地 CoW 层。报告没有说明沙箱镜像与 Ch19 的 teacher 状态是否部署在同一个物理 3FS 集群。</p>
         </div>
 
         <!-- ================== §4 高密度优化 ================== -->
-        <h3 id="density">4. 高密度优化：把单节点装箱推到 ~100</h3>
-        <p>要把单集群推到 10w+ 并发 sandbox，DSec 攻克两个非显然的瓶颈：</p>
+        <h3 id="density">4. 高密度优化：内存与锁竞争</h3>
+        <p>为提高并发密度，DSec 重点处理了两个容易被忽略的瓶颈：</p>
 
         <ol>
-          <li><strong>页缓存重复</strong>：虚拟化环境下 host kernel 与 guest kernel <em>各自缓存同一份磁盘 page</em>，10w 并发浪费数 TB 物理内存。DSec 通过 <em>memory reclamation</em> 让 host 可以定期回收 guest 不再使用的 pages → <strong>overcommit 安全可行</strong> → 同样物理内存能装的 sandbox 数翻倍；</li>
-          <li><strong>Spinlock 抢占</strong>：container runtime（runC、containerd）的内部锁是<em>单 sandbox CPU 开销</em>的主要来源。10w 并发起停时，工作线程在锁上自旋的时间能占到总 CPU 的 30%+。DSec 改写了关键路径让锁竞争大幅下降 → per-host 装箱密度提升数倍。</li>
+          <li><strong>缓存与内存压力</strong>：虚拟化环境中的重复缓存会降低可用内存。DSec 使用 memory reclamation，让宿主机回收 guest 不再使用的页，从而支持更稳妥的内存超配；</li>
+          <li><strong>Spinlock 竞争</strong>：大量 sandbox 并发运行时，运行时内部的锁竞争会消耗 CPU。DSec 优化相关关键路径，以提高单机装箱密度。</li>
         </ol>
 
-        <div class="numex">
-          <span class="numex-tag">数值演练 · 装箱密度的物理上限</span>
-          单节点 384 核 + 1.5TB DRAM：
-          <ul>
-            <li>每 sandbox 平均 1 核 + 8GB DRAM（保守估计）；</li>
-            <li>核数限制：384 个；</li>
-            <li>内存限制：1.5TB / 8GB = 192 个；</li>
-            <li>合计上限 192 sandbox/节点；</li>
-            <li>10w 并发 → 至少 ~520 节点 → 集群规模可承担；</li>
-          </ul>
-          但<strong>没有 page-cache reclamation 时</strong>每 sandbox 实际占 ~16GB（host + guest 双份缓存），密度降到 96 → 集群规模翻倍 → 成本翻倍。这就是为什么"看似边缘"的 memory reclamation 是装箱密度的关键。
+        <div class="callout callout-info">
+          <div class="callout-title">如何理解“装箱密度”</div>
+          <p>它不是一个固定的“每节点 sandbox 数”，而是 CPU、内存、缓存、镜像访问与任务负载共同作用的结果。报告只说明 memory reclamation 和 spinlock 优化显著提高了密度，没有给出可跨硬件复用的节点配置或倍数。</p>
         </div>
 
         <!-- ================== §5 trajectory log ================== -->
@@ -223,22 +209,19 @@
         <ol>
           <li><strong>Client Fast-Forwarding（抢占恢复）</strong>：训练任务被 preempt 时 sandbox 资源保留；恢复时 client（agent）重新连接到 sandbox，<em>直接 replay 已完成命令的缓存结果</em>，避开 non-idempotent 重放错误（不会重新跑 <code>rm -rf temp/</code> 一遍）；</li>
           <li><strong>Fine-Grained Provenance（细粒度溯源）</strong>：每个状态变更都可追溯到具体 trajectory 与 step。debug 训练数据时关键 —— "为什么这个 specialist 学到了奇怪行为"，可以一路回溯到具体的 sandbox session；</li>
-          <li><strong>Deterministic Replay（确定性重放）</strong>：任何历史 session 都能完全复现。这条与 Ch9 的 bit-identical 是同一思路：<em>训练出问题，只有可复现才能 debug</em>。</li>
+          <li><strong>Deterministic Replay（确定性重放）</strong>：按日志重放已记录的交互，便于复查和调试；若执行依赖外部网络、时间或未受控随机源，仍需额外固定这些条件。</li>
         </ol>
 
         <div class="callout callout-good">
-          <div class="callout-title">为什么这是 V4 的"隐形护城河"</div>
+          <div class="callout-title">DSec 的工程价值</div>
           <p>
-            Ch18 OPD 的算法在原理上不复杂；难的是<strong>同时跑 10+ 个 trillion teacher + student + reward + 10w+ sandbox</strong> 仍能 24/7 不掉链子。DSec 把"执行环境"工程化到与训练框架同一抽象层级，是 agentic post-training 真正能规模化的前提。
-            <br>
-            竞争对手可以读论文学 OPD 算法，但要复刻 V4 的 post-training 吞吐，必须自己重写一个 DSec 等价物 —— 这是开源社区里几乎没人做过的工程量级。
+            OPD 负责整合不同 teacher 的分布，而 DSec 负责执行带工具调用和代码运行的 trajectory。统一衬底接口、分层镜像和 trajectory log 共同降低了大规模 agentic post-training 的调度与恢复成本。论文没有提供与其他沙箱平台的横向对比，因此这里不把它表述为独有能力。
           </p>
         </div>
 
         <h3 id="summary">6. 一句话总结</h3>
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
-          <p>DSec 把"沙箱"从 OPD 工作流的<em>外部依赖</em>提升到与训练框架同等抽象级别 —— <strong>四衬底覆盖"快"到"重"的全谱、单 SDK 让 agent 代码不感知底层、3FS + EROFS + overlaybd 让 10w+ sandbox 共享同一份 base、trajectory log 让抢占恢复 / 溯源 / 重放都成立</strong>。Part 4 至此结束 —— 从 Ch16 的 specialist 备料到 Ch20 的沙箱执行，五章合起来定义了 V4 在后训练阶段<em>"算法 + 工程 + 沙箱"</em>三位一体的护城河。</p>
+          <p>DSec 把 agentic 工作流的执行环境纳入统一平台：<strong>四种衬底覆盖不同的性能、隔离与兼容性需求，单一 SDK 统一交互方式，3FS + EROFS + overlaybd 支持镜像分层和按需加载，trajectory log 则服务于恢复、溯源与重放</strong>。从 Ch16 的 specialist 训练到 Ch20 的沙箱执行，这五章分别解释了 V4 后训练的模型、算法与系统组成。</p>
         </div>
 
       </article>
@@ -253,7 +236,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: 四种沙箱衬底的雷达图

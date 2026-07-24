@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch2">
 
@@ -33,13 +33,13 @@
       <article id="ch2" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第一部分 · 架构 · 02</div>
         <h2 class="chapter-title">DeepSeekMoE 与 MTP — V3 留下的两件遗产</h2>
-        <p class="chapter-sub">DeepSeekMoE 与 Multi-Token Prediction 仍是 V4 的脊梁；但 MoE 的细节被改了五处，每一处都对应一个具体的"V3 时代撞过的墙"。</p>
+        <p class="chapter-sub">DeepSeekMoE 与 Multi-Token Prediction 仍是 V4 的脊梁；V4 同时调整了路由打分、负载均衡、节点约束和早层路由等细节。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂这两件遗产</div>
           <p class="term-name">DeepSeekMoE + MTP = V3 留给 V4 的两根脊梁</p>
-          <p>FFN 层的稀疏激活骨架 + 训练信号致密化的辅助头。两者在 V3 上验证过，V4 完全保留主体，只在 MoE 的<strong>5 个细节</strong>上动刀以适配新规模（384 专家 / 1M 序列）。</p>
+          <p>前者提供 FFN 层的稀疏激活骨架，后者增加未来 token 的辅助预测目标。V4 沿用两者的主体设计，并调整了若干 MoE 与 MTP 配置；报告没有把每项调整都归因于 384 专家或 1M 上下文。</p>
           <dl>
             <dt>MoE（Mixture-of-Experts，专家混合）</dt>
             <dd>把单个 dense FFN 拆成 $N$ 个并行专家，每个 token 由<em>路由器</em> (router) 打分选 top-$k$ 个专家激活。<em>总参数大、激活参数小</em> —— 模型容量上去但单步算力没涨。</dd>
@@ -51,12 +51,12 @@
             <dd>传统 MoE 在 loss 里加一项"惩罚不均衡"，会和主任务竞争。V3 改成给每个专家维护一个偏置 $b_i$，根据"被分配到的 token 数 vs 期望"<em>在线</em>调整 —— 不动主 loss、闭环平衡专家。</dd>
 
             <dt>MTP（Multi-Token Prediction，多 token 预测）</dt>
-            <dd>主模型旁挂一个轻量 head，让它同时预测<em>未来第 2、3、… 个</em>token（不止下一个）。同一份 hidden state 给多份梯度，<em>训练信号密度 ×D</em>，且强迫 hidden state 编码更长程语义。V3 验证有效，V4 完全沿用，只调权重 schedule。</dd>
+            <dd>在标准 next-token objective 之外增加未来 token 的辅助预测。V4 的 MTP depth 为 1，即一个辅助预测模块；报告称其配置与 V3 相同。MTP loss weight 在大部分训练中为 0.3，学习率衰减开始后降为 0.1。</dd>
 
             <dt>Hash Routing（Roller 2021）</dt>
-            <dd>不学习路由，按 token id 的 hash mod 专家数直接派单。用在<strong>前 3 层 MoE</strong>，避开"早期 router 没学好就抖"的问题，又享受 MoE 稀疏激活红利。</dd>
+            <dd>不从当前 hidden state 学习 affinity，而是用关于 input token ID 的预定义 hash function 决定目标专家。V4 在<strong>前 3 个 MoE 层</strong>使用该策略；报告没有进一步说明它是为了避免“早期 router 抖动”。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>V3 已经做对的不动；V4 只在 5 个被新规模暴露的细节上补漏 —— 打分函数、序列内均衡、路由通信预算、前几层路由方式、MTP 权重 schedule。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>V4 沿用 DeepSeekMoE 与 MTP 主体，同时修改路由打分函数、加入轻量序列级 balance loss、取消 routing target node 数量约束，并把最初 3 个 MoE 层改为 hash routing。</div>
         </div>
 
         <!-- ================== 论文图：V4 整体架构 ================== -->
@@ -99,12 +99,12 @@
           细粒度专家的"组合数指数增长"具体多大？
           GShard：$\binom{8}{2} = 28$ 种组合。
           DeepSeekMoE V3（256 专家、激活 8）：$\binom{256}{8} \approx 4.1 \times 10^{14}$。
-          V4-Pro（<strong>384 专家、激活 9</strong>）：$\binom{384}{9} \approx 8.5 \times 10^{17}$ —— 比 GShard 多 16 个数量级。
-          组合数 ≈ 模型可表达的"专家分工模式数"，这就是细粒度的红利来源。
+          V4-Pro（<strong>384 个 routed experts、激活 6 个</strong>）：理论组合上限为 $\binom{384}{6}$。
+          这个组合数只能说明可选专家子集很多，并不等同于模型实际学到的专家分工数量。
         </div>
 
         <p>
-          V4 的总专家数从 V3 的 256 涨到 <strong>384</strong>，激活专家从 8 涨到（Pro）9 / （Flash）8，总参数从 671B 涨到 1.6T。规模一上来，V3 的几个 trick 开始显出毛刺，于是 V4 在 5 个细节上动了刀。
+          V4-Pro 使用 <strong>384</strong> 个 routed experts，V4-Flash 使用 256 个；两者均为每 token 激活 6 个 routed experts。V4 在路由打分、负载均衡、节点限制、浅层路由和 MTP 权重调度上进一步调整。
         </p>
 
         <!-- ================== §2 改动 ① 打分函数 + Demo ================== -->
@@ -112,10 +112,10 @@
 
         <p><strong>V3 的做法</strong>：路由 logits 经过 $\text{Sigmoid}(\cdot)$ 得到打分，再做 top-$k$ 选择和重新归一化。</p>
 
-        <p><strong>它哪里不够</strong>：</p>
+        <p><strong>两种函数的数学差异</strong>：</p>
         <ul>
           <li>Sigmoid 上界是 1，<em>logits 大到一定程度就饱和</em>。当模型确信"这个 token 应该去专家 #42"时，logit 可能是 8、12、20 —— 但 Sigmoid 都吐 ≈1，不再有区分度。</li>
-          <li>专家数从 256 → 384，"top-9 专家间的细微优劣"更重要。Sigmoid 在饱和区<strong>梯度趋零</strong>，路由器学不到"这个专家比那个稍强一点"。</li>
+          <li>Sqrt(Softplus) 始终为正且无上界，在正半轴上以平方根量级增长；报告没有给出把函数替换与专家池规模绑定的消融解释。</li>
         </ul>
 
         <p><strong>V4 改成</strong>：</p>
@@ -130,9 +130,9 @@
           <p>这条公式是<strong>"两层活塞"</strong>：</p>
           <ol>
             <li><strong>下层 Softplus</strong>：$\log(1+e^{\ell_i})$ —— 把任意 logit 推到 $(0, +\infty)$，<em>没有上界</em>，logit 越大 score 越大，绝不饱和。logit 极小时趋零，自动屏蔽弱专家。</li>
-            <li><strong>上层 sqrt</strong>：把 Softplus 的"线性尾巴"压成"平方根尾巴"，<em>给一个软上界</em> —— score 仍单调上升，但增长率随 $\ell$ 越来越慢。</li>
+            <li><strong>上层 sqrt</strong>：把 Softplus 的线性尾部压成平方根量级。score 仍无上界且单调上升，只是增长率逐渐降低。</li>
           </ol>
-          <p>没有上层 sqrt 的话，单个超强专家的分数会把其他专家在归一化后挤到接近 0，等同于"硬选 1 个专家"，丢掉了多专家协作。<strong>无上界解决饱和、软上界保多专家协作 —— 缺一不可</strong>。</p>
+          <p>这些性质能解释它与 Sigmoid 的形状差异，但 V4 报告没有提供“为何必须加 sqrt”或“因此保住多专家协作”的独立实验，不能把数学直觉写成已验证因果。</p>
         </div>
 
         <!-- VIZ 1: Sigmoid vs Sqrt(Softplus) -->
@@ -192,7 +192,7 @@
             <line x1="92" y1="68" x2="116" y2="68" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3"/>
             <text x="122" y="71" font-size="11" fill="#1c2433" font-family="Inter">Softplus（无上界，线性尾）</text>
             <line x1="92" y1="88" x2="116" y2="88" stroke="#16a34a" stroke-width="2"/>
-            <text x="122" y="91" font-size="11" fill="#1c2433" font-family="Inter">√Softplus（V4，软上界）</text>
+            <text x="122" y="91" font-size="11" fill="#1c2433" font-family="Inter">√Softplus（V4，无界、次线性增长）</text>
           </svg>
           <div class="viz-controls">
             <label>当前 logit ℓ
@@ -201,7 +201,7 @@
             <span class="viz-readout" id="vs-readout">…</span>
           </div>
           <p class="viz-caption">
-            <strong>把滑条拉到 ℓ=8 看三个读数</strong>：Sigmoid≈1.000（已饱和、梯度近零），Softplus≈8.000（无界），√Softplus≈2.83（软上界、仍可区分）。
+            <strong>把滑条拉到 ℓ=8 看三个读数</strong>：Sigmoid≈1.000（已接近饱和），Softplus≈8.000（无界），√Softplus≈2.83（无界但增长更慢）。
             两个专家的 logits 一个 8 一个 12，Sigmoid 都给 ≈1 看不出谁强；√Softplus 分别给 2.83 和 3.46，<em>仍保留区分度</em>。
           </p>
         </div>
@@ -216,34 +216,21 @@
           b_i \leftarrow b_i + \alpha \cdot \big(\bar{f}^{*} - \bar{f}_i\big)
           $$
         </div>
-        <p>$b_i$ 是专家 $i$ 的动态偏置，$\bar{f}_i$ 是过去 $T$ 步内被分给专家 $i$ 的 token 比例，$\bar{f}^* = k/N$ 是均匀目标比例。如果 $i$ 被分得太少，$b_i$ 上调，下一步打分就提升一点 —— <em>不动主 loss，闭环调控全局负载</em>。</p>
+        <p>$b_i$ 是专家 $i$ 的动态偏置，负载高于目标时下调、低于目标时上调，从而在不向主任务 loss 加入大权重辅助项的情况下调节路由。V4 的 bias update speed 为 0.001。</p>
 
-        <p><strong>它在 V4 规模上撞墙</strong>：$b_i$ 的更新粒度是<em>跨步全局</em>的。但 V4 的训练序列动辄 64K~1M 长，<strong>同一条序列内</strong>可能强烈偏好某些专家（比如一篇 Python 长文档全程偏向 code 专家）。aux-free 看不到这种"序列内偏置"—— 它只知道"过去 1024 步全局均衡"，对单序列内 6× 的不均衡袖手旁观。</p>
+        <p><strong>V4 的补充</strong>：全局负载均衡不保证每条序列内部都不过度集中于少数专家。V4 因此加入权重仅为 0.0001 的轻量 sequence-wise balance loss，用于防止单条序列中的极端失衡。</p>
 
         <div class="numex">
-          <span class="numex-tag">具体例子</span>
-          一条 256K 的 Python 训练序列、384 专家。理想分配：每个专家 $\sim 256\text{K} \times 9 / 384 = 6000$ 个 token-激活次。
-          实际：5 个 code-相关专家可能各拿 36000 次（6×），其余 379 个专家平均拿 5400 次。
-          aux-free 的统计窗口看的是<em>跨序列平均</em>：1024 步乘 256K → 全局尺度上 code 专家被均摊回去，看起来是均衡的。
-          于是 aux-free 不会调偏置，但单条序列内的 5 个 code 专家已经被严重过载 —— GPU expert parallelism 因此抖动。
+          <span class="numex-tag">如何理解两种机制</span>
+          aux-loss-free bias 负责从全局统计上调节各专家负载；sequence-wise balance loss 则约束单条序列内部不要出现极端集中。两者作用范围不同。报告没有披露某类文档造成 6× 失衡、统计窗口为 1024 步或具体 GPU 抖动幅度。
         </div>
 
         <p><strong>V4 加了什么</strong>：</p>
-        <div class="math-block">
-          $$
-          \mathcal{L}_{\text{seq-bal}} \;=\; \beta \sum_{i=1}^{N} f_i^{(\text{seq})} \cdot p_i^{(\text{seq})}
-          $$
-        </div>
+        <p>一项轻量的 sequence-wise balance loss，训练配置中的权重为 0.0001。报告没有在正文展开其完整公式，因此这里不把某个常见 MoE balance loss 公式当成 V4 的逐项定义。</p>
 
         <div class="callout callout-info">
-          <div class="callout-title">📖 公式白话翻译</div>
-          <p>这条 loss 是<strong>"在单序列尺度对 router 罚一下不均衡"</strong>：</p>
-          <ul>
-            <li>$f_i^{(\text{seq})}$ = 这条序列里被分给专家 $i$ 的 token 比例（离散的统计值，不可微）；</li>
-            <li>$p_i^{(\text{seq})}$ = 这条序列里 router 给专家 $i$ 的平均概率（可微，梯度从这里走）；</li>
-            <li>两者相乘求和：如果某个 $i$ 已经分得太多（$f_i$ 大），且 router 还在给它高概率（$p_i$ 大），loss 就大，反向传播会<em>让 router 降它的 $p_i$</em>。</li>
-          </ul>
-          <p><strong>aux-free 管全局，seq-bal 管局部</strong>，两层互补 —— 这是 V4 在长序列时代的必要补丁。$\beta$ 取 $10^{-4}$ 量级，仅作"温和提示"，不喧宾夺主。</p>
+          <div class="callout-title">如何读这项改动</div>
+          <p>auxiliary-loss-free routing 仍是主负载均衡机制；新增的 sequence-wise loss 只负责防止单条序列中的极端失衡，权重为 $10^{-4}$。报告没有展开公式或消融，因此这里保留功能与配置，不推导更细的梯度形式。</p>
         </div>
 
         <!-- ================== §4 取消节点上限 ================== -->
@@ -251,13 +238,12 @@
 
         <p><strong>V3 的限制</strong>：每个 token 路由的专家最多落在 $M$ 个不同的硬件节点上（V3 取 $M=4$）。这是为了控全节点 all-to-all 通信成本 —— 通信节点越多越贵。</p>
 
-        <p><strong>它的代价</strong>：当 token 真正"想去"的 top-9 专家分布在 5 个节点时，第 5 个节点的专家被强行替换成"次优 + 同节点"专家。<em>路由质量被通信预算扭曲</em>。</p>
+        <p><strong>它的代价</strong>：当 token 选中的 6 个专家分布在超过节点上限的设备时，部分专家会因通信约束被替换，路由选择因此不再只由模型分数决定。</p>
 
         <div class="numex">
           <span class="numex-tag">数值演练</span>
-          384 专家均匀分布在 32 个节点（每节点 12 专家）。token 选 top-9 时，"<em>最理想</em> 9 个专家恰好都在 4 个节点"的概率非常低（远低于 1%）。
-          也就是说：<strong>V3 的 $M=4$ 限制对绝大多数 token 都生效</strong>，被强制替换的"次优专家"占比可能高达 30%+。
-          V4 取消上限后，路由质量回到模型实际想要的分布，代价由下层 MegaMoE all-to-all 优化（Ch07）兜住。
+          <strong>示意假设：</strong>若专家均匀分布在多个节点，6 个高分专家可能跨越节点上限，因而触发替换。具体触发率取决于专家部署、token 分布和路由相关性；V4 报告没有给出“30%+”之类的比例。
+          V4 取消节点上限，使专家选择不再被这一硬约束截断；相应通信成本由底层专家并行实现处理。
         </div>
 
         <p><strong>V4 的解法</strong>：直接取消上限，让 token 路由到任何专家。代价由 Ch7 的 <strong>MegaMoE + DualPipe + 通信压缩</strong>承担 —— 基础设施够便宜了，所以模型层不需要再做这种妥协。这就是<em>架构与系统协设</em>：上层不给下层让步，下层兜住成本。</p>
@@ -272,49 +258,43 @@
         <p><strong>V4 改成 Hash Routing（Roller 2021）</strong>：</p>
         <div class="math-block">
           $$
-          \text{expert}(t) \;=\; \mathrm{hash}(\mathrm{token\_id}(t)) \bmod N_{\text{hash}}
+          \mathcal{E}(t) \;=\; \mathrm{HashRoute}\!\left(\mathrm{token\_id}(t)\right)
           $$
         </div>
 
         <div class="callout callout-info">
           <div class="callout-title">📖 公式白话翻译</div>
-          <p>路由<strong>不学</strong>，由 token id 直接哈希到一个专家：</p>
+          <p>$\mathcal{E}(t)$ 表示预定义 hash function 为 token $t$ 指定的目标专家集合。报告没有公开具体 hash 公式，因此不将它简化成只选择一个专家的 <code>id mod N</code>。</p>
           <ul>
-            <li><em>不需要梯度</em>训练 router → 没有"早期 router 抖"问题；</li>
-            <li>哈希在统计上均匀 → 天然负载均衡，不需要 aux-free / seq-bal；</li>
-            <li>仍享受 MoE 的稀疏激活红利。</li>
+            <li>相同 token id 的映射是固定的，不依赖当前 hidden state；</li>
+            <li>V4 在前 3 个 MoE 层使用 Hash routing，后续层使用学习型 routing；</li>
+            <li>实际负载还取决于 token 频率和 hash 映射，不能仅凭“哈希”断言天然均衡。</li>
           </ul>
-          <p><strong>关键洞察</strong>：学习型路由的不稳定<em>主要发生在前 1-2 层</em>，因为这些层的 hidden state 还没成型，路由器拿到的特征噪声大。Hash 路由用"反正这层学不了好路由"的事实，干脆放弃学习 —— 是<em>"知道哪里不该学"</em>的典型应用。前 3 层用 Hash MoE，后续层用学习型 MoE。</p>
+          <p>报告说明这是用 Hash MoE 替换初始若干 block 的 dense FFN，但没有把动机归因于“前层 hidden state 噪声”或提供早层路由稳定性消融。</p>
         </div>
 
         <!-- ================== §6 MTP ================== -->
-        <h3 id="mtp">6. MTP（Multi-Token Prediction）：为什么完全不动</h3>
+        <h3 id="mtp">6. MTP（Multi-Token Prediction）：沿用 V3 配置</h3>
 
-        <p>MTP 模块的工作机制：在主模型旁边接一个轻量 head $h_{\text{MTP}}$，让它预测<strong>未来第 2、3、… 个 token</strong>（不止下一个）。损失为：</p>
+        <p>MTP 在主 next-token objective 之外增加未来 token 的监督。一般架构可以串联多个预测模块；V4 的具体配置是 depth = 1，因此只有一个辅助 MTP 模块。</p>
         <div class="math-block">
           $$
-          \mathcal{L}_{\text{MTP}} \;=\; \sum_{j=2}^{D} \alpha_j \cdot \mathrm{CE}\big(\hat{y}_{t+j},\; y_{t+j}\big), \quad \alpha_j \to 0\ \text{as}\ j\ \text{增大}
+          \mathcal{L} \;=\; \mathcal{L}_{\text{NTP}} + \lambda_{\text{MTP}}\,\mathcal{L}_{\text{MTP}}
           $$
         </div>
 
         <div class="callout callout-info">
           <div class="callout-title">📖 公式白话翻译</div>
-          <p>三件事：</p>
+          <p>三个要点：</p>
           <ul>
-            <li><strong>预测多个未来 token</strong>：$\hat y_{t+j}$ 是从位置 $t$ 出发预测未来第 $j$ 个；</li>
-            <li><strong>逐个算交叉熵</strong>：$\mathrm{CE}(\cdot)$ 是常规 LM loss；</li>
-            <li><strong>越远权重越低</strong>：$\alpha_j$ 随 $j$ 增大递减，远 token 监督信号弱（毕竟越远越难预测）。</li>
+            <li><strong>主目标</strong>：$\mathcal{L}_{\text{NTP}}$ 是标准 next-token prediction；</li>
+            <li><strong>辅助目标</strong>：$\mathcal{L}_{\text{MTP}}$ 来自 depth-1 MTP 模块；</li>
+            <li><strong>权重</strong>：$\lambda_{\text{MTP}}$ 大部分训练为 0.3，在学习率衰减开始后为 0.1。</li>
           </ul>
-          <p>同一份 hidden state 给 $D$ 份梯度，<em>训练信号密度 $\times D$</em>；同时强迫 hidden state 编码"未来一段语义弧线"，而不只是"下一个词"。</p>
+          <p>报告没有给出“训练信号密度乘以 $D$”或远位置权重递减的公式，不能把一般化 MTP 写成 V4 的具体配置。</p>
         </div>
 
-        <p>V4 的 MTP loss 总权重维持 0.3，<em>学习率衰减阶段降到 0.1</em>。降权重的逻辑是：</p>
-        <ul>
-          <li>训练前期 hidden state 不稳，MTP 提供致密梯度有助于快速塑形；</li>
-          <li>训练后期主 loss 已经在精修，MTP 的"远 token 监督"开始与主目标产生小幅冲突 —— 降权让主 loss 主导。</li>
-        </ul>
-
-        <p>因此 V4 完全不改 MTP 模块本身，只调权重 schedule —— <strong>已经被 V3 反复验证、没有失效模式被暴露的组件，就不要动</strong>。</p>
+        <p>V4 的 MTP loss weight 大部分训练为 0.3，学习率衰减开始后降为 0.1。报告没有解释降权的因果机制，也没有说这一 schedule 相比 V3 被修改；它只明确说明 MTP 配置沿用 V3。</p>
 
         <!-- ================== §7 汇总 ================== -->
         <h3 id="summary">7. 五处改动的汇总</h3>
@@ -325,21 +305,20 @@
               <tr><th>组件</th><th>V3 行为</th><th>V4 行为</th><th>对应解决的具体问题</th></tr>
             </thead>
             <tbody>
-              <tr><td>路由打分</td><td>Sigmoid</td><td><strong>Sqrt(Softplus)</strong></td><td>384 专家间饱和区无区分度</td></tr>
-              <tr><td>负载均衡</td><td>仅 aux-free</td><td>aux-free + 序列内 balance loss</td><td>长序列内单序列偏置 aux-free 看不见</td></tr>
-              <tr><td>路由节点上限</td><td>$M=4$</td><td><strong>取消</strong></td><td>路由质量不再被通信预算扭曲</td></tr>
-              <tr><td>前几层 FFN</td><td>Dense</td><td>Hash-Routed MoE</td><td>避免学习型路由早期不稳，又享受 MoE 红利</td></tr>
-              <tr><td>MTP 模块</td><td>权重 0.3</td><td>权重 0.3，衰减期降 0.1</td><td>主 loss 后期减少 MTP 干扰</td></tr>
+              <tr><td>路由打分</td><td>Sigmoid</td><td><strong>Sqrt(Softplus)</strong></td><td>更换专家 affinity 的打分函数</td></tr>
+              <tr><td>负载均衡</td><td>aux-loss-free</td><td>aux-free + 序列级 balance loss</td><td>增加轻量序列级均衡约束</td></tr>
+              <tr><td>路由节点上限</td><td>$M=4$</td><td><strong>取消</strong></td><td>不再限制每个 token 的目标节点数</td></tr>
+              <tr><td>前几层 FFN</td><td>Dense</td><td>Hash-Routed MoE</td><td>前 3 个 MoE 层使用预定义 hash 路由</td></tr>
+              <tr><td>MTP 模块</td><td>配置基线</td><td>depth 1；loss weight 0.3，衰减期降至 0.1</td><td>配置沿用 V3，报告未给单独消融</td></tr>
             </tbody>
           </table>
         </div>
 
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
           <p>
             <strong>V3 的 MoE 主体被完整继承，但 V4 在 5 个细节上"补漏"</strong>：
-            打分函数换成不饱和的 Sqrt(Softplus)、加序列内 balance、取消通信驱动的路由限制、把 dense 早层换成 hash MoE、MTP 权重做 schedule。
-            每一处改动都对应一个 V3 时代被新规模（384 专家、1M 序列）暴露出来的具体毛刺。
+            打分函数改为 Sqrt(Softplus)、加入轻量序列级 balance loss、取消 routing target node 数量约束，并把最初 3 个 MoE 层改为 hash routing；MTP 配置沿用 V3。
+            报告明确给出了这些配置变化，但没有为每一项都提供独立消融或单一因果解释。
           </p>
         </div>
 
@@ -355,7 +334,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ================== Ch02 内联交互脚本 ================== -->
 <script>

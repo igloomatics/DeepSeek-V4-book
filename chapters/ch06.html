@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch6">
 
@@ -33,16 +33,15 @@
       <article id="ch6" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第一部分 · 架构 · 06</div>
         <h2 class="chapter-title">Muon — 矩阵参数的指南针</h2>
-        <p class="chapter-sub">为什么 AdamW 在大矩阵参数上"偏科"，Muon 怎么用 Newton–Schulz 一招治本，以及为什么 V4 还要把它改成 Hybrid 两段式。</p>
+        <p class="chapter-sub">Muon 将矩阵更新近似正交化；V4 用两组 Newton–Schulz 系数，在固定 10 步内兼顾快速收敛与末段稳定。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂 Muon</div>
-          <p class="term-name">Muon = Matrix-aware update via Orthonormalization（让更新矩阵的奇异值全是 1）</p>
+          <p class="term-name">Muon = Matrix-aware update via approximate orthogonalization（让更新矩阵的奇异值向 1 靠近）</p>
           <p>
-            一句话：<strong>把每步更新矩阵 $M$ 的奇异值全部抹成 1，只留方向、扔掉幅度</strong>。
-            这样无论梯度的"主方向"多猛，最终落到权重上的更新都是各方向同权 —— 治掉了 AdamW 在大矩阵参数上"主方向独大"的偏科病。
-            技术核心是用 <strong>Newton–Schulz 5 次多项式迭代</strong> 替代 SVD，10 步固定迭代就能完成，FLOPs 开销 ~5%。
+            一句话：<strong>Muon 用 Newton–Schulz 多项式近似更新矩阵的极分解，将其奇异值推向 1</strong>。
+            V4 前 8 步使用激进系数，后 2 步使用在 1 附近稳定的系数。报告称结果是近似正交化，没有给出全模型统一的误差上界或 FLOPs 百分比。
           </p>
           <dl>
             <dt>AdamW（被替代的对象）</dt>
@@ -55,18 +54,18 @@
             <dd>用矩阵多项式 $M \leftarrow aM + b(MM^T)M + c(MM^T)^2 M$ 反复套，把奇异值往 1 上推。本质是<em>对每个 $\sigma$ 独立施加一个标量五次多项式</em> $p(\sigma) = a\sigma + b\sigma^3 + c\sigma^5$。$U, V$ 自始至终不变。<em>避免 SVD 的 $O(n^3)$ 代价</em>。</dd>
 
             <dt>Hybrid 两段式（V4 的工程改进）</dt>
-            <dd>前 8 步用<em>激进系数</em> $(3.4445, -4.7750, 2.0315)$ 把"远离 1 的奇异值"快速抓回 1 附近；后 2 步切回<em>标准系数</em> $(2, -1.5, 0.5)$ 在 1 邻域做二阶收敛精修。<strong>10 步固定 = 编译期常数</strong>，对 TileLang kernel / CUDA graph 友好。</dd>
+            <dd>前 8 步用<em>激进系数</em> $(3.4445, -4.7750, 2.0315)$ 把远离 1 的奇异值快速推向目标区间；后 2 步切换到 $(2, -1.5, 0.5)$，在 1 附近继续收敛。报告明确采用固定 8+2 步，但没有把这一选择归因于 TileLang 或 CUDA graph。</dd>
 
             <dt>Nesterov 动量</dt>
             <dd>$N_t = \mu M_t + G_t$（先按 momentum 走一步再用当前梯度修正）。比标准动量多一阶前瞻信息，长期收敛更快。Muon 论文标配。</dd>
 
             <dt>RMS 重缩放因子 $\sqrt{\max(n,m)}\cdot\gamma$</dt>
-            <dd>NS 输出的 Frobenius 范数 $= \sqrt{\min(n,m)}$ —— <em>矩阵越扁、范数越小</em>。乘 $\sqrt{\max(n,m)}$ 抹平 shape 依赖，再乘 $\gamma\approx 0.2$ 调到与 AdamW 同档 lr。<strong>跨层一个 lr 通用</strong>。</dd>
+            <dd>算法将近似正交化后的更新乘以 $\sqrt{\max(n,m)}\gamma$，以重缩放更新的 RMS，并复用 AdamW 的学习率设置。V4 的训练配置将更新矩阵 RMS 设为 0.18；这是指定超参数，不代表任意形状都能自动获得完全相同的最优更新幅度。</dd>
 
             <dt>QK-Clip（被扔掉的补丁）</dt>
-            <dd>V3 时代的稳定性补丁：把 $QK^T/\sqrt{d_k}$ 强制 clamp 到 $[-c, c]$ 防 softmax 溢出。V4 在 attention 内对 Q/K 各加一次 RMSNorm 后，$|q\cdot k|\le d_h$ 自然有界，<em>QK-Clip 的整段 if-else 直接删掉</em> —— 这就是工程哲学："能根因消除就不要再加补丁"。</dd>
+            <dd>V3 使用过的 attention 稳定技术。V4 在 core attention 前对每个 query head 和压缩 KV entry 做 RMSNorm，报告称这能有效避免 attention logits 爆炸，因此不再使用 QK-Clip。报告没有给出任意参数下的严格点积上界，也没有描述具体 kernel 分支。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>AdamW 把矩阵摊平当 vector，看不见"形状"；Muon 把每步更新矩阵 polar 化让所有方向同权。NS 是 polar 的便宜近似，Hybrid 让 10 步固定迭代落到精度。代价 ~5% FLOPs，回报是稳定性 + 一行 if-else 的删除。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>AdamW 进行逐元素预条件；Muon 则利用矩阵结构，将更新近似极分解。Hybrid Newton–Schulz 以固定 8+2 步实现近似正交化。Q/K RMSNorm 使 V4 不再采用 QK-Clip，但报告没有把它描述成删除某个 if-else 分支。</div>
         </div>
 
         <!-- ================== §1 AdamW 的病 ================== -->
@@ -157,11 +156,11 @@
 
         <div class="numex">
           <span class="numex-tag">数值演练 · 为什么 SVD 不可承担</span>
-          V4-Pro 一个 FFN 层 up/down 投影矩阵约 $7168 \times 28672$。SVD 复杂度 $\approx \min(n,m)^2 \cdot \max(n,m) = 7168^2 \times 28672 \approx 1.5 \times 10^{12}$ FLOPs。
+          以 V4-Pro 单个 routed expert 的投影矩阵为例，其二维形状可写成 $7168 \times 3072$（转置不影响这里的量级）。按 $\min(n,m)^2\cdot\max(n,m)$ 粗略估算，精确 SVD 的计算规模约为 $3072^2\times7168\approx6.8\times10^{10}$；一个 MoE 层还包含大量专家矩阵。
           <br>
-          全模型 ~600 个 2D 参数 × 每步 SVD = $9 \times 10^{14}$ FLOPs/step，比 forward+backward 总和（约 $5 \times 10^{14}$）还多。<strong>每步训练光做 SVD 就翻倍开销</strong>，不可接受。
+          对每个二维参数矩阵逐步执行精确 SVD 会引入很高的计算和同步成本，因此 Muon 使用 Newton–Schulz 多项式迭代近似极分解。报告没有披露“约 600 个矩阵”或整步 FLOPs，不能据此断言开销恰好翻倍。
           <br><br>
-          NS 迭代代替方案：每步 5 次 matmul × 10 步 = 50 matmul，每个 matmul $\sim n m \cdot \min(n,m)$。总开销 $\sim 50 \times 28672 \times 7168 \times 7168 \approx 7 \times 10^{13}$ FLOPs。<strong>~5% 的 forward 开销，可承担</strong>。
+          NS 迭代用矩阵乘法替代显式 SVD。一次五次多项式并不等于 5 次矩阵乘法；实现可以复用中间结果。V4 报告没有披露其占全模型 FLOPs 的百分比。
         </div>
 
         <!-- ================== VIZ: SVD 几何 + Polar ================== -->
@@ -264,12 +263,12 @@
             <br>
             <strong>NS 为什么只动 σ</strong>：把迭代 $M_{k+1} = aM + b\,MM^TM + c\,(MM^T)^2 M$ 写在 SVD 坐标里就是 $U(a\Sigma + b\Sigma^3 + c\Sigma^5)V^T$ —— $U, V$ 永远不动。表现在图里：<strong>红线方向永远不变，只有长度在缩放</strong>。
             <br>
-            <strong>玩法</strong>：按"Hybrid 跑完 10 步"看红椭圆从又扁又长逐渐胀大，σ 数轴上两个红点向中间的 target=1 收拢。8 步激进会有几次过冲（红椭圆短暂胖一下越过绿圆），最后 2 步标准 NS 二阶收敛把它精确钉死在单位圆上。
+            <strong>玩法</strong>：按“Hybrid 跑完 10 步”观察奇异值向 1 靠近。这个可视化使用简化初始分布，只用于解释两段系数的作用，不代表所有实际梯度矩阵都能达到完全相同的误差。
           </p>
         </div>
 
         <!-- ================== §3 NS 迭代 + Demo ================== -->
-        <h3 id="ns">3. Newton–Schulz：用 5 次 matmul 近似 polar</h3>
+        <h3 id="ns">3. Newton–Schulz：用五次矩阵多项式近似 polar</h3>
         <p>
           Newton–Schulz（NS）迭代是把<em>SVD 计算</em>换成<em>矩阵多项式</em>的经典手法。一次 NS 迭代写为：
         </p>
@@ -398,8 +397,8 @@
           <p class="viz-caption">
             蓝点是 20 个奇异值 $\sigma_i$（初始随机分布在 $[0.05, 1.0]$）。每按"激进 1 步"应用一次红色多项式，每按"标准 1 步"应用一次绿色多项式。
             <strong>观察 1</strong>：激进多项式在 $\sigma$ 较小（如 0.1-0.5）时<em>抓得猛</em>，几步就能把它们拉到 1 附近；但红线在 $\sigma=1$ 附近高于 1，反复套会<em>过冲</em>。
-            <strong>观察 2</strong>：标准多项式在 $\sigma\approx 1$ 附近紧贴 $y=1$，<em>已经聚拢的奇异值会被精修到 $1\pm 10^{-6}$</em>，但 $\sigma=0.1$ 处它几乎只是恒等线，慢得离谱。
-            <strong>"Hybrid 跑完 10 步"</strong>：8 红 + 2 绿 = 所有 $\sigma$ 都精确收到 1。这就是 V4 选 Hybrid 的图像直觉。
+            <strong>观察 2</strong>：标准多项式在 $\sigma\approx1$ 附近更稳定，适合处理已经聚拢的奇异值。
+            <strong>“Hybrid 跑完 10 步”</strong>：8 步激进系数后接 2 步标准系数，使奇异值在示例中进一步接近 1；报告没有承诺统一达到 $1\pm10^{-6}$。
           </p>
         </div>
 
@@ -408,7 +407,7 @@
         <p>这是 V4 相对原 Muon 论文的关键工程改进。把上面两套系数<em>串联</em>：</p>
         <ol>
           <li><strong>前 8 步用激进系数</strong> —— 把<em>所有奇异值快速拉到 1 的邻域</em>。激进多项式的过冲问题不要紧，因为"远处 $\sigma$"还差得远，当前根本到不了过冲区。</li>
-          <li><strong>后 2 步切回标准系数</strong> —— 此时所有 $\sigma$ 已经聚到 $\approx 1$ 附近，标准 NS 二阶收敛<em>极快</em>，2 步就能把它们钉在 $1 \pm 10^{-6}$。</li>
+          <li><strong>后 2 步切回标准系数</strong> —— 在 1 附近稳定收敛，使近似结果更接近极分解目标。</li>
         </ol>
 
         <div class="callout callout-info">
@@ -425,13 +424,13 @@
           <ul>
             <li><strong>纯激进 30 步</strong>：第 5 步 $\sigma$ 已到 $\sim 1.05$（轻微过冲），之后开始振荡，10 步后 $\sigma \in [0.94, 1.08]$ 反复；</li>
             <li><strong>纯标准 30 步</strong>：第 1 步 $p(0.05) \approx 0.10$，第 2 步 $\approx 0.20$，第 5 步 $\approx 0.55$，第 10 步 $\approx 0.92$，第 20 步才 $\approx 0.999$ —— <em>慢</em>；</li>
-            <li><strong>Hybrid 8 + 2</strong>：激进 8 步把 $\sigma$ 推到 $\sim 0.998$（已在标准的二阶收敛区）；标准 2 步把 $\sigma$ 钉到 $1 \pm 10^{-6}$。</li>
+            <li><strong>Hybrid 8 + 2</strong>：在这个简化标量示例中，先快速靠近 1，再用标准系数稳定收尾；具体误差依赖初始奇异值和数值精度。</li>
           </ul>
           所以 V4 取 10 步固定 = "粗调 8 + 精修 2" 是收敛与稳定的双赢点。
         </div>
 
         <p>
-          这套组合的工程收益是：用<strong>固定 10 次迭代</strong>就能保证 polar 近似的精度，不需要再为不同层、不同 step 调"该迭代多少次"。常数 10 也意味着 NS 这一步的 FLOPs 在编译期就确定，对 TileLang kernel 与 CUDA graph 友好。
+          这套组合使用<strong>固定 10 次迭代</strong>，便于批处理相同形状的参数并控制实现复杂度。报告将其描述为近似正交化，没有给出对所有层都成立的统一精度保证。
         </p>
 
         <!-- ================== §5 完整算法 ================== -->
@@ -440,7 +439,7 @@
         <div class="algo">
           <div class="algo-title">Algorithm 1 · Muon Optimizer (V4 Hybrid)</div>
           <div class="algo-inputs">
-            <strong>Inputs:</strong> 损失 $L$，初始权重 $W_0$，学习率 $\eta$，动量 $\mu = 0.95$，衰减 $\lambda = 0.1$，缩放 $\gamma \approx 0.2$
+            <strong>Inputs:</strong> 损失 $L$，初始权重 $W_0$，学习率 $\eta$，动量 $\mu = 0.95$，衰减 $\lambda = 0.1$，以及把更新 RMS 设为 0.18 的重缩放配置
           </div>
           <ol class="algo-body">
             <li>Initialize $M_0 \leftarrow 0$；$t \leftarrow 0$</li>
@@ -481,10 +480,10 @@
               <tr><td>$\mu$</td><td>动量系数 —— 越大越重视历史方向，越平滑</td><td>0.95（与 AdamW $\beta_1$ 同位）</td></tr>
               <tr><td>$M_t$</td><td>动量平滑后的"历史趋势梯度"</td><td>—</td></tr>
               <tr><td>$N_t$</td><td>Nesterov 形式：在 $M_t$ 基础上再加一份当前梯度，等价于"提前一步看"</td><td>—</td></tr>
-              <tr><td>$O'_t$</td><td>NS 输出，奇异值已经全是 1，但矩阵 Frobenius norm = $\sqrt{\min(n,m)}$</td><td>—</td></tr>
+              <tr><td>$O'_t$</td><td>Hybrid NS 输出，奇异值被近似推向 1</td><td>—</td></tr>
               <tr><td>$\sqrt{\max(n,m)}$</td><td>RMS 重缩放因子，让 $O_t$ 的"平均元素大小"与 AdamW 量级一致</td><td>由层 shape 决定</td></tr>
-              <tr><td>$\gamma$</td><td>额外缩放（论文里一般取 0.2~0.3），用来把 lr 调到与 AdamW 同档</td><td>≈ 0.2</td></tr>
-              <tr><td>$\eta$</td><td>学习率</td><td>跟 AdamW 同量级，不需重新调</td></tr>
+              <tr><td>$\gamma$</td><td>更新重缩放因子，用于复用 AdamW 学习率设置</td><td>训练配置将更新 RMS 设为 0.18</td></tr>
+              <tr><td>$\eta$</td><td>学习率</td><td>复用 AdamW 学习率设置</td></tr>
               <tr><td>$\lambda$</td><td>weight decay 系数</td><td>0.1（同 AdamW）</td></tr>
             </tbody>
           </table>
@@ -496,10 +495,10 @@
           <ol>
             <li><strong>动量 + Nesterov</strong>（第 6-7 行）：$M_t$ 是历史平滑梯度，$N_t$ 是再加一份当前梯度的"前瞻版"；</li>
             <li><strong>归一化进入 NS 收敛域</strong>（第 8 行）：除以 $\|N_t\|_F$ 让所有奇异值落进 $(0, 1]$，这是 NS 多项式的安全工作区；</li>
-            <li><strong>NS 10 步</strong>（第 9-14 行）：8 步激进粗调 + 2 步标准精修，输出 $X$ 的所有奇异值都精确等于 1，矩阵 $\approx UV^T$；</li>
+            <li><strong>NS 10 步</strong>（第 9-14 行）：8 步激进系数 + 2 步标准系数，使 $X$ 的奇异值接近 1，得到 $\mathrm{Polar}(M)$ 的近似；</li>
             <li><strong>RMS 重缩放 + weight decay</strong>（第 15-16 行）：把 $X$ 乘 $\sqrt{\max(n,m)}\cdot\gamma$ 调到与 AdamW 同档量级，再做"先 decay 后步进"的解耦更新。</li>
           </ol>
-          <p>对比 AdamW 整段公式只有 1 行（$W \leftarrow W - \eta m / \sqrt{v}$），Muon 多了 NS 10 步——但<em>每步只是 5 次 matmul</em>，且和 forward 共享相同的 Tile/Kernel 实现，CUDA Graph 上 amortize 后是 ~5% 开销。</p>
+          <p>Muon 比逐元素优化器增加了 Newton–Schulz 矩阵运算。V4 通过相同 shape 参数合并、BF16 matmul 和 ZeRO bucket 设计提高利用率；报告没有给出“共享 forward kernel”或“约 5%”的量化结论。</p>
         </div>
 
         <p><strong>为什么要乘 $\sqrt{\max(n,m)}\cdot\gamma$？</strong> 因为 NS 把奇异值全压到 1，所以 $\|O'_t\|_F = \sqrt{\min(n,m)}$ —— <em>矩阵越扁，Frobenius 范数越小</em>。如果直接拿 $O'_t$ 当更新，宽矩阵的步长就会偏小、扁矩阵反而偏大。乘 $\sqrt{\max(n,m)}$ 把这个 shape 依赖抹平，再用 $\gamma$ 调到合适量级 —— 这样同一个 $\eta$ 可以跨层复用。</p>
@@ -513,42 +512,41 @@
           </ul>
           直接更新 $W \leftarrow W - \eta X$：层 A 的更新比层 B 大 2×。<em>同一个 lr 在不同 shape 的层上效果不一致</em>。
           <br>
-          乘 $\sqrt{\max(n,m)}$：层 A 乘 $\sqrt{1024}=32$，输出范数变 $32 \times 32 = 1024$；层 B 乘 $\sqrt{4096}=64$，输出范数变 $16 \times 64 = 1024$。<strong>两层对齐</strong>，跨层一个 $\eta$ 就够。
+          在“NS 已得到精确部分等距矩阵”的理想化情况下，乘 $\sqrt{\max(n,m)}$ 后，两种形状的 Frobenius 范数都会变为 1024。这说明重缩放如何消除一部分 shape 依赖；真实 10 步近似还会有误差，最终再由 $\gamma$ 控制更新 RMS。
         </div>
 
         <p><strong>为什么用 Nesterov？</strong>因为 $N_t = \mu M_t + G_t$ 等价于"先按 momentum 走一步，再用当前梯度修正"，比标准 momentum 多一阶前瞻信息，长期收敛更快。这是 Muon 论文里就有的标配，V4 沿用。</p>
 
         <!-- ================== §6 QK-Clip 删除 ================== -->
-        <h3 id="qk-clip">6. 顺手扔掉 QK-Clip：根因消除胜过补丁</h3>
+        <h3 id="qk-clip">6. Q/K RMSNorm 与 QK-Clip</h3>
         <p>
-          V3 里有一个"挽救 attention 数值稳定"的补丁叫 <strong>QK-Clip</strong>：每步前向把 $QK^{T}/\sqrt{d_k}$ 的 logits 强制 clamp 到 $[-c, c]$，防止 softmax 上溢出。它治的不是病因，是<em>病的表现</em>。病因是：Muon 把 W 各方向同权更新后，乘以输入仍可能产生<strong>大幅 query / key 向量</strong>，再做 $Q K^T$ 时点积爆掉。
+          V4 报告将 QK-Clip 称为此前 Muon 工作中的一项技术。V4 的注意力架构允许在 core attention 前直接对各 query head 与压缩 KV entry 做 RMSNorm，因此作者不再采用 QK-Clip。报告没有把 exploding logits 的成因单独归结为 Muon，也没有披露 QK-Clip 的阈值或实现细节。
         </p>
         <p>
-          V4 的解法是<em>从源头堵</em>：在 attention 内部直接对 Q、K 各做一次 RMSNorm，使
+          忽略 RMSNorm 的可学习缩放和数值稳定项时，可用下面的简化关系理解尺度为何更受控：
         </p>
         <div class="math-block">
           $$
           \|q_i\|_2 \approx \sqrt{d_h},\quad \|k_j\|_2 \approx \sqrt{d_h}
-          \;\Longrightarrow\; |q_i \cdot k_j| \le d_h \;\Longrightarrow\; \text{logits 天然有界}
+          \;\Longrightarrow\; |q_i \cdot k_j| \lesssim d_h
           $$
         </div>
         <p>
-          所以 QK-Clip 整条 if-else 路径可以直接删掉。这不是写法精简 —— 它是 V4 的工程哲学：<strong>能用根因消除就不要再加补丁</strong>。一个补丁少一份调参负担、少一个炸点、少一行 kernel 分支。
+          这只是忽略缩放参数后的教学近似。报告的直接表述是：额外 RMSNorm 能有效避免 attention logits 爆炸，因此 V4 不再采用 QK-Clip；它不是对所有输入的严格上界证明。
         </p>
 
         <!-- ================== §7 代价 ================== -->
         <h3 id="cost">7. 代价 / 还没解决的问题</h3>
         <ul>
-          <li><strong>NS 的 FLOPs 开销</strong>：每个 2D 参数每步多 10 次 matmul（若 $W$ 为 $n\times m$，等量级是 $10\,nm\cdot\min(n,m)$）。在 V4-Pro 规模上，这部分相比 forward+backward 大约多 3~5%。可接受，但<em>不是免费</em>。</li>
+          <li><strong>NS 有额外矩阵乘法</strong>：V4 通过批处理同形状参数与 BF16 matmul 提高效率，但报告没有披露其占全模型 FLOPs 的比例。</li>
           <li><strong>不适用于 1D 参数</strong>：embedding 表（虽是 2D，但行间语义无关，做 polar 没意义）、RMSNorm 的 scale、prediction head、mHC 静态偏置等，仍走 AdamW —— V4 主体参数是 Muon，但<em>整个模型并不是单一优化器</em>。</li>
           <li><strong>超参没有"自动归一"</strong>：Muon 把<em>更新方向</em>归一化了，但 $\eta$、$\mu$、$\lambda$ 仍要按数据 / 模型 scale 调；它解决的是"AdamW 的方向偏"，不是"超参不需调"。</li>
-          <li><strong>对极小 batch / 极不稳数据敏感</strong>：当 $G_t$ 本身因 batch 太小而高方差时，NS 后的"方向"也会高方差，反而比 AdamW 更糙。所以 Muon 适合<em>大 batch、稳定 dataset</em>，与 V4 的 32T 预训练设定恰好匹配。</li>
+          <li><strong>缺少训练尺度消融</strong>：报告给出了 V4 使用 Muon 的最终配置，但没有提供不同 batch size、数据噪声水平或模型规模下与 AdamW 的系统对照，不能据此推出 Muon 只适合某一类训练数据。</li>
         </ul>
 
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
           <p>
-            <strong>AdamW 不知道矩阵的形状，Muon 把所有奇异值抹成 1 来强制各向同性更新；NS 是 polar 的便宜近似，Hybrid 两段式让 10 步固定迭代就能落到精度。代价是 ~5% FLOPs，回报是稳定性 + 可以扔掉 QK-Clip 这种补丁。</strong>
+            <strong>AdamW 采用逐元素预条件，Muon 则利用矩阵结构，将更新近似极分解。V4 的 Hybrid Newton–Schulz 使用 8 步激进系数和 2 步标准系数；Q/K RMSNorm 使训练不再需要 QK-Clip。两者相关但属于不同模块，报告没有给出 Muon 的统一 FLOPs 开销。</strong>
           </p>
         </div>
 
@@ -564,7 +562,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: NS polynomial curves + sigma evolution

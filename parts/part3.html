@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="p3">
 
@@ -58,7 +58,7 @@
             <li>解释 Anticipatory Routing 的"用 θ_t 算特征、用 θ_{t-Δt} 算路由"为什么能压住 loss spike。</li>
             <li>说出 SwiGLU Clamping 的两组阈值（线性 [-10,10] / gate ≤ 10），并解释 DeepSeek 为什么愿意公开"还没理解清楚"的 trick。</li>
             <li>读懂 V3.2-Base / V4-Flash-Base / V4-Pro-Base 的同框对比表，指出"Flash 用更小的参数赢更多 benchmark"的关键证据。</li>
-            <li>说出为什么 Base 评测对后续 OPD 的"可达 ceiling"具有决定性。</li>
+            <li>说明 Base 评测为什么是观察后训练起点的重要依据，以及为什么不能把它当作 OPD 成绩的固定上限。</li>
           </ul>
         </div>
 
@@ -77,14 +77,14 @@
           <a class="roadmap-card" href="../chapters/ch15.html">
             <div class="roadmap-num">CH 15</div>
             <h4>Base 模型评测</h4>
-            <p>三模型同框对比，后训练能蒸出多大 ceiling 由此决定。</p>
+            <p>三模型同框对比，观察后训练介入前的综合能力起点。</p>
           </a>
         </div>
 
         <div class="callout callout-info">
           <div class="callout-title">如何阅读这部分</div>
           <p>
-            如果你只关心"V4 与 V3 在数据 / 稳定性上有哪些不同"，<strong>Ch13 + Ch14</strong> 已经够。Ch15 是<em>把 architecture + 数据红利量化</em>的桥段——在跳进后训练之前，请确认 Pro-Base 的"高起点"是真实存在的。
+            如果你只关心"V4 与 V3 在数据 / 稳定性上有哪些不同"，<strong>Ch13 + Ch14</strong> 已经够。Ch15 展示架构、数据、规模与训练优化共同作用后的 Base 结果；它不是这些因素的单项消融。
           </p>
         </div>
 
@@ -97,7 +97,7 @@
           <ul>
             <li><strong>数据（Ch13）</strong>：32T 长文档优先、采样级 mask、tokenizer 沿用、agentic mid-training 注入；序列长度 4K → 16K → 64K → 1M 阶梯式扩。</li>
             <li><strong>稳定（Ch14）</strong>：Anticipatory Routing 把"路由 / 主干"更新解耦压 spike；SwiGLU Clamping 双阈值（线性 [-10,10] / gate ≤ 10）灭 outlier。</li>
-            <li><strong>评测（Ch15）</strong>：Flash-Base 用 284B 总参反超 V3.2-Base 671B；Pro-Base 在 17 个 benchmark 拿下 14 个第一，FACTS Parametric +35.5、Simple-QA +27。</li>
+            <li><strong>评测（Ch15）</strong>：Flash-Base 以更少总参数在多数内部统一设置的 benchmark 上超过 V3.2-Base；Pro-Base 进一步提高知识、推理、代码与长上下文结果。</li>
           </ul>
         </div>
 
@@ -127,7 +127,7 @@
         <div class="quiz">
           <p class="quiz-q">Q1. V4 与 V3 在 attention masking 上的最大差异是什么？为什么这个改动重要？</p>
           <details><summary>查看参考答案</summary>
-            <p>V4 引入 <strong>sample-level attention masking</strong>—— 同一 packed sequence 中跨样本的 token <em>不可见</em>。V3 没这一步。改动重要是因为长文档优先后样本平均更长 + packing 概率上升，cross-sample 信号会引入隐性"关联噪声"，sample-level mask 把每个样本当独立 context 处理，干净得多。</p>
+            <p>V4 引入 <strong>sample-level attention masking</strong>：同一 packed sequence 中，不同样本之间的 token 不可见。这样既能通过 packing 减少 padding，又不会让模型把相邻拼接但语义无关的样本当成同一上下文。报告没有量化它与长文档平均长度之间的关系。</p>
           </details>
         </div>
 
@@ -141,7 +141,7 @@
         <div class="quiz">
           <p class="quiz-q">Q3. 为什么 Pro-Base 上 FACTS Parametric +35.5 这个数字尤其值得关注？</p>
           <details><summary>查看参考答案</summary>
-            <p>FACTS Parametric 测的是<em>模型参数里"真"事实知识的浓度</em>，与训练数据规模 / 质量直接挂钩。+35.5 说明 V4 的数据策展（长文档 / 多语言 / agentic mid-training）真正在<em>知识密度</em>上提质。这给后续 OPD 蒸馏定下了高 ceiling —— teacher 知道得多，student 才学得到。</p>
+            <p>FACTS Parametric 用于评估参数化知识相关表现。Pro-Base 相比 V3.2-Base 的大幅提升与更大的模型、更多训练 token 和数据构造变化同时出现；仅凭该分数不能把增益归因于长文档、多语言或 agentic mid-training 中的某一项。</p>
           </details>
         </div>
 
@@ -160,6 +160,6 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 </body>
 </html>

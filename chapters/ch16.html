@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch16">
 
@@ -33,79 +33,74 @@
       <article id="ch16" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第四部分 · 后训练 · 16</div>
         <h2 class="chapter-title">Specialist — 多面手的炼成</h2>
-        <p class="chapter-sub">为什么 V4 把 post-training 拆成"先 N 个领域 specialist、再用 OPD 合一"，GRPO 比传统 PPO 省掉的 value head 在 N 倍并行下意味着什么，GRM 的"以生成代评分"为什么能彻底替掉 RLHF 的人工标注，以及三档 reasoning effort（8K/128K/384K context）背后的训练-推理 budget 设计。</p>
+        <p class="chapter-sub">V4 先训练领域 specialist，再以 OPD 合并到统一模型。Specialist 阶段沿用 SFT + GRPO，并以 GRM 覆盖难验证任务；三种 reasoning effort 使用不同的长度惩罚和 RL context window。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂"Specialist 阶段"</div>
-          <p class="term-name">Specialist 阶段 = V4 后训练的<em>第一阶段</em>：给每个领域（数学/代码/Agent/写作/Instruction Following…）独立训一个领域专家模型；每个专家在三档 reasoning effort 下分别 RL，得到 N×3 个 checkpoint；这些 checkpoint 是 Ch18 OPD 阶段的"老师团"</p>
+          <p class="term-name">Specialist 阶段 = V4 后训练的第一阶段：通过领域 prompt 与 reward 训练不同 specialist，并以十余个 teacher 为后续 OPD 提供监督。报告没有给出领域清单，也没有说每个领域都产生三份独立 checkpoint。</p>
           <p>
-            一句话：<strong>把 V3 时代的"混合 RL 一锅端"拆成"先专精、再合并"两阶段</strong>。
-            专精阶段每个 specialist 沿用 V3 / R1 的 SFT + GRPO 套路（不变），创新主要在两处：(1) GRM 让 hard-to-verify 任务（写作、规划）也能 RL；(2) 三档 reasoning effort 让同一专家有快/中/极致三种推理 budget。
+            一句话：<strong>先用领域数据和奖励信号训练多个 specialist，再由 OPD 把这些能力整合进统一模型</strong>。
+            每个 specialist 依次经过 fine-tuning 与 GRPO；难验证任务使用 GRM，三种 reasoning effort 则采用不同的 RL 配置。
           </p>
           <dl>
             <dt>Specialist（领域专家模型）</dt>
-            <dd>从 V4-Pro/Flash-Base 出发，在<em>单一领域</em>用领域数据走完整 SFT + RL 的 checkpoint。论文提到 10+ 个领域：数学、代码、Agent 工具调用、Instruction Following、长写作、安全 等。<strong>是中间产物</strong>，不直接发布；最终模型由 OPD 把 N 个 specialist 蒸成一个。</dd>
+            <dd>从 Base 模型出发，经领域 fine-tuning 与 GRPO 得到 specialist。报告只说 OPD 使用十余个覆盖不同领域的 teacher，没有逐项列出数学、代码、安全等完整清单。</dd>
 
             <dt>SFT（Supervised Fine-Tuning）</dt>
-            <dd>用<em>(prompt, gold answer)</em> 对监督训练。post-training 起点。<em>问题</em>：模仿训练数据的<strong>表层模式</strong>，对推理深度提升有限。所以 SFT 之后必须接 RL。V4 沿用 V3.2 的 SFT 数据策略 + 模板。</dd>
+            <dd>用领域数据对 Base 模型做初始 fine-tuning，为随后由领域 prompt 与 reward 驱动的 GRPO 提供起点。报告没有把它概括为只能学习“表层模式”，也没有披露完整数据模板。</dd>
 
             <dt>GRPO（Group Relative Policy Optimization, DeepSeek 2024）</dt>
-            <dd>V3/R1 自研的 RL 算法。核心：每个 prompt 采样<em>一组</em> $G$ 条 rollout（$G\approx 8$），用<strong>组内平均 reward 作 baseline</strong>（不再训 value head）。<em>动机</em>：标准 PPO 要训一个与 actor 同尺寸的 critic，1.6T 模型上等于显存 ×2。GRPO 用统计平均替 critic，<strong>显存省一半、并行 N 个 specialist 时省 N 倍</strong>。</dd>
+            <dd>GRPO 使用同一 prompt 的一组 responses 计算相对优势，不需要单独训练 value model。V4 报告没有披露 group size，也没有量化为“显存省一半”或“N 倍”。</dd>
 
             <dt>GRM（Generative Reward Model）</dt>
-            <dd>用 LLM 生成式地"批改"trajectory，输出"为什么这是好答案"的 chain-of-thought + 最终分数。<em>对比 scalar RM</em>：scalar RM 输出 1 个数，无解释，靠人标 reward 训出；GRM 直接复用 actor 网络<strong>边生成边打分</strong>，不需要单独的 reward 模型 + 大幅减少人工标注。在 hard-to-verify 任务（写作 / Agent 决策）上是 V4 的关键一跳。</dd>
+            <dd>对难以用规则验证的任务，模型依据 rubric 生成式地分析 policy trajectory 并给出评价。V4 让 actor 网络同时承担 GRM 角色，并直接对其做 RL 优化；报告称这样能以较少的多样化人工标注获得更稳健的评分，但没有给出成本降幅。</dd>
 
             <dt>Easy-to-Verify vs Hard-to-Verify</dt>
-            <dd><strong>Easy</strong>：数学（答案对就对）、代码（test 跑通就跑通）—— rule-based / unit-test verifier 给 0/1 reward。<strong>Hard</strong>：写作好坏、Agent 决策合理性、Instruction Following 度 —— 没有客观答案。<em>传统做法靠 RLHF 收集偏好 → scalar RM</em>，每万样本 ~$10K 标注成本。GRM 把这部分压到接近 0。</dd>
+            <dd><strong>Easy</strong>：可由规则或测试用例验证的任务。<strong>Hard</strong>：需要依据 rubric 判断质量、缺少单一客观判据的任务。传统做法常用人工标注训练 scalar reward model；V4 改用经过 RL 优化的 GRM，并强调只需较少的多样化人工标注，未披露具体成本。</dd>
 
             <dt>Reasoning Effort（推理强度）</dt>
-            <dd>同一模型可以用<em>不同长度</em>的 thinking chain 解题。V4 把它形式化成三档：<strong>Non-think</strong>（无 thinking，直接答）/ <strong>Think High</strong>（中等推理链）/ <strong>Think Max</strong>（极致思考）。每档训练时用不同的 length penalty 与 RL 上下文窗口（8K/128K/384K）。<em>推理时</em>用户可按需选档，类似 OpenAI o1 的"low/medium/high"。</dd>
+            <dd>V4 支持三档 reasoning effort：<strong>Non-think</strong>、<strong>Think High</strong> 与 <strong>Think Max</strong>。训练时三档采用不同 length penalty 和 context window；评测时分别使用 8K、128K 和 384K context。报告没有披露 RL 训练窗口的具体数值。</dd>
 
             <dt>Length Penalty（长度惩罚）</dt>
-            <dd>RL reward 里的额外项：超出预期长度<em>线性扣分</em>。Non-think 档惩罚强（鼓励短）、Think Max 档惩罚弱（允许长）。<strong>是 effort 档分化的工程关键</strong> —— 不靠 prompt 控长，靠 reward 直接塑造。</dd>
+            <dd>三种 reasoning effort 在 RL 阶段使用不同的 length penalty 与 context window，从而形成不同的输出 token 长度。报告没有披露惩罚函数的具体形式或三档数值。</dd>
 
             <dt>Reward Hacking（奖励黑客）</dt>
-            <dd>RL 训得久会发现：模型学会用<em>非正常方式</em>骗高分（比如代码 RL 里把 test case 注释掉）。scalar RM 尤其易被 hack，因为它对"短回路"无防御。GRM 因为要先<strong>生成解释</strong>，hack 成本高（解释要"自圆其说"），抗 hack 性显著好。</dd>
+            <dd>策略利用奖励模型漏洞而获得高分、却没有真正完成任务的现象。GRM 的生成式评价可能提供更丰富的判断过程，但 V4 报告没有给出其相对 scalar RM 的 reward-hacking 消融，不能宣称已经解决这一问题。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>Specialist 阶段是 V4 后训练的"备料车间" —— 把 V3 的 SFT + RL 范式<em>不动算法</em>、只在 reward 信号（GRM）和 budget 控制（三档 effort）两处升级，产出 N 个领域专家供 Ch18 的 OPD 蒸馏。读完你应该能解释为什么 V4 不直接做混合 RL，而是绕一圈"先 N 个 specialist 再合一"。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>Specialist 阶段通过领域 fine-tuning 与 GRPO 形成多种专长，GRM 覆盖难验证任务，三套 RL 配置形成不同 reasoning effort；这些模型随后作为 Ch18 OPD 的教师。</div>
         </div>
 
         <!-- ================== §1 范式 ================== -->
-        <h3 id="paradigm">1. 范式置换：从"一锅端 RL"到"先专精再合并"</h3>
+        <h3 id="paradigm">1. 两阶段流程：先专精，再整合</h3>
         <p>
-          V3 的后训练只有一个阶段：把所有 SFT 数据混在一起，配多种 reward（rule + RM），跑混合 RL。这条路在 V4 规模下出现三个症状：
+          V4 先分别训练领域 specialist，再用多教师 OPD 将能力整合进统一模型。报告明确披露的流程是：
         </p>
         <ul>
-          <li><strong>方差爆炸</strong>：不同任务 reward 量纲不一致（代码 0/1 vs 写作 0–10），加权和被绝对值大的任务主导，小信号被淹没；</li>
-          <li><strong>分布偏移</strong>：同一模型同时优化数学和写作，长 horizon 上学到的策略与单领域 specialist 差距明显；</li>
-          <li><strong>调参组合爆炸</strong>：每加一个领域，混合权重要重新搜索。</li>
+          <li><strong>Stage 1（本章）</strong>：每个 specialist 依次经过领域 fine-tuning 与 GRPO；</li>
+          <li><strong>Reasoning effort</strong>：不同 RL 配置使用不同长度惩罚与 context window；</li>
+          <li><strong>Stage 2（Ch18）</strong>：十余个领域 teacher 通过 reverse-KL OPD 监督统一 student。</li>
         </ul>
-        <p>V4 的回答：<strong>把"专精"和"合并"解耦</strong>。</p>
-        <ul>
-          <li><strong>Stage 1（本章）</strong>：N 个独立 specialist，每个只看自己领域、用最适合自己的 reward；</li>
-          <li><strong>Stage 2（Ch18 OPD）</strong>：把 N 个 specialist 当 frozen teacher，让 student 用 reverse KL on-policy 蒸馏一遍。</li>
-        </ul>
+        <p>报告称，logits-level OPD 在实践中规避了传统权重合并或 mixed RL 常见的性能退化；它没有给出 reward 量纲、领域干扰幅度或调参复杂度的分项消融。</p>
 
         <p>
-          这个拆法有个隐藏好处 —— <em>每个 specialist 可以并行训</em>。10 个领域 × 3 档 effort = 30 个 checkpoint，理论上可以用 30 倍集群并行跑出来。但只有 GRPO 这种"无 value head"的算法才能撑得起这种并行，因为 value head 的显存成本会让并行度大打折扣。这就引出下一节。
+          不同 specialist 可以独立训练，便于按领域调整数据和 reward。报告没有给出 10×3=30 个 checkpoint 的拓扑，也没有把并行能力归结为 GRPO 的唯一作用。
         </p>
 
         <!-- ================== §2 GRPO ================== -->
         <h3 id="grpo">2. GRPO：用"组内 baseline"替掉 value head</h3>
 
         <p>
-          标准 PPO 需要训两个网络：actor（policy）+ critic（value head）。critic 的尺寸通常与 actor 相同（共享 backbone 也好，单独网络也好），<strong>显存翻倍 + 反向计算翻倍</strong>。1.6T 规模下这个翻倍直接致命。
+          PPO 通常需要 value function，而 GRPO 通过组内相对 reward 避免单独的 value model。具体显存差异取决于是否共享 backbone、参数切分和 rollout 配置，不能一概写成翻倍。
         </p>
 
         <p>
-          GRPO 的洞察：<em>baseline 不一定要是个学到的 value 函数，可以是<strong>同 prompt 多个 rollout 的平均 reward</strong></em>。
+          GRPO 的核心直觉是：baseline 不一定来自学习到的 value function，也可以由同一 prompt 的一组 responses 的相对 reward 构造。
         </p>
 
         <div class="math-block">
           $$
-          A_i \;=\; \frac{r_i - \mathrm{mean}\!\big(\{r_j\}_{j=1}^G\big)}{\mathrm{std}\!\big(\{r_j\}_{j=1}^G\big)}, \qquad
-          \mathcal{L}_{\text{GRPO}} \;=\; -\,\frac{1}{G}\sum_{i=1}^{G} A_i \cdot \log \pi_\theta(y_i \mid x)
+          A_i \;=\; \frac{r_i - \mathrm{mean}\!\big(\{r_j\}_{j=1}^G\big)}{\mathrm{std}\!\big(\{r_j\}_{j=1}^G\big)}
           $$
         </div>
 
@@ -113,24 +108,24 @@
           <div class="callout-title">📖 公式白话翻译</div>
           <p>这条公式翻成大白话就是<strong>"同一个题让模型答 G 遍，谁的 reward 高于平均就鼓励谁、低于平均就惩罚谁"</strong>：</p>
           <ol>
-            <li><strong>$\{r_j\}_{j=1}^G$</strong>：同一 prompt 采样 G 条独立 rollout（$G$ 一般取 8 或 16），各自跑完得到 reward；</li>
+            <li><strong>$\{r_j\}_{j=1}^G$</strong>：同一 prompt 采样 $G$ 条 responses，各自得到 reward；V4 报告没有披露 $G$；</li>
             <li><strong>$\mathrm{mean}(\{r_j\})$</strong>：这一组 G 条的平均 reward —— <em>组内 baseline</em>，替代了 PPO 的 $V(s)$；</li>
             <li><strong>$\mathrm{std}(\{r_j\})$</strong>：归一化方差，让不同难度题的 advantage 量级可比；</li>
             <li><strong>$A_i$</strong>：标准化后的"相对优势"。$A_i &gt; 0$ → 这条比组内平均好 → 增加它的概率；$A_i &lt; 0$ → 减少；</li>
-            <li><strong>损失 $-A_i \log \pi$</strong>：标准 policy gradient 形式，advantage 当权重。</li>
+            <li><strong>策略更新</strong>：实际 GRPO 还包含重要性比率、裁剪与正则等项；上式只展示组内标准化 advantage，不是完整损失。</li>
           </ol>
-          <p>关键的<em>不出现 $V(s)$ 也不出现 critic 网络</em> —— baseline 是<strong>统计的，而不是学出来的</strong>。这条 trick 让 GRPO 在 1.6T 规模仍可承担，是 V3/R1/V4 通用 RL 算法。</p>
+          <p>关键点是无需另训 value model：相对优势由组内 reward 统计得到。V4 沿用 GRPO，并说明超参数与此前工作接近；报告没有把模型规模可行性单独归因于这一项。</p>
         </div>
 
         <div class="numex">
           <span class="numex-tag">数值演练 · GRPO 省的显存</span>
-          1.6T MoE 模型按 49B 激活算，一次 forward+backward state 需 ~600GB（参数 + 优化器 + activation）。
+          <strong>示意说明：</strong>省去单独 value model 可以降低额外训练状态与计算，但 V4 报告没有公开单次训练 state 的显存账。
           <ul>
-            <li><strong>PPO 含 critic</strong>：actor 600 + critic 600 + critic optimizer 200 ≈ <em>1400GB</em>；</li>
-            <li><strong>GRPO</strong>：只 actor 600 + 一组 rollout buffer ~5GB ≈ <em>605GB</em>；</li>
-            <li>差额 800GB / 节点，<strong>同样集群下 GRPO 能并行 2× 多 specialist</strong>。</li>
+            <li><strong>PPO</strong>：需要维护或计算 value function；</li>
+            <li><strong>GRPO</strong>：用组内 reward 统计构造相对优势，不训练独立 value model；</li>
+            <li>实际节省量依赖实现，报告没有给出 600GB、1400GB 或 2× 等数据。</li>
           </ul>
-          再叠加 G=8 组内 rollout 共享同一个 prefill（prompt 部分），相当于"显存少一半 + 一次 prefill 摊到 8 条"。这就是 V4 能并行训 10 个 specialist 的根本原因。
+          同一 prompt 的多条 responses 可以共享 prefill，这是常见工程优化；V4 报告没有披露 $G=8$，也没有将其称为训练多个 specialist 的根本原因。
         </div>
 
         <!-- ================== §3 GRM ================== -->
@@ -141,7 +136,7 @@
         <ul>
           <li><strong>Rule-based</strong>：数学答案精确匹配、format 校验。最干净但只覆盖少数任务；</li>
           <li><strong>Unit-test</strong>：代码任务跑测试。覆盖代码全栈；</li>
-          <li><strong>Reward Model</strong>：训一个网络给"质量"打分。覆盖一切其它任务（写作 / 规划 / Agent 决策）—— 但<strong>训 RM 本身需要海量人工偏好标注</strong>，每万样本 ~$10K 起。</li>
+          <li><strong>Scalar Reward Model</strong>：训练一个模型输出质量分数，常用于难以由规则直接验证的任务。传统 RLHF 通常需要较多人工标注；V4 报告没有给出固定样本量或成本。</li>
         </ul>
 
         <p>
@@ -157,11 +152,11 @@ score: 6/10</code></pre>
           <div class="callout-title">📖 GRM 为什么能 work</div>
           <p>三件事一起作用：</p>
           <ol>
-            <li><strong>复用 actor 已有的 reasoning 能力</strong>：scalar RM 是从头训的小模型；GRM 直接<em>用 actor 同样的 backbone 在评分模式下推理</em>，相当于"模型给自己当评委" —— actor 知道的东西 GRM 也知道；</li>
-            <li><strong>解释能力是抗 reward hacking 的护城河</strong>：scalar RM 给 9.5 分但不解释，hack 容易（学会"凡是包含某 trigger 词都给高分"）；GRM 必须在 think 段落里<em>说出理由</em>，hack 成本陡升 —— 模型要同时学会"骗高分"和"自圆其说"；</li>
-            <li><strong>小批人工标注 → 大量自标注</strong>：人工只标 ~1K 高质量 (trajectory, reasoning, score) 三元组训 GRM 起步，之后让 GRM 给 99% 的 trajectory 自打分。<em>10 万样本的标注成本从 $100K 降到 $1K 数量级</em>。</li>
+            <li><strong>把生成与评价放进同一 actor</strong>：报告称 actor network 原生承担 GRM 角色，使生成能力和 judging proficiency 可以联合优化；这不等于每次都由同一份在线 policy 给自己打分。</li>
+            <li><strong>让 reasoning 参与评价</strong>：GRM 以生成方式分析 trajectory，再输出评分。报告将这种内部 reasoning 与更稳健的评分联系起来，但没有证明它能消除 reward hacking。</li>
+            <li><strong>减少标注依赖</strong>：报告称 rubric-guided data 与 GRM 只需要少量多样化人工标注，但没有给出 1K、99% 或具体美元成本。</li>
           </ol>
-          <p>从工程哲学上，GRM 是 V4 的"<em>把判别问题转成生成问题</em>"姿态在 reward 上的延伸 —— 与 SwiGLU 的乘性结构、CSA 的 Lightning Indexer 同根（用模型已有能力替专门组件）。</p>
+          <p>可以把 GRM 理解为“用生成式 reasoning 完成评价”，它与 scalar reward model 的主要区别在输出与训练方式，而不是与注意力或激活函数共享某种算法结构。</p>
         </div>
 
         <h3 id="effort">4. 三档 Reasoning Effort：让同一专家有三个推理 budget</h3>
@@ -176,9 +171,9 @@ score: 6/10</code></pre>
               <tr><th>档</th><th>响应格式</th><th>RL ctx</th><th>length penalty</th><th>典型场景</th></tr>
             </thead>
             <tbody>
-              <tr><td><strong>Non-think</strong></td><td><code>&lt;/think&gt;</code> + 直接答</td><td>8K</td><td>强</td><td>日常对话 / 低风险</td></tr>
-              <tr><td><strong>Think High</strong></td><td><code>&lt;think&gt;…&lt;/think&gt;</code> + 答</td><td>128K</td><td>中</td><td>规划 / 中风险决策</td></tr>
-              <tr><td><strong>Think Max</strong></td><td>+ 系统强约束 prompt + 完整 thinking</td><td>384K</td><td>弱</td><td>奥数 / 极限推理</td></tr>
+              <tr><td><strong>Non-think</strong></td><td><code>&lt;/think&gt;</code> + summary</td><td>8K</td><td>未披露</td><td>日常任务 / 低风险决策</td></tr>
+              <tr><td><strong>Think High</strong></td><td><code>&lt;think&gt;…&lt;/think&gt;</code> + summary</td><td>128K</td><td>未披露</td><td>复杂问题 / 规划 / 中风险决策</td></tr>
+              <tr><td><strong>Think Max</strong></td><td>特殊 system prompt + thinking + summary</td><td>384K</td><td>未披露</td><td>探索推理能力边界</td></tr>
             </tbody>
           </table>
         </div>
@@ -198,13 +193,13 @@ score: 6/10</code></pre>
           <img src="../figures/ch16/2.png" alt="Think Max 模式注入的 Injected Instruction 全文">
           <figcaption>
             <strong>图 16-2 · Think Max 模式的强约束 prompt 全文（论文 Table 3）。</strong>
-            注意三个关键短语：<em>Absolute maximum with no shortcuts permitted</em>（禁止任何捷径）、<em>rigorously stress-testing your logic against all potential paths, edge cases, and adversarial scenarios</em>（必须主动对抗自己的结论）、<em>Explicitly write out your entire deliberation process, documenting every intermediate step, considered alternative, and rejected hypothesis</em>（每一个被否决的假设都要写下来）。这段 prompt 是 Specialist 训练时<em>注入到 system 段</em>，用 length penalty 把模型的 thinking 段拉到普通模式的 5–10×。
+            Table 3 的指令要求最大化推理强度、检查路径与边界情况，并记录中间步骤和被否决的假设。报告说明 Think Max 会在 system prompt 开头加入这段指令，但没有给出它把 thinking 长度提高 5–10× 的统计。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training，Table 3，p. 30。</span>
           </figcaption>
         </figure>
 
         <p>
-          Think Max 在 system prompt 前注入一段强制深度思考的指令（论文 Table 3，简言之就是"绝对最大推理强度，必须穷尽所有路径与对抗场景"）。这条 system prompt 不是简单的 hint，而是<em>训练时和推理时都用</em>的一致约束 —— RL 时模型在这个 prompt 下被 length penalty 弱化、context 拉到 384K，于是学会"在被允许长 think 时确实长 think"。
+          Think Max 在 system prompt 开头加入一段提高推理强度的指令，并使用专门的 response format。报告还说明三档在 RL 中采用不同 length penalty 与 context window；384K 是评测设置中的 Max context，不能直接写成 RL 训练窗口。
         </p>
 
         <!-- ================== VIZ: 三档 effort ================== -->
@@ -276,20 +271,20 @@ score: 6/10</code></pre>
             </label>
           </div>
           <p class="viz-caption">
-            <strong>读图法</strong>：三条曲线是三类任务难度的"精度 vs token budget"关系。绿线（日常对话）在 1K token 就饱和；蓝线（中等推理）在 8K–128K 之间陡升；红线（奥数）在 128K 之后还在涨，需要 384K 才接近上限。
+            <strong>读图法</strong>：三条曲线只是用来说明“不同任务对推理预算的收益曲线可能不同”，并非 V4 benchmark 拟合结果。8K、128K、384K 是报告的三档评测 context。
             <br>
-            把滑条拉到 <strong>Non-think 区</strong>（8K 以下）你能看到红线还在 ~50% 半饱和；拉到 <strong>Think Max</strong>（>128K）红线接近 ~85% —— 这就是 V4 必须做三档训练的原因：<em>不同任务的最优 budget 差 100×+</em>，固定 budget 总有一档浪费或一档不够。
+            图中的 50%、85% 和曲线形状均为教学参数，不能当作论文成绩或“最优 budget 相差 100×”的证据。
           </p>
         </div>
 
         <!-- ================== §5 Cookbook ================== -->
         <h3 id="cookbook">5. 一个 Specialist 的训练 cookbook</h3>
         <ol>
-          <li><strong>起点</strong>：从 V4-Pro/Flash-Base 出发（Ch15 Base 评测里的"高 ceiling"基座）；</li>
+          <li><strong>起点</strong>：从 V4-Pro / Flash 的 Base 模型进入领域 fine-tuning；</li>
           <li><strong>SFT</strong>：用领域内高质量 (prompt, gold answer) 对走 1-2 epoch SFT，让模型学到领域 schema 与基本回答格式；</li>
-          <li><strong>RL（GRPO）</strong>：每个 prompt 采 G=8 条 rollout，按 GRPO advantage 更新。Reward 视任务而定 —— 数学 rule-based、代码 unit-test、其余 GRM；</li>
-          <li><strong>三档 effort 各跑一遍</strong>：分别在 8K / 128K / 384K context + 不同 length penalty 下 RL，得到 Non-think / High / Max 三个 checkpoint；</li>
-          <li><strong>交付</strong>：N 个领域 × 3 档 = ~30 个 specialist checkpoint，全部 frozen，作为 Ch18 OPD 阶段的"老师团"。</li>
+          <li><strong>RL（GRPO）</strong>：在领域 prompt 与 reward signals 下优化；报告没有披露每个 prompt 的 rollout 数。</li>
+          <li><strong>Reasoning effort</strong>：不同模式在 RL 中采用不同 length penalty 与 context window；三档的评测 context 为 8K / 128K / 384K。</li>
+          <li><strong>交付</strong>：OPD 使用十余个领域 teacher 蒸馏统一 student；不能从报告推出约 30 个 checkpoint。</li>
         </ol>
 
         <div class="callout callout-good">
@@ -297,14 +292,13 @@ score: 6/10</code></pre>
           <p>
             specialist 在自己的领域内强但<em>不全面</em>：数学 specialist 不会处理 Agent 工具调用，代码 specialist 不会做长写作。直接把 N 个 checkpoint 部署也不可行 —— 用户不会按领域选模型。
             <br>
-            真正的 V4-Pro / Flash 是 Ch18 OPD 把这 30 个 checkpoint <strong>蒸成一个 student</strong>。所以本章训出的所有东西<em>都不会发布</em>，只是中间产物。这种"花大力气训一堆只为蒸馏"的做法在开源社区罕见，但对最终 ceiling 是值的。
+            最终 V4-Pro / Flash 通过 OPD 从十余个领域 teacher 学习并形成统一 student。报告没有公布每个 specialist checkpoint，也没有讨论它们是否会单独发布。
           </p>
         </div>
 
         <h3 id="summary">6. 一句话总结</h3>
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
-          <p>Specialist 阶段把 V3 的"混合 RL 一锅端"拆成<em>"先 N 个领域专家、再合一"</em>两阶段；GRPO 用<strong>组内统计 baseline</strong> 替掉 critic 让 N 倍并行成立，GRM 用<strong>生成式打分</strong>把 hard-to-verify 任务的标注成本降两个数量级，三档 reasoning effort 让同一专家覆盖 100× 的推理 budget 跨度。这一切都是在为 Ch18 OPD 的"反向 KL 蒸馏"备料。</p>
+          <p>Specialist 阶段先按领域进行 SFT 与 GRPO，再由 OPD 将十余个 teacher 的能力合入统一 student。GRM 用生成式评估覆盖难验证任务；三种 reasoning effort 则通过不同长度惩罚、context window 与 response format 控制推理强度。报告没有量化 N 倍并行、标注成本降幅或 100× budget。</p>
         </div>
 
       </article>
@@ -319,7 +313,7 @@ score: 6/10</code></pre>
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: 三档 reasoning effort 的 token budget vs accuracy

@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch15">
 
@@ -33,44 +33,44 @@
       <article id="ch15" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第三部分 · 预训练 · 15</div>
         <h2 class="chapter-title">Base 评测 — 出厂前的体检</h2>
-        <p class="chapter-sub">为什么 V3.2-Base 用 671B 参数、V4-Flash-Base 只用 284B 反而压过它，FACTS Parametric 从 27.1 跳到 62.6 的"知识密度跃迁"意味着什么，以及为什么 Base 评测 — 而不是后训练分数 — 决定了 OPD 蒸馏的真实 ceiling。</p>
+        <p class="chapter-sub">V4-Flash-Base 以 284B 总参数在多数基准上超过 V3.2-Base；V4-Pro-Base 则进一步取得 FACTS Parametric 62.6。Base 评测用于观察架构、数据和预训练改动在后训练前的综合效果。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂"Base 评测"</div>
-          <p class="term-name">Base 评测 = 在 SFT/RL/OPD 全部后训练之前，对纯预训练完成的 Base 模型做的体检；目的是隔离<em>架构红利 + 数据红利</em>，与"对齐红利"区分开</p>
+          <p class="term-name">Base 评测 = 在 SFT、RL、OPD 等后训练之前，对预训练完成的 Base 模型做的体检；它能排除后训练影响，但不能单独拆分架构、数据与优化器各自的贡献</p>
           <p>
-            一句话：<strong>SFT 后的分数会被对齐 trick 美化，Base 分数才是模型真实知识的"裸照"</strong>。V4 单列 Table 1 是为了让读者看清 —— Pro 在后训练前就<em>已经</em>把 V3.2 全面甩开，这意味着 Ch3-Ch14 累计的架构 + 数据红利是真的。
+            一句话：<strong>Base 分数观察的是后训练前的综合能力</strong>。V4 的 Table 1 在统一内部评测设置下比较 V3.2、V4-Flash 与 V4-Pro，说明 V4 的架构、数据和训练改动在进入后训练前已经带来总体提升；这张表本身不提供单因素消融。
           </p>
           <dl>
             <dt>Base Model（基座 / 预训练完成态）</dt>
-            <dd>只走完 pre-train + mid-training，<em>没做任何 SFT / RLHF / OPD</em> 的模型。文本输出是"补全风格"而非"对话风格"。<strong>是后训练 ceiling 的物理上限</strong> —— 后训练只能把 Base 已有能力激发出来，不能凭空创造。</dd>
+            <dd>完成预训练与 mid-training、尚未进入 SFT / RL / OPD 的模型。它适合观察后训练前的知识、推理和长上下文能力，但不能被视为后训练成绩的固定“物理上限”：后训练会改变行为分布，也能通过教师信号和工具使用提升任务表现。</dd>
 
             <dt>FACTS Parametric（Google DeepMind 2024）</dt>
-            <dd>专门测<em>模型参数里"真"事实知识浓度</em>的 benchmark。问题：参数化知识，不允许检索，不允许推理。$\approx$ 模型脑子里到底装了多少事实。<strong>对 pre-train 数据规模与质量极敏感</strong>，对 SFT/RL 几乎不敏感 —— 这是 Base 评测的"试金石"。</dd>
+            <dd>评估参数化事实知识的 benchmark。V4 报告用 25-shot、精确匹配口径评测，不引入外部检索。它能反映模型直接作答事实问题的表现，但论文没有证明该分数只由预训练数据决定，或对 SFT / RL 几乎不敏感。</dd>
 
             <dt>Simple-QA Verified</dt>
-            <dd>简单事实问答，验证答案精确匹配。每题只考<em>是 / 不是</em>，无 partial credit。<strong>对幻觉极敏感</strong> —— 模型不知道就乱答的话，分数会塌。Pro-Base 从 28.3 跳到 55.2 说明<em>幻觉率显著下降</em>。</dd>
+            <dd>经过核验的简短事实问答，V4 报告采用 25-shot、精确匹配口径。Pro-Base 从 28.3 提升到 55.2，说明该基准上的正确率提高；不能据此直接换算成开放式对话中的“幻觉率”。</dd>
 
             <dt>MMLU-Pro / MMLU-Redux</dt>
             <dd>MMLU-Pro：MMLU 升级版，更难的多学科考试题，含 STEM / 人文 / 法律 / 医学。MMLU-Redux：去除 MMLU 中已知错误的修正版。<em>主流"综合智能"指标</em>。MMLU-Pro 比 MMLU 更难，分数更低更分散，更能区分模型能力。</dd>
 
             <dt>MultiLoKo（Multilingual Long-tail Knowledge）</dt>
-            <dd>多语言长尾知识 benchmark，覆盖小语种 + 文化特定知识。Pro-Base 从 38.7 跳到 51.1 直接验证 V4 数据策展<em>"重点提升长尾文化语言"</em>这条策略真有效。</dd>
+            <dd>多语言长尾知识 benchmark。Pro-Base 从 38.7 提升到 51.1，与报告中扩大多语言数据的做法方向一致；由于没有只改变数据配方的消融实验，不能把全部增益归因于某一项数据策略。</dd>
 
             <dt>BBH（Big-Bench Hard, Suzgun 2022）</dt>
-            <dd>Big-Bench 中 23 个被认为"对当时模型最难"的子集。<em>主测多步推理</em>。这一项 V4-Pro 87.5 vs V3.2 87.6 几乎打平 —— 说明纯推理能力<strong>已经接近 ceiling</strong>，再大的模型在这个 benchmark 上也只能微涨。</dd>
+            <dd>Big-Bench 中一组较难的任务集合，覆盖算法、逻辑与多步推理等能力。V4-Pro 为 87.5，V3.2 为 87.6；按论文“差距不超过 0.3 视为同档”的口径，两者相当。单个近饱和分数不足以证明通用推理已经达到上限。</dd>
 
             <dt>LongBench-V2</dt>
-            <dd>长上下文 benchmark v2，128K-1M 上下文的问答 / 总结 / 代码任务。<em>对 V4 的 CSA / HCA 是命门测试</em>。Pro 从 V3.2 的 40.2 跳到 51.5（+11），<strong>证明 sparse attention 不只是"省 KV"，而是真的把长上下文能力提上去了</strong>。</dd>
+            <dd>长上下文理解基准。Pro 从 V3.2 的 40.2 提升到 51.5，说明 V4-Pro 在该统一评测设置下表现更好。结果与 CSA / HCA 和长上下文训练的设计目标一致，但不能仅凭这一行把增益全部归因于注意力架构。</dd>
 
             <dt>知识密度（Knowledge Density / Tokens-per-Parameter）</dt>
-            <dd>非正式概念：相同参数量下能"记住"多少事实。$\propto$ 训练 token 数 / 激活参数数。V4-Flash 32T / 13B ≈ 2461 tokens/param，远高于 V3.2 14.8T / 37B ≈ 400。<em>这是 Flash 用更少参数赢更多 benchmark 的核心解释</em>。</dd>
+            <dd>“训练 tokens / 激活参数”只能作为粗略描述，不能直接等同于知识密度，更不能推出 FACTS 分数。Flash 的提升可能同时来自架构、数据质量、数据规模和训练策略；报告没有做因果拆分。</dd>
 
             <dt>Ceiling（后训练上限）</dt>
-            <dd>OPD（Ch18 反向 KL 蒸馏）的产出 = $\min$(student capacity, teacher knowledge)。Base 知识不够，再好的 teacher 蒸馏后学生也只能"知其名不知其详"。<strong>Pro-Base 的 FACTS +35.5 直接定义了 OPD 能蒸出多大的 Pro-Max</strong>。</dd>
+            <dd>“后训练上限”是便于讨论的直觉，不是报告给出的等式。OPD 的结果受学生容量、教师分布、训练数据、采样策略和优化过程共同影响，不能由某个 Base benchmark 分数直接计算。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>Base 评测是把"V4 比 V3 强"这件事的<em>原因</em>从架构 / 数据 / 后训练三层里隔离出来。结论：架构 + 数据红利在后训练之前就已经把分数推上去了，这意味着 Ch3-Ch14 不是表演。读完这章你应该能解释为什么 V4-Flash（284B）在大多数 benchmark 上反超 V3.2（671B）。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>Base 评测排除了 SFT、RL 与 OPD 的影响，呈现预训练体系的综合结果；它能说明 Flash 以更少总参数和激活参数在多数评测上超过 V3.2，却不能继续拆分架构、数据与优化器各贡献多少。</div>
         </div>
 
         <!-- ================== §1 三模型同框 ================== -->
@@ -84,7 +84,7 @@
           <li><strong>V4-Pro-Base</strong>：1.6T 总参 / 49B 激活，33T tokens。</li>
         </ul>
         <p>
-          这种三方对比的<em>实验设计意图</em>很清晰：Flash 与 V3.2 比"<strong>架构 + 数据红利</strong>"（参数减少但分数升），Pro 与 V3.2 比"<strong>规模红利</strong>"（参数加倍后能跳多少），Flash 与 Pro 比"<strong>架构 ceiling</strong>"（同架构不同尺寸的差距）。三方放一起读，才能把红利来源拆清楚。
+          这组对比能回答“在各自完整训练配方下，三种 Base 模型表现如何”：Flash 展示更紧凑参数预算下的总体效果，Pro 展示更大模型配置下的总体效果。由于模型规模、token 数和部分配置同时变化，不能把任一差值解释成纯粹的“规模红利”或单一架构收益。
         </p>
 
         <h3 id="table">2. 节选关键评测（Table 1）</h3>
@@ -119,7 +119,7 @@
         <figure class="paper-fig">
           <img src="../figures/ch15/01.png" alt="V4 论文 Table 1 — V3.2-Base / V4-Flash-Base / V4-Pro-Base 在 World Knowl. / Lang. &amp; Reas. / Code &amp; Math / Long Context 四类 benchmark 的全量对比">
           <figcaption>
-            图 15-1 · <strong>V4 论文 Table 1 全量版</strong>。上方节选表只保留了 13 项最有代表性的 benchmark；论文原表共 17 项，覆盖更细的多语种（CMMLU / MMMLU / TriviaQA）、更细的代码/数学（BigCodeBench / MGSM / CMath）、更细的语言推理（WinoGrande / CLUEWSC）。最高分加粗、第二高下划线。<em>差距 ≤ 0.3 视为同档</em>。
+            图 15-1 · <strong>V4 论文 Table 1 全量版</strong>。上方节选表保留了 13 项；论文原表共 24 项，另外还包括 AGIEval、MMLU、MMMLU、CMMLU、SuperGPQA、TriviaQA、WinoGrande、CLUEWSC、BigCodeBench、MGSM 与 CMath。原表最高分加粗、第二高下划线，并规定<em>差距不超过 0.3 视为同档</em>。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §4.3.2 Evaluation Results，Table 1，p. 28。</span>
           </figcaption>
         </figure>
@@ -152,9 +152,9 @@
           <p class="viz-caption">
             <strong>读图法</strong>：每行一个 benchmark，三条横条分别对应 V3.2 / Flash / Pro。
             <br>
-            切到 <strong>World Knowledge</strong> 看到 FACTS Parametric / Simple-QA / MultiLoKo 三项 Pro 跳得最远 —— <em>知识类的爆发式跃迁</em>。
-            切到 <strong>Lang & Reasoning</strong> 看 BBH 上 V3.2 与 V4-Pro 几乎打平 —— <em>纯推理能力已接近 ceiling</em>，更大模型也榨不出多少。
-            切到 <strong>Long Context</strong> 看 LongBench-V2 +11 —— <em>CSA/HCA 没白做</em>。
+            切到 <strong>World Knowledge</strong>，可看到 Pro 在 FACTS Parametric、Simple-QA Verified 和 MultiLoKo 上提升较大。
+            切到 <strong>Lang & Reasoning</strong>，可看到 BBH 上 V3.2 与 V4-Pro 处于同档。
+            切到 <strong>Long Context</strong>，可看到 LongBench-V2 从 40.2 提升到 51.5；这是整套 V4 训练配置的结果，不能单独归因于 CSA / HCA。
           </p>
         </div>
 
@@ -162,55 +162,53 @@
         <h3 id="storyline">3. 两条故事线</h3>
 
         <div class="callout callout-info">
-          <div class="callout-title">故事线 A：Flash 用一半参数压过 V3.2</div>
+          <div class="callout-title">故事线 A：Flash 用更少参数在多数评测上超过 V3.2</div>
           <p>
-            V4-Flash-Base 总参 284B（< V3.2 的 671B），激活参数 13B（< V3.2 的 37B），<strong>但在 13 项中赢 11 项</strong>（仅 BBH 与 GSM8K 微败）。
+            V4-Flash-Base 总参 284B（低于 V3.2 的 671B），激活参数 13B（低于 V3.2 的 37B）。论文对完整 24 项评测的结论是：Flash 在多数评测上超过 V3.2，优势主要体现在世界知识与长上下文任务；它并非每项都领先。
           </p>
           <ul>
-            <li>这<em>不是</em> "数据多 1.2× 就能超"那么简单 —— 同样数据量喂同样参数量级别的 V3.2 也不会跳这么多；</li>
-            <li>这<em>是</em> 架构 + 数据 + 训练优化三件事联动的复利：mHC 让深度堆叠不损能力、CSA/HCA 让长文档真训得动、长文档加权让知识密度提升、sample-level mask 切干净 packing 噪声、Anticipatory + Clamping 让 1.6T 路径稳住；</li>
-            <li>把这些单独贡献相加估算约 +3 ~ +5 分，<strong>但实际跳了 +5 ~ +25 分</strong>。差额来自三件事的相互放大。</li>
+            <li>Flash 与 V3.2 不只参数量不同：训练 token、数据配方、架构和优化方法都发生了变化。</li>
+            <li>因此，较少的激活参数与较高的多数评测分数共同说明其完整训练体系具有更好的参数效率；报告没有给出各项改动的加法分解。</li>
           </ul>
         </div>
 
         <div class="callout callout-info">
-          <div class="callout-title">故事线 B：Pro 几乎全面统治</div>
+          <div class="callout-title">故事线 B：Pro 在绝大多数类别继续提升</div>
           <p>
-            Pro-Base 在 17 项中赢 14。两个数字尤其值得圈：
+            Pro-Base 在世界知识、语言与推理、代码与数学、长上下文等多数项目上领先，但 BigCodeBench、MGSM、CMath 等项目并非最高。两个提升较大的数字尤其值得关注：
           </p>
           <ul>
-            <li><strong>FACTS Parametric: 27.1 → 62.6（+35.5）</strong>。这是 V4 报告里最显眼的跳分。FACTS 测的就是<em>"参数里装了多少事实"</em>，对训练数据质量极敏感。这条直接验证了"长文档优先 + 长尾多语言扩容"是真的有效的策略；</li>
-            <li><strong>Simple-QA Verified: 28.3 → 55.2（+27）</strong>。简单事实问答的精确匹配几乎翻倍。意味着<em>幻觉率</em>显著下降 —— 模型不再"不知道就乱答"。</li>
+            <li><strong>FACTS Parametric: V3.2 27.1、Flash 33.9、Pro 62.6</strong>。这显示 Pro-Base 在参数化事实知识基准上提升显著，但单个 benchmark 不能直接证明提升来自长文档或多语言数据。</li>
+            <li><strong>Simple-QA Verified: 28.3 → 55.2（+26.9）</strong>。这一结果说明经过核验的简短事实问答准确率提高；它不能直接等同为所有场景中的“幻觉率下降”。</li>
           </ul>
-          <p>这两个数字直接<strong>定义了 Ch18 OPD 蒸馏能蒸出多大的 ceiling</strong>。OPD 是反向 KL 蒸馏，学生模型期望从 specialist teacher 学到工具使用、知识、推理。<em>teacher 知识密度高，student 才学得到</em>。</p>
+          <p>这两个数字说明 Pro-Base 为后训练提供了更强的事实问答起点。Ch18 的 OPD 会继续利用多个 specialist teacher 的完整输出分布，但最终效果不能由这两个 Base 分数直接推出。</p>
         </div>
 
         <h3 id="why-base">4. 为什么 Base 评测最关键</h3>
         <p>
-          很多读者会跳过 Base 直接看 SFT 后的成绩。论文之所以单列 Table 1，是为了让读者看到<em>无对齐 trick 干扰的真实能力</em>：
+          很多读者会跳过 Base 直接看后训练成绩。Table 1 的价值在于：它先固定评测框架，观察后训练介入前的模型表现。
         </p>
 
         <ol>
-          <li><strong>SFT 会"做高分"</strong>：通过模仿 benchmark 风格的回答模板、对齐 prompt 格式可以涨 5-10 分，但这是<em>表层模仿</em>，不是真知识。Base 没经过 SFT，分数最诚实；</li>
-          <li><strong>OPD 的 ceiling = Base 的 ceiling</strong>：OPD（Ch18）通过 reverse-KL 把 teacher 的 logit 蒸馏给 student。<em>如果 student Base 不会某事实，OPD 也学不会</em>（teacher 给的 logit 里没有它的世界观）；</li>
-          <li><strong>架构变化的代价"不损能力"在 Base 上验证</strong>：CSA/HCA 把 KV 大幅压缩、FP4 QAT 砍精度、mHC 改残差结构 —— 任何一项都可能损能力。Base 评测<em>就是给这套激进改造的"无罪证明"</em>；</li>
-          <li><strong>Flash vs Pro 的能力差在 Base 阶段已定型</strong>：MMLU-Pro 差 5.2 分（68.3 vs 73.5）。<em>无论后训练怎么补，Flash-Max 在知识类弱于 Pro-Max 的根因就在这</em>。</li>
+          <li><strong>排除后训练变量</strong>：Base 模型尚未进行 SFT、RL 与 OPD，分数不会混入这些阶段的影响；</li>
+          <li><strong>观察综合预训练结果</strong>：表格同时反映架构、数据、模型规模和训练优化的合成效果，不是单项消融；</li>
+          <li><strong>检查效率取舍</strong>：Flash 以更少的总参数与激活参数在多数项目上超过 V3.2，但在 BBH、HellaSwag、BigCodeBench、GSM8K、MATH 等项目并不领先；</li>
+          <li><strong>比较两个 V4 尺寸</strong>：Pro 在多数项目上进一步提高，但 Flash 仍在 MGSM 与 CMath 等少数项目上更高，后训练后的相对表现还需看对应评测。</li>
         </ol>
 
         <div class="numex">
-          <span class="numex-tag">数值演练 · 知识密度三连</span>
+          <span class="numex-tag">数值演练 · 只看作训练强度的粗略比值</span>
           <ul>
             <li><strong>V3.2</strong>: 14.8T tokens / 37B 激活 ≈ <em>400 tokens/param</em>；</li>
             <li><strong>V4-Flash</strong>: 32T tokens / 13B 激活 ≈ <em>2461 tokens/param</em>（V3.2 的 6.2×）；</li>
             <li><strong>V4-Pro</strong>: 33T tokens / 49B 激活 ≈ <em>673 tokens/param</em>（V3.2 的 1.7×）。</li>
           </ul>
-          按知识密度论，Flash 反而最高。但 FACTS Pro 62.6 &gt; Flash 33.9 &gt; V3.2 27.1 —— <strong>知识容量最终仍由"激活参数 × 密度"共同决定</strong>，Pro 的总容量 49B × 673 ≈ 33000 单位，Flash 13B × 2461 ≈ 32000 单位，几乎相同；但 V3.2 仅 37B × 400 ≈ 15000 —— <em>两者都比 V3.2 多一倍容量</em>。这条估算解释了 Flash 为什么能逼平 Pro。
+          MoE 每个 token 只激活部分参数，因此“训练 token / 激活参数”可以描述一种计算侧的粗略训练强度；它不是稠密模型常用的 tokens-per-total-parameter 口径，也不是论文采用的“知识密度”指标。不能用这个比值预测 FACTS 分数或解释 Flash 与 Pro 的能力差。
         </div>
 
         <h3 id="summary">5. 一句话总结</h3>
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
-          <p>Base 评测把"V4 比 V3 强"的<em>原因</em>从架构 / 数据 / 后训练三层里隔离开 —— V4-Flash 用一半参数压过 V3.2 的事实证明：<strong>架构红利 + 数据红利早在后训练之前就已经兑现</strong>，FACTS +35.5 / Simple-QA +27 直接定义了 Ch18 OPD 能蒸出多大的 ceiling。Part 3 至此结束，下面进入后训练 —— 但请记住：<em>后训练只能激发，无法创造</em>。</p>
+          <p>Base 评测排除了后训练影响，但没有把架构、数据质量、token 数和优化器贡献彼此分离。Flash-Base 在多数基准上超过 V3.2-Base，Pro-Base 又进一步提升，为后训练提供了更强起点；不能把某两个分数直接解释为 OPD 的数学 ceiling。</p>
         </div>
 
       </article>
@@ -225,7 +223,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: 三模型对比柱状图

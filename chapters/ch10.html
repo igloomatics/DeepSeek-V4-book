@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch10">
 
@@ -33,7 +33,7 @@
       <article id="ch10" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 10</div>
         <h2 class="chapter-title">FP4 QAT — 显存的最后一刀</h2>
-        <p class="chapter-sub">为什么 V4 敢把 MoE 专家权重和 CSA Indexer QK 路径降到 FP4，"FP4 → FP8 反量化无损"是怎么靠 sub-block scale 嵌套做到的，以及训练用模拟 FP4 / 推理用真 FP4 是怎么做到 bit-identical。</p>
+        <p class="chapter-sub">V4 在后训练阶段对 MoE expert weights 与 CSA Indexer QK 路径执行 FP4 QAT。FP4 权重可无损展开到 FP8 表示，以复用现有 FP8 训练框架；推理和 rollout 则直接加载原生 FP4 权重。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
@@ -41,8 +41,8 @@
           <p class="term-name">FP4 QAT = 量化感知训练（Quantization-Aware Training），把 MoE 专家权重存成 4-bit 浮点，forward 在 FP8 下算，反向梯度用直通估计回灌到 FP32 master 权重</p>
           <p>
             一句话：<strong>用 4 bit 存权重（每个数 16 个码点），forward 把 4 bit dequant 到 FP8 算 GEMM，backward 梯度直接打回 FP32 master</strong>。
-            关键工程发现：FP4 sub-block (1×32) 和 FP8 量化块 (128×128) 的 scale 比值<em>正好</em>落在 FP8 E4M3 的动态范围内，因此 dequant 完全无损 —— 训练时模拟 FP4 与推理时真 FP4 字节相同。
-            收益：MoE 权重显存 ÷ 4，推理 throughput +1.5×。
+            关键工程条件：只要 FP4 sub-block scale 与 FP8 block scale 的比例不超过阈值，FP4 值就能无额外舍入地展开到 FP8。团队验证当前权重满足这一条件；报告没有给出固定比例区间，也没有声称跨硬件输出 bit-identical。
+            相对 BF16，4-bit 权重的原始载荷约为四分之一；实际节省还要计入 scale、未量化参数和运行时缓冲。报告没有给出固定的端到端吞吐倍数。
           </p>
           <dl>
             <dt>FP4 (E2M1)</dt>
@@ -52,27 +52,27 @@
             <dd>8 bit 浮点：1+4+3。<em>动态范围 ~448</em>，常用于 forward GEMM 输入/输出。V4 GEMM 的内部精度。</dd>
 
             <dt>QAT（Quantization-Aware Training）</dt>
-            <dd>训练时就<em>模拟量化</em>：每步 forward 前把权重量化再反量化（fake quant），让模型自己学到量化噪声下的稳定参数。<em>对比 PTQ（Post-Training Quant）</em>：PTQ 训完才量，质量损失大；QAT 训中量，质量几乎无损。</dd>
+            <dd>训练时模拟量化：forward 前把权重量化再展开，让模型在量化误差存在时继续优化。相比训练后才量化的 PTQ，QAT 可以更早适应低精度；实际质量差异取决于模型和量化方案，报告没有给出统一的“几乎无损”结论。</dd>
 
             <dt>FP32 Master 权重</dt>
-            <dd>每个参数还有一份 FP32 副本作为<em>梯度累加目标</em>。FP4 仅是"前向使用的视图"。这样小梯度不会被 FP4 的 0.5 步长吞掉。代价：每个参数多 4 字节内存；收益：训练稳定。</dd>
+            <dd>优化器为被量化的权重维护 FP32 master copy；FP4 是前向使用的低精度视图，梯度最终传播回 FP32 master weights。训练内存还包含梯度与优化器状态，不能只按“每参数多 4 字节”计算。</dd>
 
             <dt>STE（Straight-Through Estimator · 直通估计）</dt>
             <dd>量化 $Q(\cdot)$ 的导数处处为 0（阶梯函数），梯度无法回传。STE 的 trick：<em>反向时假装 $\partial Q / \partial w = 1$</em>，把梯度直接穿过量化算子。粗暴但有效，是所有 QAT 的根基。</dd>
 
             <dt>Sub-block 嵌套 scale</dt>
-            <dd>V4 的核心 trick：FP4 用 1×32 的小块，每块共享一个 FP8 scale；FP8 用 128×128 的大块，每块共享一个 FP32 scale。<strong>FP4 块的 FP8 scale 落在 FP8 E4M3 范围内</strong> → 反量化时 scale 本身能精确表达 → 整个嵌套不引入舍入误差。</dd>
+            <dd>V4 在 128×128 的 FP8 quantization block 内使用 1×32 的 FP4 sub-block scale。只要这些细粒度 scale 的最大值与最小值之比不超过某个阈值，FP8 E4M3 多出的指数范围就能完整吸收 scale 差异。报告称当前权重经实证满足该条件，但没有公开阈值。</dd>
 
             <dt>STE 等价：梯度打到 FP8 权重</dt>
-            <dd>V4 的具体实现：forward 用 FP8 反量化的权重，backward 把梯度直接累加到 FP8 中间表示（不是 FP4）。然后再把 FP8 累加结果同步回 FP32 master。<em>这等价于对 FP4 量化算子的 STE</em>，但实现更高效。</dd>
+            <dd>forward 使用从 FP4 无额外舍入展开得到的 FP8 权重；backward 对同一 FP8 权重计算梯度，并直接传播回 FP32 master weights。这等价于在量化操作上使用 STE，也避免重新量化转置权重。</dd>
 
             <dt>Indexer FP4 + BF16 score</dt>
-            <dd>CSA 的 Lightning Indexer 也走 FP4：QK 投影用 FP4 权重，indexer score $I_{t,s}$ 由 FP32 降到 BF16。实测<strong>top-k selector 提速 2×、99.7% recall 保留</strong>。这是把 FP4 推到注意力路径的勇敢一步。</dd>
+            <dd>CSA 的 Lightning Indexer 也走低精度路径：QK activations 的缓存、读取和乘法全部使用 FP4，index score $I_{t,s}$ 再从 FP32 量化到 BF16。报告称这一优化使 top-k selector 提速 2×，同时保持 99.7% 的 KV-entry recall。</dd>
 
             <dt>真 FP4 推理 vs 模拟 FP4 训练</dt>
-            <dd>训练时硬件可能没原生 FP4 GEMM，于是<em>用 FP8 模拟</em>（dequant 到 FP8 再算）；推理硬件（Hopper FP4 / Blackwell）有原生 FP4 GEMM，<em>权重直接以 FP4 存盘</em>。因为 sub-block 嵌套无损，<strong>两者输出 bit-identical</strong>。</dd>
+            <dd>训练 step 将 FP4 权重无额外舍入地展开到 FP8，复用 FP8 mixed-precision pipeline；rollout 与 inference-only forward 直接使用原生 MXFP4 权重。报告只说采样行为与线上部署保持一致，不承诺跨硬件逐 bit 输出一致。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>FP4 不是简单的"再降两 bit"，而是<em>用 sub-block scale 嵌套换无损 dequant</em>，让训练和推理跨硬件 bit-identical。MoE 权重砍 4 倍显存、Indexer 减半延迟，是 V4 在万亿参数时代仍能放进 8×H100 单机的关键。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>FP4 QAT 先把 FP32 master weights 量化为 FP4，再无额外舍入地展开到 FP8 参与训练 forward。推理直接加载 FP4，可降低 inference-only 路径的内存流量；这不等于整台 8×H100 能容纳完整 Pro，也不等于跨硬件 bit-identical。</div>
         </div>
 
         <!-- ================== §1 为什么要做到 FP4 ================== -->
@@ -82,17 +82,17 @@
         </p>
         <div class="numex">
           <span class="numex-tag">数值演练 · MoE 权重显存账</span>
-          1.6T 参数中 MoE 占 ~1.4T（384 个 expert × ~3.6B 每个）。各精度下的显存：
+          如果只做位宽换算，1.6T 个参数在不同数据类型下的理论原始载荷为：
           <ul>
-            <li><strong>BF16</strong>: 1.4T × 2 B = <em>2.8 TB</em>，需要 35× 80GB H100 仅装权重；</li>
-            <li><strong>FP8</strong>: 1.4T × 1 B = <em>1.4 TB</em>，需要 18× H100；</li>
-            <li><strong>FP4</strong>: 1.4T × 0.5 B = <em>700 GB</em>，<strong>9× H100 即可装下</strong>，配合 MoE only-load-active-experts 可以推到单节点 8 卡部署。</li>
+            <li><strong>BF16</strong>：约 3.2 TB；</li>
+            <li><strong>FP8</strong>：约 1.6 TB；</li>
+            <li><strong>FP4</strong>：约 0.8 TB。</li>
           </ul>
-          <em>每减一个 bit 都要从模型质量里抠</em>，4 bit 是目前业界推理常用下限。但训练阶段降 bit 历来失败 —— FP8 训练已经险，FP4 训练 V4 是首次大规模成功。
+          这不是 V4-Pro 的实际部署显存：V4 只对 MoE expert weights 与 CSA indexer QK 路径应用 FP4，且还需 scale、非量化权重、KV cache 和运行时缓冲。报告没有给出单节点 8×H100 部署结论。
         </div>
 
         <p>
-          除了显存，FP4 GEMM 在新硬件（Hopper Tensor Core FP4、Blackwell）上吞吐是 FP8 的 2×，<strong>推理 throughput +1.5–2×</strong>。这是把 FP4 推上量化感知训练的另一动力。
+          原生支持 MXFP4 的硬件可以减少权重读取并提高低精度计算吞吐。V4 报告没有给出端到端推理提升 1.5–2× 的数字，也不应把 Hopper H100 描述为原生 MXFP4 目标硬件。
         </p>
 
         <!-- ================== §2 FP4 表是什么 ================== -->
@@ -145,7 +145,7 @@
           <p class="viz-caption">
             <strong>读图法</strong>：上轴是 FP4 16 个固定码点 —— 你能直观看到它们<em>非均匀</em>分布（小值密、大值稀，浮点的本性）。下轴是一个 sub-block 内 32 个真实权重；蓝→红 = 量化前→量化后。
             <br>
-            点"长尾分布"看到一旦某个权重远大于其他（如 0.95 vs 其余 0.05），<strong>scale 被它单挑撑大</strong>，所有小权重一起塌进 0 附近的码点 —— 这就是<em>异常值 outlier</em> 问题，QAT 训练时模型自己学着不让权重出现长尾，所以训完的模型对 FP4 友好。
+            点"长尾分布"可看到：若 scale 由块内最大绝对值决定，单个大值会增大量化步距，使小权重更容易落到 0 附近码点。这个演示说明细粒度分块和 QAT 要处理的量化压力；报告没有给出训练前后权重长尾比例的对照。
           </p>
         </div>
 
@@ -155,23 +155,18 @@
           FP4 动态范围太窄，不能用 per-tensor 单一 scale（异常值会压垮所有正常权重）。常见做法 per-channel 或 per-group。V4 走更细：
         </p>
         <ul>
-          <li><strong>FP4 sub-block</strong>：每 1×32 个权重共享一个 scale，这个 scale 用 <em>FP8 E4M3</em> 存；</li>
-          <li><strong>FP8 大块</strong>：每 128×128 个权重（含 4 行 × 128 列 = 16 个 FP4 sub-block）共享一个 <em>FP32 主 scale</em>；</li>
-          <li><strong>反量化</strong>：$w_{\text{FP8}} = \text{FP4}(w) \cdot s_{\text{FP8 sub}} \cdot s_{\text{FP32 主}}$。</li>
+          <li><strong>FP4 sub-block</strong>：细粒度 scale 作用于 1×32 tiles；</li>
+          <li><strong>FP8 quantization block</strong>：范围为 128×128，其中包含 $128\times4=512$ 个 1×32 sub-block；</li>
+          <li><strong>关键条件</strong>：同一 FP8 block 内，FP4 sub-block scale 的最大值与最小值之比不能超过 FP8 E4M3 动态范围可吸收的阈值。</li>
         </ul>
 
         <div class="callout callout-info">
           <div class="callout-title">📖 公式白话翻译 · 为什么 FP4 → FP8 反量化无损</div>
-          <p>关键观察：FP4 sub-block 的 scale 比例是<em>相邻几行权重最大值之比</em>，实测落在 $[2^{-7}, 2^{7}]$ 内（最多 2^7 = 128 倍差）。FP8 E4M3 的动态范围是<strong>~448</strong>（exp 4 bit, max ~$2^{8}$），刚好覆盖。</p>
-          <div class="math-block">
-            $$
-            \underbrace{2^{-7}}_{\text{最小 scale 比}} \;\le\; s_{\text{FP8 sub}} \;\le\; \underbrace{2^{7}}_{\text{最大 scale 比}} \;\subset\; [2^{-9}, 2^{8}] \;\;(\text{FP8 E4M3 范围})
-            $$
-          </div>
+          <p>关键条件是同一 128×128 FP8 block 内，FP4 sub-block scale 的最大值与最小值之比不能超过某个阈值。FP8 E4M3 比 FP4 E2M1 多两个指数位，因而可以吸收这部分细粒度 scale 差异。报告称当前权重经实证满足条件，但没有公布阈值或精确区间。</p>
           <ul>
-            <li><strong>scale 本身能精确存</strong>：不舍入；</li>
-            <li><strong>FP4 → FP8 dequant = 整数索引 × 精确 scale</strong>：每个 FP4 码点本身在 FP8 中也精确表达（FP4 的码点都是 FP8 的子集）；</li>
-            <li><strong>整体无损</strong>：dequant 后的 FP8 值 = 量化前的 FP4 视图原值，<em>没有第二次舍入</em>。</li>
+            <li><strong>FP8 动态范围更大</strong>：多出的指数位用于吸收 sub-block 间的 scale 差异；</li>
+            <li><strong>条件经实证满足</strong>：作者验证当前权重的 scale 比例没有越过所需阈值；</li>
+            <li><strong>无损的范围</strong>：这里指 FP4 低精度视图展开到 FP8 的步骤不再额外丢信息，不是 FP32 权重量化到 FP4 无损。</li>
           </ul>
           <p>这是工程精算 —— 并不是 FP4 量化本身无损（它当然损失），而是 FP4 这个<em>低精度视图</em>"展开成 FP8"这一步无损。模型质量损失全部发生在<strong>"FP32 → FP4"那一次量化</strong>，QAT 让模型自己学着接受这个噪声。</p>
         </div>
@@ -200,7 +195,7 @@
             \nabla_w L \approx \nabla_{Q(w)} L \cdot \mathbb{1}
             $$
           </div>
-          <p>这条粗暴假设在数学上不严格，但在 QAT 实践中<em>非常稳定</em>：因为 $Q(w) - w$ 量级小（$\le$ 半个码点间隔），梯度近似几乎一致；模型学几个 batch 后会自动靠近"量化友好"的权重。STE 是从 BinaryNet (2016) 一路继承下来的工程技。</p>
+          <p>STE 是有偏的梯度近似：它绕过量化阶梯函数几乎处处为 0 的导数，使 FP32 master weights 仍能更新。量化误差上限取决于码点间隔与 scale，报告没有声称模型经过几个 batch 就会自动收敛到某种固定的“量化友好”分布。</p>
         </div>
 
         <!-- ================== §5 Indexer FP4 ================== -->
@@ -209,22 +204,22 @@
           Ch04 的 CSA Lightning Indexer 是 V4 长上下文的命脉。每层一次 indexer 调用，每次要算<em>整个 prefix 与当前 query 的</em> $QK^T$，然后选 top-k。FP4 化的关键：
         </p>
         <ul>
-          <li><strong>Indexer Q/K 投影权重</strong>：FP4 存储 + FP8 计算；</li>
-          <li><strong>Indexer score $I_{t,s}$</strong>：原本 FP32 累加，降到 BF16；</li>
-          <li><strong>top-k selector</strong>：BF16 排序，相对 FP32 提速 2×。</li>
+          <li><strong>Indexer QK activations</strong>：缓存、读取和乘法全部使用 FP4；</li>
+          <li><strong>Indexer score $I_{t,s}$</strong>：从 FP32 量化到 BF16；</li>
+          <li><strong>整体结果</strong>：报告称该优化使 top-k selector 提速 2×。</li>
         </ul>
         <p>
-          实测<strong>recall@k 99.7%</strong> —— 即和 FP32 indexer 选出来的 top-k 重合 99.7%。剩下 0.3% 的差异是 "BF16 score 排序产生的<em>边界 token 翻号</em>"，由于 sparse attention 本身对 top-k 边缘不敏感，下游 logits 损失忽略不计。
+          实测<strong>KV-entry recall 为 99.7%</strong>。报告没有进一步把剩余差异归因于“边界 token 翻号”，也没有量化其对下游 logits 的影响。
         </p>
 
         <h3>本章小结</h3>
         <ul>
-          <li>1.6T MoE 权重在 BF16 下 2.8 TB，FP4 砍到 700 GB，<strong>单节点 8×H100 可装</strong>。</li>
+          <li>FP4 将被量化权重相对 BF16 的存储降至约四分之一，但完整模型还包含非 expert weights、scale、KV cache 与运行时缓冲，不能据此断言 Pro 可装入单节点 8×H100。</li>
           <li>FP4 (E2M1) 只有 16 个码点、动态范围 12，必须 sub-block 嵌套 scale。</li>
           <li>FP4 sub-block (1×32) + FP8 块 (128×128) 的 scale 比例落在 FP8 E4M3 范围内 → <strong>FP4→FP8 反量化无损</strong>。</li>
           <li>STE 让 QAT 训练通过量化算子，反向把梯度打回 FP32 master。</li>
           <li>Indexer 的 FP4 + BF16 score 让 top-k selector 2× 提速 + 99.7% recall。</li>
-          <li>"训练用模拟 FP4、推理用真 FP4"两侧 bit-identical，靠的就是上面这套嵌套精算。</li>
+          <li>FP4→FP8 展开可以无额外舍入；报告的更谨慎结论是采样阶段直接使用原生 FP4，使其行为与线上部署保持一致。</li>
         </ul>
 
       </article>
@@ -239,7 +234,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: FP4 量化网格 + 一组权重的量化效果

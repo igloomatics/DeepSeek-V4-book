@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch17">
 
@@ -33,43 +33,43 @@
       <article id="ch17" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第四部分 · 后训练 · 17</div>
         <h2 class="chapter-title">Tool 接口三件套 — 工具调用的语法</h2>
-        <p class="chapter-sub">为什么 V4 不用 JSON 做 tool-call 而自创 DSML 专用 token，"跨轮保留 thinking"在长 horizon Agent 里到底解决了什么具体问题，以及"把判定型小任务编码成 token 而非小模型"这条工程哲学怎么把 TTFT 推到接近 0。</p>
+        <p class="chapter-sub">V4 如何用带 DSML 标记的 XML 风格 schema 减少工具调用错误，Interleaved Thinking 如何在长周期 Agent 任务中保留解题状态，以及 Quick Instruction 为什么能复用主模型的 KV cache、减少重复 prefill。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂"Tool 接口三件套"</div>
-          <p class="term-name">三件套 = (1) DSML 专用 token schema 替代 JSON 工具调用；(2) Interleaved Thinking 在 tool-calling 模式下跨轮保留 thinking trace；(3) Quick Instruction 把 6 个判定型小任务编码成特殊 token 共享主 KV</p>
+          <p class="term-name">三件套 = (1) 带 DSML 标记的 XML 风格工具调用 schema；(2) Interleaved Thinking 在 tool-calling 模式下跨轮保留 thinking trace；(3) Quick Instruction 用 7 个特殊 token 表达 6 类辅助任务并复用主 KV</p>
           <p>
             一句话：<strong>把 agentic 工作流"塞进同一份 KV"</strong>。
-            JSON / 独立小模型 / thinking 重置 这三件事在 V3 时代各是一个"控制平面之外的额外组件"；V4 把它们全部内化成 token 序列层面的结构，于是 tool-call 不再有转义问题、Agent 多轮不再丢解题状态、辅助任务不再需要独立模型。
+            V4 把工具调用格式、跨轮思考管理和若干辅助判定更多地放进同一条 token 序列：XML 风格 schema 缓解转义问题，tool-calling 模式保留 reasoning history，Quick Instruction 则省去额外小模型的重复 prefill。
           </p>
           <dl>
-            <dt>JSON Tool-Call（被替代的对象）</dt>
-            <dd>OpenAI / Anthropic 标准做法：让模型生成 <code>{"name": "search", "args": {...}}</code> 的 JSON 字符串。<em>问题</em>：(1) JSON 的引号 / 转义 / 嵌套对 LLM 是高失败率任务（实测 5-15% 转义错误）；(2) 字符串解析靠正则或括号配对，一个不匹配整段调用就废；(3) JSON 与文本混在同一字符流里，分隔靠 prompt 约定，<strong>没有 token 层面的硬边界</strong>。</dd>
+            <dt>JSON Tool-Call（对照方案）</dt>
+            <dd>常见工具调用格式使用 JSON 表达工具名和参数。V4 报告没有给出 JSON 的具体失败率，只说明 XML 风格 schema 能有效缓解 escaping failure 并减少 tool-call error。</dd>
 
             <dt>DSML（DeepSeek Markup Language，Table 4）</dt>
-            <dd>V4 自创的工具调用 schema，用<em>专用 token</em>（如 <code>&lt;|DSML|tool_calls&gt;</code> <code>&lt;|DSML|invoke&gt;</code> <code>&lt;|DSML|parameter&gt;</code>）作为分隔符。<strong>每个开闭标签是 1 个 token，不参与 BBPE 拼接</strong> —— 模型生成它就是有意"调用工具"，不可能因转义错误生出。XML 风格但不是真 XML（不需要解析器，只需切 token）。</dd>
+            <dd>V4 使用一个特殊的 <code>|DSML|</code> 标记，并以 XML 风格表达 <code>tool_calls</code>、<code>invoke</code> 和 <code>parameter</code>。报告没有说明每个完整开闭标签都恰好对应一个 token，也没有说实现不需要解析器。</dd>
 
             <dt>Interleaved Thinking（跨轮保留思考）</dt>
-            <dd>多轮 Agent 任务里，新一轮 user message 到来时<em>是否丢弃上一轮的 thinking</em>。V3.2：丢弃。V4 在<strong>tool-calling 模式</strong>下：<em>全部保留</em>，跨 user message 边界也保留。<em>动机</em>：long-horizon 任务里"我之前为什么选这条路"是关键解题状态，丢了下一轮就要重做。</dd>
+            <dd>V3.2 会保留 tool-result 轮次中的 reasoning trace，但新 user message 到来时会清除累计 reasoning。V4 在<strong>tool-calling 模式</strong>下跨 user message 边界保留完整 reasoning history，减少长任务中反复重建解题状态的开销。</dd>
 
             <dt>Long-Horizon Agent</dt>
-            <dd>需要 10-100+ 轮工具调用才能完成的任务（debug 仓库、跨文件重构、多步研究）。<em>每轮丢弃 thinking 的代价</em>：随轮次<strong>线性累积</strong>，第 50 轮要从 0 重新建立解题状态，TTFT 与质量双输。</dd>
+            <dd>需要多轮工具调用才能完成的任务，例如调试仓库、跨文件重构或多步研究。报告没有规定这类任务的轮数，也没有量化丢弃 reasoning 对 TTFT 或质量的影响。</dd>
 
             <dt>Tool-Calling Mode（专用模式）</dt>
             <dd>V4 区分 <strong>普通对话</strong> vs <strong>tool-calling</strong> 两个模式。普通对话仍丢弃旧 thinking（避免 context 被无关思考拖累）；tool-calling 触发 <em>thinking 保留模式</em>。模式切换由 system prompt + tool-call schema 共同决定。</dd>
 
             <dt>Quick Instruction</dt>
-            <dd>chatbot pipeline 里正式答复前的<em>判定型小任务</em>：是否联网、query 改写、意图分类、URL 是否抓取等。V4 把每个任务编码成 1 个特殊 token，附在主 prompt 尾部。<strong>主 KV 已 prefill 好，附加 token 直接共享 KV，零额外 prefill</strong>。</dd>
+            <dd>Chatbot pipeline 中的辅助任务，例如是否联网、生成搜索 query、判断来源权威性或读取 URL。V4 在输入序列中追加专用 token，使这些任务复用已计算的 KV cache，避免为额外小模型重复 prefill。</dd>
 
             <dt>TTFT（Time To First Token）</dt>
-            <dd>用户提交 prompt 到看见第一个 token 的延迟。<em>主导因素</em>：prompt prefill 时间（O(n²) 注意力）。<em>独立小模型方案</em>需要单独 prefill 一遍 prompt → TTFT 翻倍；Quick Instruction 共享主 KV → <strong>TTFT 几乎不增加</strong>。</dd>
+            <dd>从用户提交 prompt 到看到首个输出 token 的延迟。额外小模型需要再次处理输入，而 Quick Instruction 可以复用主 KV；报告称这会显著降低用户感知的 TTFT，但没有给出固定倍数。</dd>
 
             <dt>控制平面 vs 数据平面（系统设计术语）</dt>
-            <dd><strong>数据平面</strong>：模型 forward 的 token 流；<strong>控制平面</strong>：决定该走哪条路、该调什么工具的"判定逻辑"。传统做法把控制平面放在<em>外部代码 / 独立小模型</em>，每个判定要单独 inference。V4 把控制平面<em>嵌入</em>数据平面 —— 用 token 表达控制信号。<strong>"少一个进程比少一个 layer 更值钱"</strong>。</dd>
+            <dd><strong>数据平面</strong>可理解为模型处理的 token 流，<strong>控制平面</strong>是决定是否搜索、调用何种工具等判定逻辑。把部分控制信号编码成 token，可以减少独立模型与主模型之间的重复计算和维护成本。这是本文的系统化解读，并非报告原句。</dd>
 
             <dt>KV Cache 共享</dt>
-            <dd>主 prompt 已经 prefill 后，KV 矩阵就在 GPU 里。Quick Instruction token 追加在尾部时，前面 KV 不变，<em>只需算这一个 token 的 attention</em>。增量成本 ≈ 1 token decode，相比一次 full prefill 是 1000× 加速。</dd>
+            <dd>主 prompt 完成 prefill 后，Quick Instruction 可以复用已有 KV，并只对追加 token 及其输出做增量计算。实际收益取决于实现、批处理和输出长度；报告没有给出 1000× 之类的固定加速比。</dd>
           </dl>
           <div class="term-tagline"><strong>一句话定位：</strong>这章是 V4 在<em>交互层</em>的设计文档。三件事看似无关，但共享一种姿态 —— <strong>能用 token 表达就不要用外部组件</strong>。DSML 把工具调用从"字符串"变成"token"，Interleaved Thinking 把"多轮控制流"变成"长 token 序列"，Quick Instruction 把"小模型 pipeline"变成"几个 token"。三者都是把控制平面压进数据平面的具体实现。</div>
         </div>
@@ -78,23 +78,16 @@
         <h3 id="dsml">1. DSML：把 tool-call 从字符串升级为 token</h3>
 
         <p>
-          先看 OpenAI 风格的 JSON tool-call 在 V4 规模下的具体痛点：
+          先看报告为什么要调整工具调用格式：
         </p>
 
-        <div class="numex">
-          <span class="numex-tag">数值演练 · JSON tool-call 的失败模式</span>
-          内部 Agent 评测里 V3.2 用 JSON tool-call 的实测分布：
-          <ul>
-            <li><strong>引号转义错误</strong>（如 <code>"path": "C:\Users"</code> 缺反斜杠）：~3% 调用</li>
-            <li><strong>括号 / 大括号不匹配</strong>（嵌套深 ≥ 3 层时 LLM 容易少一个）：~5% 调用</li>
-            <li><strong>非法 JSON</strong>（含未转义换行、控制字符）：~2% 调用</li>
-            <li><strong>合计 ~10% 调用解析失败</strong>，长 horizon 任务里 50 轮就有 ~99.5% 概率至少踩一次。</li>
-          </ul>
-          每次解析失败需要 retry → 多一次 inference → 链式累积。<strong>JSON 不是为 LLM 设计的</strong>，它是为人类工程师设计的，把它强加给 LLM 是历史包袱。
+        <div class="callout callout-warn">
+          <div class="callout-title">报告给出的证据边界</div>
+          <p>报告只作定性描述：XML 风格格式能缓解转义失败并减少工具调用错误。它没有披露 V3.2 的 JSON 错误分布、长任务累计失败概率或 DSML 的绝对解析失败率，因此不能把示意百分比写成内部实测。</p>
         </div>
 
         <p>
-          DSML 的解法是<em>在 token 层面定义 schema</em>。每个开闭标签（<code>&lt;|DSML|tool_calls&gt;</code>、<code>&lt;|DSML|invoke&gt;</code>、<code>&lt;|DSML|parameter&gt;</code> 等）都是<strong>词表里的单一 token</strong>，模型要"调工具"就生成这个 token，不可能因为转义出错。
+          DSML 的做法是引入特殊的 <code>|DSML|</code> 标记，并用 XML 风格 schema 组织工具名与参数。报告明确的是格式和特殊标记，并未进一步说明每个完整标签在 tokenizer 中都占一个 token。
         </p>
 
         <p>论文 Table 4 给出的 schema 模板（去除占位符）：</p>
@@ -110,18 +103,18 @@
           <div class="callout-title">📖 DSML 的关键设计</div>
           <p>三个细节一起作用：</p>
           <ol>
-            <li><strong>专用 token 不参与 BBPE</strong>：普通字符串里的 <code>&lt;|DSML|...&gt;</code> 子串<em>不会</em>被 tokenizer 切成同一个特殊 token —— 它是词表中预留的 fixed-id token，只有<em>解码器主动选它</em>才会出现。这是从根上消掉"字符串拼接出错"的可能性；</li>
+            <li><strong>专用标记划定工具调用结构</strong>：<code>&lt;|DSML|tool_calls&gt;</code>、<code>invoke</code> 与 <code>parameter</code> 让工具调用和普通文本更容易区分；</li>
             <li><strong>parameter 用 string="true|false" 标注类型</strong>：<code>true</code> 表示按字面量传（处理路径、long string），<code>false</code> 表示值是 JSON（数字 / bool / 数组 / 对象）。把"类型决策"显式化，避免 LLM 自己脑补；</li>
-            <li><strong>tool-call 块强制夹在 thinking 之外</strong>：<code>&lt;think&gt;…&lt;/think&gt;</code> 段不允许出现 DSML token —— 思考归思考，执行归执行，分得清清楚楚。这条约束在 SFT 数据里被严格执行，模型自然学会。</li>
+            <li><strong>thinking 先结束，再调用工具</strong>：Table 4 要求启用 thinking 时，模型先输出完整的 <code>&lt;think&gt;…&lt;/think&gt;</code>，随后才输出工具调用或最终答复。</li>
           </ol>
-          <p>合起来：调用解析失败率从 ~10% 降到<em>接近 0</em>（实测 &lt; 0.1%），残留的失败几乎都是"工具不存在"或"参数语义错"，不再是"格式错"。</p>
+          <p>这些约束减少了转义和结构错误，但不会消除工具不存在、参数含义错误或 schema 不匹配等失败。</p>
         </div>
 
         <figure class="paper-fig">
           <img src="../figures/ch17/01.png" alt="DSML Tool Call Schema：模型在 system prompt 中收到的工具调用语法">
           <figcaption>
             <strong>图 17-1 · DSML 工具调用语法（论文 Table 4）。</strong>
-            模型从 system prompt 收到的就是这一段：用 <code>&lt;|DSML|tool_calls&gt;…&lt;/|DSML|tool_calls&gt;</code> 包住整段调用，每个调用用 <code>&lt;|DSML|invoke name="$TOOL_NAME"&gt;</code> 起手，参数走 <code>&lt;|DSML|parameter name="$PARAMETER_NAME" string="true|false"&gt;</code>。<em>string="true"</em> 时值是字符串原样，<em>string="false"</em> 时值要在 JSON 里走格式（数值 / bool / 数组 / 对象）。最后一句 <strong>If thinking_mode is enabled (triggered by &lt;think&gt;), you MUST complete your reasoning including &lt;/think&gt; BEFORE any tool calls or final response</strong> —— thinking 必须先收尾，再 tool call。整套 schema 用<em>特殊 token 边界</em>而非 JSON 分隔符，这就是 V4 比 OpenAI 的 JSON Function Calling 解析失败率低一个数量级的根因。
+            模型从 system prompt 收到的就是这一段：用 <code>&lt;|DSML|tool_calls&gt;…&lt;/|DSML|tool_calls&gt;</code> 包住整段调用，每个调用用 <code>&lt;|DSML|invoke name="$TOOL_NAME"&gt;</code> 起手，参数走 <code>&lt;|DSML|parameter name="$PARAMETER_NAME" string="true|false"&gt;</code>。<em>string="true"</em> 时值按字符串处理，<em>string="false"</em> 时用 JSON 表达数字、布尔值、数组或对象。最后的约束要求 thinking 先结束，再进入 tool call。报告称这种格式能减少 tool-call error，但没有给出与其他方案的数量级对比。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Tool-Call Schema），Table 4，p. 31。</span>
           </figcaption>
         </figure>
@@ -134,18 +127,12 @@
         </p>
 
         <p>
-          V3.2 的处理：<strong>新一轮 user 消息（或 tool result）到来时，旧 thinking 段整段从 context 删除</strong>。动机是控制 context 长度。代价：第 50 轮的 think 看不到第 1 轮"我之所以选这条调试路径是因为 ..."，必须从头建立。长 horizon 任务的<em>解题状态</em>持续被重置。
+          V3.2 会保留 tool-result 轮次中的 reasoning，但新一轮 user message 到来时会清除累计 reasoning。V4 在 tool-calling 场景中跨 user message 边界继续保留 reasoning history，使模型不必在后续轮次反复重建此前的解题状态。
         </p>
 
-        <div class="numex">
-          <span class="numex-tag">数值演练 · 丢弃 thinking 的累积代价</span>
-          假设每轮平均 thinking 含 600 token、tool result 100 token、final answer 50 token：
-          <ul>
-            <li><strong>V3.2（丢弃 thinking）</strong>：第 N 轮 input = 系统 prompt + 历史 (tool calls + results + answers) ≈ 系统 + N×(50+100) = 150N token；</li>
-            <li><strong>V4（保留 thinking）</strong>：第 N 轮 input ≈ 系统 + N×(600+50+100) = 750N token；</li>
-            <li>50 轮：V3.2 = 7.5K token，V4 = 37.5K token。</li>
-          </ul>
-          看起来 V4 多 5×，但<em>1M context 完全装得下</em>，并且每多 30K token 换来"模型记得自己 50 轮前为什么选这条路" —— 这正是 Ch4-5 的 sparse attention + 1M context 在交互层的<strong>真正用处</strong>。<em>没有长 context，Interleaved Thinking 是奢侈品；有了长 context，它是必选项</em>。
+        <div class="callout callout-info">
+          <div class="callout-title">收益与代价</div>
+          <p>保留 reasoning history 能提高长任务的状态连续性，但也会占用更多上下文。V4 的 1M context 为这种策略提供了更大空间；报告没有给出平均每轮 thinking 长度、固定轮数或“多 5× token”等统计。</p>
         </div>
 
         <div class="config-table">
@@ -172,7 +159,7 @@
             <strong>图 17-2 · Interleaved Thinking 双轨时序对比（论文 Figure 7）。</strong>
             <strong>(a) Thinking with tools</strong>：每个 Turn 都形如 Input(Tools + 之前所有 message + thinking + tool_call/result) → Output(Thinking + Tool call / Answer)。注意 Turn 1.3 / Turn 2.1 的 input 把 <em>Thinking 1.1 / 1.2 / 1.3</em> 全部保留进 context —— 第 $n$ 轮还能看到第 1 轮的解题状态。
             <strong>(b) Thinking without tools</strong>：每轮 input 只保留前面轮的 <em>Answer</em>，<em>Thinking 段被丢弃</em>。Turn 2 看不到 Turn 1 的 Thinking 1，Turn 3 看不到 Thinking 1 / Thinking 2。这是普通多轮对话的标准做法 —— 因为 thinking 段会膨胀 context、且对话场景下不需要"长期解题状态"。
-            两种模式的差异是 V4 在 agentic 场景的关键拐点：tool-calling 必须串起跨轮的"思考轨迹"才能避免重新规划成本。
+            两种模式分别偏向状态连续性与上下文精简；是否保留 reasoning 取决于当前是否处于真正的 tool-calling 路径。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Interleaved Thinking），Figure 7，p. 32。</span>
           </figcaption>
         </figure>
@@ -200,11 +187,11 @@
         </ol>
 
         <p>
-          传统做法：训 6 个独立小模型，每个模型独立 prefill 一遍 prompt 后输出判定。<strong>每个独立 prefill = 一次 O(n²) attention</strong>，6 个判定 = 6 次 prefill。TTFT 累积到秒级。
+          报告中的传统做法是维护一个额外的小模型处理这些辅助任务。该模型不能复用主模型已有的 KV cache，因此会产生重复 prefill；报告没有说每类任务都使用一个独立模型。
         </p>
 
         <p>
-          V4 的反传统做法：把每个判定编码成<strong>1 个特殊 token</strong>，附在主 prompt 尾部。论文 Table 中列出的 6 个 token 对应 6 个判定任务。
+          V4 把这些任务映射为专用 token，并把 token 追加到输入序列中。Table 5 列出 7 个 token，对应 6 行任务；其中 URL 判断由 <code>&lt;|extracted_url|&gt;</code> 与 <code>&lt;|read_url|&gt;</code> 配合完成。
         </p>
 
         <div class="config-table">
@@ -232,7 +219,7 @@
             <strong>&lt;|authority|&gt;</strong> 给 prompt 打"对来源权威性的需求"标；
             <strong>&lt;|domain|&gt;</strong> 给 prompt 分领域；
             <strong>&lt;|extracted_url|&gt; / &lt;|read_url|&gt;</strong> 决定每个 URL 是否要抓取并读取。
-            这些副任务<em>不需要再叫一次模型</em>—— 主 prompt 末尾追加对应特殊 token，复用已经算好的 KV，输出几十个 token 就完事。
+            这些辅助任务由主模型复用已有 KV 来完成，因此无需维护和调用额外的小模型。报告没有统一规定每项任务的输出长度。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.1.1 Specialist Training（Quick Instruction），Table 5，p. 33。</span>
           </figcaption>
         </figure>
@@ -250,47 +237,12 @@
             <li>追加 <code>&lt;|action|&gt;</code> 这 1 个 token 后，attention 只需算这个 token 的 Q 与全部 K 的点积 —— $O(n)$，不是 $O(n^2)$；</li>
             <li>解码器输出"是否搜索"的判定 token（如 "yes" / "no"）。</li>
           </ol>
-          <p>所以 6 个 Quick Instruction 任务 ≈ 6 次"1 token decode"，<strong>总开销是一次 prefill 的零头</strong>。这是把"控制平面"嵌进"数据平面"换来的物理收益。</p>
+          <p>因此 Quick Instruction 省掉的是额外小模型对同一输入的重复 prefill。具体节省量取决于并行方式、输出长度和系统实现；报告只给出“显著降低 TTFT”的定性结论。</p>
         </div>
 
-        <!-- ================== VIZ: TTFT 对比 ================== -->
-        <div class="viz" id="viz-ttft">
-          <div class="viz-head">
-            <div class="viz-title">Demo · 独立小模型 vs Quick Instruction 的 TTFT 对比（拖动 prompt 长度看差距）</div>
-            <span class="viz-tag">交互</span>
-          </div>
-          <svg viewBox="0 0 720 320" id="ttft-svg" xmlns="http://www.w3.org/2000/svg">
-            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">独立小模型 pipeline（6 次完整 prefill）</text>
-            <text x="20" y="170" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">Quick Instruction（1 次 prefill + 6 个 1-token decode）</text>
-
-            <!-- timeline 1: 6 separate prefills -->
-            <g id="ttft-baseline-bar"></g>
-            <line x1="20" y1="138" x2="700" y2="138" stroke="#cbd5e1"/>
-            <text x="20" y="155" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">总 TTFT = <tspan id="ttft-baseline-total">0</tspan> ms</text>
-
-            <!-- timeline 2: shared KV -->
-            <g id="ttft-quick-bar"></g>
-            <line x1="20" y1="282" x2="700" y2="282" stroke="#cbd5e1"/>
-            <text x="20" y="300" font-size="10" fill="#94a3b8" font-family="JetBrains Mono">总 TTFT = <tspan id="ttft-quick-total">0</tspan> ms · 加速 <tspan id="ttft-speedup" fill="#16a34a" font-weight="600">0×</tspan></text>
-
-            <!-- legend -->
-            <g transform="translate(440, 8)">
-              <rect x="0" y="0" width="14" height="10" fill="#71a4e1"/><text x="18" y="9" font-size="10" fill="#475569">主 prefill</text>
-              <rect x="76" y="0" width="14" height="10" fill="#fbbf24"/><text x="94" y="9" font-size="10" fill="#475569">独立小模型 prefill</text>
-              <rect x="200" y="0" width="14" height="10" fill="#16a34a"/><text x="218" y="9" font-size="10" fill="#475569">1-token decode</text>
-            </g>
-          </svg>
-          <div class="viz-controls">
-            <label>主 prompt 长度
-              <input type="range" id="ttft-slider" min="500" max="32000" step="500" value="4000">
-              <span class="viz-readout"><span id="ttft-readout">4K</span> token</span>
-            </label>
-          </div>
-          <p class="viz-caption">
-            <strong>读图法</strong>：上排是传统方案 —— 6 个独立小模型每个都要 full prefill 一遍主 prompt（黄段），TTFT 随 prompt 长度<em>线性堆 6 次</em>。下排是 Quick Instruction —— 1 次主 prefill（蓝）+ 6 个 1-token decode（绿）。
-            <br>
-            把 prompt 拉到 <strong>16K 以上</strong>看上下两条对比 —— 上排的总耗时几乎全是 prefill，下排几乎全是单次主 prefill，"加速比"轻松到 5-6× —— 这就是<em>把判定从独立模型变成 token</em>带来的物理收益。
-          </p>
+        <div class="callout callout-warn">
+          <div class="callout-title">证据边界：没有固定 TTFT 倍数</div>
+          <p>可以确定的是：额外小模型需要重复 prefill，而 Quick Instruction 复用主 KV，并允许 query、authority、domain 等任务并行执行。报告没有给出“6 个任务对应 6 个独立小模型”之类的部署配置，因此不能据此推算固定的 5–6× 加速。</p>
         </div>
 
         <!-- ================== §4 三件套的共同哲学 ================== -->
@@ -306,13 +258,12 @@
             <li><strong>Interleaved Thinking</strong>：把"解题状态"从外部 state machine 内化成<em>长 context 里的 token 序列</em>；</li>
             <li><strong>Quick Instruction</strong>：把"判定逻辑"从独立小模型内化成<em>追加在主 prompt 尾部的特殊 token</em>。</li>
           </ol>
-          <p>这三件事少了哪一件，agentic post-training 都跑不起来 —— 每多一个外部组件，就多一份运维成本、版本对齐成本、TTFT 成本、错误模式。<strong>把控制平面压进数据平面</strong>是 V4 在交互层与 Ch12 KV 异构、Ch6 Muon 删 QK-Clip 一脉相承的工程哲学。</p>
+          <p>三者都在减少模型主路径之外的状态和重复计算，但作用不同：DSML 改善调用格式，Interleaved Thinking 管理上下文，Quick Instruction 复用主 KV。“把控制信号放进 token 序列”是本文对其共同点的概括。</p>
         </div>
 
         <h3 id="summary">5. 一句话总结</h3>
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
-          <p>三件套都是"把控制平面压进数据平面"的具体实现 —— DSML 让工具调用<strong>没有解析失败</strong>、Interleaved Thinking 让多轮 Agent <strong>不丢解题状态</strong>、Quick Instruction 让辅助任务<strong>共享主 KV</strong>。配合 Ch4-5 的 1M context 与 Ch12 的 KV 异构调度，V4 才真正能让 agentic 工作流跑得起、跑得顺。</p>
+          <p>DSML 用更明确的结构减少工具调用错误，Interleaved Thinking 在 tool-calling 场景跨轮保留 reasoning history，Quick Instruction 让辅助任务复用主 KV、避免额外小模型的重复 prefill。三者分别改善接口稳健性、长任务连续性和交互延迟。</p>
         </div>
 
       </article>
@@ -327,95 +278,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
-<!-- ============================================================
-     VIZ: 独立小模型 vs Quick Instruction TTFT 对比
-     ============================================================ -->
-<script>
-(function() {
-  // prompt 长度 n token → prefill 时间 ~ a + b*n + c*n^2 (微秒级 simplified)
-  // 用一组合理常数：每 token decode ~50µs（含 attention），prefill 整体 O(n²) 占主导
-  // simplified: prefill_ms = 0.02 * n + 0.000003 * n^2 (1K=20+3=23ms; 16K=320+768=1088ms; 32K=640+3072=3712ms)
-  function prefillMs(n) { return 0.02 * n + 3e-6 * n * n; }
-  function decodeMs(k) { return 0.05 * k; } // per-token decode ~50µs
-
-  const X0 = 20, MAX_W = 680;
-  const BASE_Y = 38, QUICK_Y = 186;
-  const BAR_H = 90;
-
-  function drawBar(g, x, y, w, h, fill, label) {
-    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    r.setAttribute('x', x); r.setAttribute('y', y);
-    r.setAttribute('width', Math.max(1, w)); r.setAttribute('height', h);
-    r.setAttribute('fill', fill); r.setAttribute('stroke', '#ffffff'); r.setAttribute('stroke-width', '0.4');
-    g.appendChild(r);
-    if (label && w > 30) {
-      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      t.setAttribute('x', x + w/2); t.setAttribute('y', y + h/2 + 4);
-      t.setAttribute('text-anchor', 'middle');
-      t.setAttribute('font-size', '10'); t.setAttribute('fill', '#ffffff');
-      t.setAttribute('font-family', 'JetBrains Mono'); t.setAttribute('font-weight', '600');
-      t.textContent = label;
-      g.appendChild(t);
-    }
-  }
-
-  function fmtTokens(n) {
-    if (n >= 1000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'K';
-    return n.toFixed(0);
-  }
-
-  function render(promptN) {
-    document.getElementById('ttft-readout').textContent = fmtTokens(promptN);
-
-    const ms = prefillMs(promptN);
-    // Baseline: 6 separate prefills + 6 small decodes (per task generates ~5 tokens)
-    const baseTotal = 6 * (ms + decodeMs(5));
-    // Quick: 1 main prefill + 6 × 1-token decode
-    const quickTotal = ms + 6 * decodeMs(1);
-
-    document.getElementById('ttft-baseline-total').textContent = baseTotal.toFixed(1);
-    document.getElementById('ttft-quick-total').textContent = quickTotal.toFixed(1);
-    const speedup = baseTotal / quickTotal;
-    document.getElementById('ttft-speedup').textContent = speedup.toFixed(2) + '×';
-
-    // Scale: pixel per ms; the larger total fills MAX_W
-    const maxMs = Math.max(baseTotal, quickTotal);
-    const pxPerMs = MAX_W / maxMs;
-
-    // Baseline row: 6 segments, each = main_prefill (yellow) + tiny decode (green)
-    const bg = document.getElementById('ttft-baseline-bar');
-    bg.innerHTML = '';
-    let bx = X0;
-    for (let i = 0; i < 6; i++) {
-      const wPref = ms * pxPerMs;
-      drawBar(bg, bx, BASE_Y, wPref, BAR_H, '#fbbf24', i === 0 ? 'prefill' : '');
-      bx += wPref;
-      const wDec = decodeMs(5) * pxPerMs;
-      drawBar(bg, bx, BASE_Y, wDec, BAR_H, '#16a34a', '');
-      bx += wDec;
-    }
-
-    // Quick row: 1 main prefill (blue) + 6 small green decodes
-    const qg = document.getElementById('ttft-quick-bar');
-    qg.innerHTML = '';
-    let qx = X0;
-    const wMain = ms * pxPerMs;
-    drawBar(qg, qx, QUICK_Y, wMain, BAR_H, '#71a4e1', '主 prefill (复用)');
-    qx += wMain;
-    for (let i = 0; i < 6; i++) {
-      const wDec = decodeMs(1) * pxPerMs;
-      drawBar(qg, qx, QUICK_Y, Math.max(2, wDec), BAR_H, '#16a34a', '');
-      qx += Math.max(2, wDec);
-    }
-  }
-
-  document.getElementById('ttft-slider').addEventListener('input', e => {
-    render(parseInt(e.target.value, 10));
-  });
-  render(4000);
-})();
-</script>
 </body>
 </html>

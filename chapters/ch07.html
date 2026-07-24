@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch7">
 
@@ -32,23 +32,23 @@
 
       <article id="ch7" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 07</div>
-        <h2 class="chapter-title">MegaMoE — 让 all-to-all 消失</h2>
-        <p class="chapter-sub">为什么 MoE 在专家并行下天然被通信卡死，V4 是怎么把 5 个阶段切 wave 流水让"通信完全藏在计算下面"，以及那条 $C/B \le 6144$ FLOPs/Byte 的硬件协设公式到底在说什么。</p>
+        <h2 class="chapter-title">MegaMoE — 用流水隐藏 all-to-all</h2>
+        <p class="chapter-sub">MoE 的专家并行需要 dispatch 与 combine 通信。V4 将专家切成多个 wave，把通信、GEMM 与激活放进同一条流水，并给出通信能够被完全隐藏的硬件条件。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂 MegaMoE</div>
           <p class="term-name">MegaMoE = 把 MoE 的 dispatch / L1 / Activation / L2 / combine 五个阶段融成一个 pipelined kernel，用"专家波（wave）"为粒度调度</p>
           <p>
-            一句话：<strong>把"通信"和"计算"切成多个等长 wave 交错排队</strong>，第一个 wave 在 GPU 算的同时，第二个 wave 已经在网络上传，于是 all-to-all 的 latency 完全被矩阵乘的 latency 盖住 —— 净效果就像 all-to-all 不存在。
-            最高 1.92× 理论加速，对应一条<em>给硬件厂商</em>的硬性建议：每 GBps 互联带宽要养 6.1 TFLOP/s 计算。
+            一句话：<strong>把专家切成多个 wave，使当前 wave 的计算与后续 wave 的通信并行</strong>。在计算时间足以覆盖通信时间时，通信可被完全隐藏；否则只能隐藏一部分。
+            Figure 5 给出 1.92× 理论值；实测为一般推理 1.50–1.73×，延迟敏感场景最高 1.96×。
           </p>
           <dl>
             <dt>EP（Expert Parallelism · 专家并行）</dt>
             <dd>MoE 的标准切法：把 $E$ 个专家分散到 $G$ 个 GPU，每张卡只放 $E/G$ 个专家。<em>每个 token 的 router 选 top-$k$ 后必须把 token 发去那 $k$ 个专家所在的卡，算完再收回来</em> —— 这就是为什么 MoE 一定要 all-to-all。</dd>
 
             <dt>all-to-all</dt>
-            <dd>每张卡都给所有其他卡发数据、同时也从所有其他卡收数据的集合通信。带宽随卡数线性增长，<em>但 latency 不降</em>，是 MoE 的头号瓶颈。一次 1.6T MoE 的 forward 要做 2 次（dispatch + combine），backward 还要 2 次。</dd>
+            <dd>每张卡都可能向其他卡发送数据，同时接收来自其他卡的数据。MoE 专家并行通常需要 dispatch 与 combine 两次跨卡交换；实际开销取决于拓扑、消息粒度、有效带宽和并行规模，不能简单写成随卡数线性增长。</dd>
 
             <dt>Dispatch / L1 / Activation / L2 / Combine（MoE 5 段）</dt>
             <dd><strong>Dispatch</strong>：按 router 决定把 token 发到目标专家的卡上（all-to-all 1）；<strong>L1</strong>：专家 FFN 的 up 投影 + activation 输入；<strong>Activation</strong>：SwiGLU 等非线性；<strong>L2</strong>：down 投影；<strong>Combine</strong>：把结果发回原 token 所在的卡（all-to-all 2）。<em>这 5 段在 naive 实现下是串行的</em>。</dd>
@@ -60,7 +60,7 @@
             <dd>2024 年的 fused MoE 方案，把 5 段切成 3 段并行（dispatch + L1 / activation + L2 / combine）。<em>问题</em>：只有 3 段，流水深度浅，combine 阶段 GPU 计算单元闲；wave 概念没引入，长尾专家拖整体。MegaMoE 在 Comet 基础上加 wave 调度 + 5 段切，深度从 3 加到 5+。</dd>
 
             <dt>C/B 比（Compute-to-Bandwidth Ratio）</dt>
-            <dd>每发出 1 字节需要伴随多少 FLOPs 的计算才能"刚好"覆盖该字节的传输时间。$C/B = 2d$，$d$ 是 hidden dim。V4 取 $d=3072$（FFN 中 token 维），所以阈值 $= 6144$ FLOPs/Byte。<em>这是给 GPU 厂商的硬件协设公式</em>：超过这个值，再堆带宽是浪费。</dd>
+            <dd>$C/B$ 表示硬件每提供 1 Byte/s 网络带宽时配套的计算吞吐。对 V4-Pro 的 MoE，工作负载计算/通信比为 $2d_{\text{ff}}=6144$ FLOPs/Byte。若硬件 $C/B\le6144$，计算时间足以覆盖通信；若更高，则网络相对不足，增加带宽仍有帮助。</dd>
 
             <dt>Pull vs Push（通信原语）</dt>
             <dd>Push = 我主动把 token 推给目标卡；Pull = 我准备好 token，目标卡来取。<em>细粒度通信下 pull 更友好</em>：发起方不用知道接收方何时空闲，接收方按自己节拍取，避免 push-side 排队等握手。MegaMoE 使用 NVLink/IBGDA pull 模式。</dd>
@@ -68,7 +68,7 @@
             <dt>SwiGLU 简化（拿掉 exp/div）</dt>
             <dd>标准 SwiGLU $= x\cdot\sigma(Wx)\cdot Vx$ 含 sigmoid。把它换成 $x\cdot Wx \cdot Vx$（不带 σ）能省掉 exp 与 div，<em>放更大中间维 d 还能保精度</em> —— 是 MegaMoE 给硬件的另一个建议。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>MoE 在 EP 下的瓶颈是 all-to-all 不能 overlap；MegaMoE 把 5 段切 wave 流水让 comm/compute 100% 重叠；副产品是给硬件厂商一条 $C/B \le 6144$ 的设计公式。读完这章你应能看着任意一段 MoE 实现指出"这里没切 wave"。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>MegaMoE 通过 wave 流水提高通信与计算的重叠程度；当硬件满足 $C/B\le6144$ 时，V4-Pro 的 MoE 通信可以在理论上被完全隐藏。</div>
         </div>
 
         <!-- ================== §1 为什么 MoE 一定卡在通信 ================== -->
@@ -87,20 +87,16 @@
             $$
           </div>
           <ul>
-            <li><strong>$T_{\text{disp}} + T_{\text{comb}}$</strong>：纯通信时间，由<em>互联带宽 $B$</em>决定（NVLink ~900 GB/s，IB ~50 GB/s）；</li>
-            <li><strong>$T_{L_1} + T_{L_2}$</strong>：纯计算时间，由<em>GPU FLOPs $C$</em> 决定（H100 BF16 ~989 TFLOPs/s）；</li>
+            <li><strong>$T_{\text{disp}} + T_{\text{comb}}$</strong>：以通信为主，受互联带宽、延迟、拓扑和消息粒度影响；</li>
+            <li><strong>$T_{L_1} + T_{L_2}$</strong>：以计算为主，受有效矩阵乘吞吐影响；</li>
             <li><strong>$T_{\text{act}}$</strong>：通常很小，可忽略。</li>
           </ul>
-          <p>问题：通信和计算<strong>串行加总</strong>，只要其中一段慢，整体就慢。MoE 实测里 $T_{\text{comm}}/T_{\text{compute}}$ 常 $\ge 1$ —— 也就是<em>通信花的时间和计算一样多甚至更多</em>，相当于 GPU 一半时间在等网络。</p>
+          <p>问题在于通信与计算串行加总。V4 的 profiling 结果是：单个 MoE 层的总通信时间低于总计算时间，因此存在用计算覆盖通信的空间；报告没有给出两者的具体比例。</p>
         </div>
 
-        <div class="numex">
-          <span class="numex-tag">数值演练 · naive MoE 一层有多惨</span>
-          假设 V4-Pro 一层 MoE：每张卡的 dispatch + combine 总共要发 ~24 MB（hidden=3072, 单卡处理 4096 token, BF16, top-8）。互联 IB 带宽 50 GB/s → $T_{\text{comm}} \approx 24\,\text{MB} / 50\,\text{GB/s} = 480\,\mu s$。
-          <br>
-          一层 FFN 计算 ~$2 \times 4096 \times 3072 \times 12288 \times 8 \approx 2.5 \times 10^{12}$ FLOPs，H100 989 TFLOPs/s → $T_{\text{compute}} \approx 2.5\,\text{ms}$。
-          <br><br>
-          看起来通信只占 480/(480+2500) ≈ <strong>16%</strong>。但 V4 里有 ~30 个 MoE 层，每层 forward + backward 各 2 次 all-to-all，<em>累计</em>: 30×4×480 = <strong>57.6 ms</strong> 纯通信。一个完整 step ~1 s，单是 MoE 通信占了 <strong>5–6%</strong>。再加上 dense 的 TP/PP 通信、router 的 ranking、长上下文 CP，通信总占比常 30%+。<strong>训练只跑 70% 的有效计算时间</strong>。这就是 MegaMoE 想要回收的部分。
+        <div class="callout callout-warn">
+          <div class="callout-title">证据边界：不能反推单层微秒数</div>
+          <p>hidden size、expert intermediate size 和每 token 激活 expert 数不足以决定单层通信占比；还需要每卡 token 数、并行拓扑和有效吞吐。报告只提供 profiling 的方向性结论和端到端加速，因此不能用未披露的部署参数反推单层时延。</p>
         </div>
 
         <h3 id="comet">2. 前驱：Comet 把 3 段并行</h3>
@@ -175,12 +171,12 @@
           <p class="viz-caption">
             <strong>读图法</strong>：上方是 naive 串行（5 段排队加总），下方是 MegaMoE 切 $W$ 个 wave 后的时间线。每个 wave 自己内部仍然串行（5 段），<em>但相邻 wave 的同型段错位</em>：wave 2 的 dispatch 在 wave 1 还在做 L1 时就发出去了，wave 3 的 L1 在 wave 2 算 L2 时已经在 GPU 上跑。
             <br>
-            $W$ 越大，时间线越紧凑（隐藏越彻底），<strong>但每段单次量变小</strong> —— 太碎会让矩阵乘的 tile 利用率掉、IB latency 占主导。所以 $W$ 在论文里取 <em>4–6</em> 之间。
+            这是只用于解释重叠关系的等时长示意。实际 wave 数要在通信重叠、GEMM 粒度和调度开销之间折中；报告未披露生产配置的固定取值。
           </p>
         </div>
 
         <p>
-          数学上，naive 总时间 $T_{\text{naive}} = 5T$（设每段都耗 $T$）。MegaMoE 按 $W$ 个 wave 流水，最佳情况下每多一个 wave 只多 $T$（最后填满管线）：
+          如果仅为讲解而假设五个阶段等长、且不计任何调度开销，可以写出下面的理想化流水模型：
         </p>
         <div class="math-block">
           $$
@@ -188,7 +184,7 @@
           $$
         </div>
         <p>
-          $W \to \infty$ 时下限 $T$，<strong>5× 的渐近加速</strong>。但实测最高只到 1.92×，因为 $W$ 大到一定程度后通信粒度太碎，IB latency 与 wave overhead 反吃掉收益。
+          这个公式不是论文给出的 MegaMoE 性能模型，不能用于预测真实加速。Figure 5 针对 Flash 配置给出 1.92× 理论值；报告实测一般场景为 1.50–1.73×，延迟敏感场景最高 1.96×。
         </p>
 
         <h3 id="cb">4. 那条公式：$C/B \le 6144$ FLOPs/Byte</h3>
@@ -197,11 +193,13 @@
         </p>
         <div class="math-block">
           $$
-          \underbrace{\frac{\text{FLOPs/段}}{\text{Bytes/段}}}_{\text{算力需求}} \;\le\; \underbrace{\frac{C\,(\text{FLOPs/s})}{B\,(\text{Bytes/s})}}_{\text{硬件能给}}
+          \underbrace{\frac{C\,(\text{FLOPs/s})}{B\,(\text{Bytes/s})}}_{\text{硬件计算/带宽比}}
+          \;\le\;
+          \underbrace{\frac{V_{\text{comp}}}{V_{\text{comm}}}}_{\text{工作负载计算/通信比}}
           $$
         </div>
         <p>
-          推导左边：单 wave 一段 L1 要算 $2 \cdot s \cdot d \cdot d_{\text{ff}}$ FLOPs（$s$ token 数，$d$ hidden，$d_{\text{ff}}$ 中间维），通信传 $s \cdot d$ Bytes（BF16 一个数 2 字节，但比例上抵消）。化简后<strong>每字节对应 $2d$ FLOPs</strong>。代入 $d=3072$：
+          报告按一个 token-expert pair 计算：SwiGLU gate、up、down 共 $6hd_{\text{ff}}$ FLOPs，FP8 dispatch 与 BF16 combine 共传输 $3h$ Bytes，因此工作负载比为 $2d_{\text{ff}}$。Pro 的 $d_{\text{ff}}=3072$：
         </p>
 
         <div class="callout callout-info">
@@ -212,15 +210,15 @@
             <li><strong>右边 $2d$</strong>：MoE 工作负载真正需要的"每字节多少 FLOPs"；</li>
             <li><strong>$\le$ 关系</strong>：硬件给的算力配比 ≤ 工作负载需要的，说明<em>计算还能跟上通信</em>，可以靠 wave 流水把通信藏起来。</li>
           </ul>
-          <p>反过来如果硬件 $C/B \gg 6144$（GPU 计算太快、互联太慢），那么再切多少 wave、再 fuse 多少 kernel，都<em>无法把通信藏住</em> —— 这时只能加带宽。这就是给硬件厂商的<strong>"目标线"</strong>：把 $C/B$ 做到 ~6144，再多就是浪费 silicon。</p>
+          <p>若硬件 $C/B\gg6144$，说明计算相对网络过快，通信无法完全隐藏，此时增加带宽可以降低 $C/B$。当 $C/B$ 已低于阈值后，继续增加带宽才会出现明显的边际收益递减。</p>
         </div>
 
         <div class="numex">
           <span class="numex-tag">数值演练 · 这条线现在的硬件位置</span>
           <ul>
-            <li><strong>H100 + NVLink（节点内）</strong>：$C=989$ TFLOPs/s, $B=900$ GB/s → $C/B \approx 1099$。<em>远低于 6144</em> —— 节点内 MegaMoE 能完美 overlap，通信几乎不可见。</li>
-            <li><strong>H100 + InfiniBand 400G（节点间）</strong>：$B \approx 50$ GB/s → $C/B \approx 19{,}780$。<em>远高于 6144</em> —— 跨节点 EP 时通信暴露，wave 也藏不住。这就是为什么 V4 的 MoE 几乎都尽量在节点内做 EP，跨节点用 PP/CP。</li>
-            <li><strong>下一代理想互联</strong>：$C/B \approx 6000$ → 跨节点 MoE 也能 overlap。论文呼吁"<em>每 GBps 配 6 TFLOPs/s</em>"，意思是这个比例。</li>
+            <li><strong>示意计算</strong>：将硬件峰值算力除以互联峰值带宽，可判断它位于阈值哪一侧；实际 overlap 还受有效吞吐、拓扑、消息粒度和 kernel 调度影响。</li>
+            <li>报告没有披露 V4 的 EP 必须限制在节点内，也没有给出 H100/NVLink/InfiniBand 的这组部署结论。</li>
+            <li>硬件建议是让计算吞吐与互联带宽围绕工作负载需求保持平衡，而不是把 6144 当成适用于所有模型的固定常数。</li>
           </ul>
         </div>
 
@@ -228,10 +226,10 @@
         <div class="callout callout-good">
           <div class="callout-title">DeepSeek 想让芯片厂商记住的事</div>
           <ol>
-            <li><strong>计算-通信比 $C/B \approx 2d \approx 6144$</strong>：上面已展开，<em>不要无脑堆带宽，目标是 ~6 TFLOP/s/GBps</em>。</li>
-            <li><strong>功耗预算</strong>：MegaMoE 把 compute / mem / net 同时拉到 80%+，<em>极端融合下 GPU 会进入 power-cap</em>。要留 power headroom，不然 SM 会自动降频反吃 wave 流水的收益。</li>
+            <li><strong>计算-通信比</strong>：当带宽达到能使 $C/B\le2d_{\text{ff}}$ 的水平后，继续增加带宽的边际收益下降。</li>
+            <li><strong>功耗预算</strong>：融合 kernel 会同时提高计算、内存与网络负载，硬件应为并发工作负载预留功耗空间。报告没有给出 80% 的固定利用率。</li>
             <li><strong>通信原语：pull > push</strong>：细粒度 wave 通信里，pull 模式的<em>接收方按自己节拍取</em>，避免发起方的握手等待。NVIDIA IBGDA 的 GPU-initiated put 也算 pull 风格。</li>
-            <li><strong>激活函数：拿掉 SwiGLU 的 exp/div</strong>：把 $\sigma(\cdot)$ 换成线性门控，能省 ~30% 的 activation 算力，<em>把这部分算力分给更大的 $d_{\text{ff}}$</em> 在精度上反而更划算。</li>
+            <li><strong>激活函数</strong>：报告建议探索不含指数或除法的低成本逐元素激活，并在相同参数预算下扩大中间维；没有给出“省 30%”的定量结果。</li>
           </ol>
         </div>
 
@@ -258,18 +256,18 @@
           <p class="viz-caption">
             <strong>给初学者</strong>：三排对应三种调度，同色块代表同一阶段（黄=Disp, 蓝=L1, 紫=Act, 绿=L2, 橙=Comb）。游标走到哪、哪段就被"激活"了。绿色虚线是各自的终点。
             <br>
-            <strong>给研究者</strong>：critical path 长度对照公式 —— Naive $=5T$；Comet 单 wave $\approx 3T$；MegaMoE $=T(1+4/W)$。把 W 推到 6 时 MegaMoE 行已被压扁到几乎只剩一格 —— 但论文实测只到 1.92×，差距来自 wave overhead（每 wave 启动 / 同步开销），<em>这是 W 不能无限大的理由</em>。
+            <strong>注意</strong>：动画把各阶段时长设为人工单位，只展示“不同 wave 可以交错”，不复现 Figure 5 的真实比例。滑块结果不是论文性能预测，不能用来解释实测与理论值的差距。
           </p>
         </div>
 
         <p>
-          另一面，前面 §4 那条 $C/B \le 6144$ 不是孤立的数字，它和"通信被覆盖的比例"是一一对应的关系：硬件提供的 $C/B$ 比工作负载需要的 6144 大多少倍，<em>暴露的通信就有多少</em>。下图把这层关系画成一条曲线。
+          前面的 $C/B \le 6144$ 是通信可被完全隐藏的必要平衡条件。仅凭这个阈值不能推出暴露通信的精确比例；下面的曲线只是把 $\min(1,6144/(C/B))$ 作为教学假设，真实结果还取决于有效吞吐、拓扑、消息粒度和调度。
         </p>
 
         <!-- ============== SVG 散点图：C/B vs overlap ============== -->
         <div class="viz" id="viz-cb">
           <div class="viz-head">
-            <div class="viz-title">Fig · 硬件 $C/B$ vs MegaMoE 通信 overlap 上限</div>
+            <div class="viz-title">教学示意 · $C/B$ 与 overlap 的简化关系（非论文实测）</div>
             <span class="viz-tag">SVG · 静态</span>
           </div>
           <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg">
@@ -321,34 +319,34 @@
             <!-- H100 + NVLink: CB=1099 → log10=3.041, x=60+(.041)/2*640 = 60+13 = 73; overlap=1, y=40 -->
             <g>
               <circle cx="73" cy="40" r="6" fill="#16a34a" stroke="#fff" stroke-width="1.5"/>
-              <text x="80" y="32" font-family="Inter" font-size="11.5" fill="#1c2433" font-weight="600">H100 + NVLink (节点内)</text>
-              <text x="80" y="46" font-family="JetBrains Mono" font-size="10" fill="#16a34a">C/B≈1099 → overlap 100% (上限锁定)</text>
+              <text x="80" y="32" font-family="Inter" font-size="11.5" fill="#1c2433" font-weight="600">峰值规格示意：H100 + NVLink</text>
+              <text x="80" y="46" font-family="JetBrains Mono" font-size="10" fill="#16a34a">按简化公式落在平台段；非实测</text>
             </g>
             <!-- 理想互联 @ C/B=6144 -->
             <g>
               <circle cx="312" cy="40" r="6" fill="#dc2626" stroke="#fff" stroke-width="1.5"/>
-              <text x="320" y="76" font-family="Inter" font-size="11.5" fill="#1c2433" font-weight="600">理想互联（DeepSeek 呼吁线）</text>
-              <text x="320" y="90" font-family="JetBrains Mono" font-size="10" fill="#dc2626">C/B=6144 → 节点间也能 100% overlap</text>
+              <text x="320" y="76" font-family="Inter" font-size="11.5" fill="#1c2433" font-weight="600">V4-Pro 工作负载平衡点</text>
+              <text x="320" y="90" font-family="JetBrains Mono" font-size="10" fill="#dc2626">C/B=6144；不区分具体拓扑</text>
             </g>
             <!-- H100 + IB400G: CB=19780 → log10=4.296, x=60+(1.296)/2*640 = 60+415 = 475; overlap=0.31, y=280-240*0.31=205 -->
             <g>
               <circle cx="475" cy="205" r="6" fill="#f97316" stroke="#fff" stroke-width="1.5"/>
-              <text x="485" y="200" font-family="Inter" font-size="11.5" fill="#1c2433" font-weight="600">H100 + IB400G (跨节点)</text>
-              <text x="485" y="214" font-family="JetBrains Mono" font-size="10" fill="#f97316">C/B≈19780 → overlap 仅 31%，69% 通信暴露</text>
+              <text x="485" y="200" font-family="Inter" font-size="11.5" fill="#1c2433" font-weight="600">峰值规格示意：H100 + IB400G</text>
+              <text x="485" y="214" font-family="JetBrains Mono" font-size="10" fill="#f97316">按简化公式约 31%；非实测</text>
             </g>
           </svg>
           <p class="viz-caption">
-            <strong>读图法</strong>：蓝色曲线是 overlap 上限 $= \min(1, 6144 / C{:}B_{\text{硬件}})$。绿色点（NVLink）落在曲线"平台段"，意味着 wave 流水可以把通信几乎全藏住；橙色点（IB400G）跌到 31%，意味着即便 MegaMoE 全开，跨节点跑还有 69% 通信会暴露 —— 这就是 V4 训练时<em>尽量把 EP 关在节点内</em>的物理理由。粉色阴影区是"无论怎么调度都救不回来"的暴露区。
+            <strong>读图法</strong>：蓝色曲线采用教学假设 $= \min(1, 6144 / C{:}B_{\text{硬件}})$，三个点使用峰值规格而非 V4 实测。它只能说明网络相对算力越弱，完全覆盖通信越困难；不能据此断言具体硬件的 overlap 百分比或 V4 的 EP 部署边界。
             <br>
-            <strong>研究者注意</strong>：曲线在 C/B=6144 后是双曲线 $1/x$ 衰减，所以"加一倍带宽"（C/B 减半）从 20k → 10k 时 overlap 从 31% 涨到 61%，<em>边际收益巨大</em>；但从 4k → 2k 收益为零（已封顶）。这解释了为什么 NVLink 加宽到 1.8 TB/s 几乎没收益、而 IB 加宽到 800G 收益明显。
+            <strong>研究者注意</strong>：报告只给出“达到平衡点后继续增加带宽的边际收益下降”这一结论，没有给出 H100、NVLink 或 IB400G 的上述百分比。
           </p>
         </div>
 
         <h3>本章小结</h3>
         <ul>
-          <li>MoE 在 EP 下天然被 all-to-all 卡死：通信和计算串行，naive 实现下通信占 30%+ wall-time。</li>
-          <li>Comet 把 5 段并到 3 段，MegaMoE 进一步切 wave 让流水深度到 5+，<strong>实测 1.92× 加速</strong>。</li>
-          <li>$C/B \le 2d = 6144$ FLOPs/Byte 是"通信能被计算完全覆盖"的临界条件，超过它再加带宽是浪费。</li>
+          <li>专家并行需要 dispatch 和 combine；MegaMoE 通过 wave 调度提高它们与专家计算的重叠。</li>
+          <li>Figure 5 的理论加速为 1.92×；实测一般推理为 1.50–1.73×，延迟敏感场景最高 1.96×。</li>
+          <li>对 V4-Pro，$C/B\le2d_{\text{ff}}=6144$ 是完全隐藏通信的条件。高于阈值时增加带宽有帮助；低于阈值后继续加带宽收益递减。</li>
           <li>四条硬件建议（C/B、power、pull、SwiGLU 简化）是 DeepSeek 把<em>训练经验反向输给芯片厂商</em>的尝试。</li>
         </ul>
 
@@ -364,7 +362,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: MegaMoE wave 调度时间线

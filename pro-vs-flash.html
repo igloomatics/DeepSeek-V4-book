@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pro 与 Flash — DeepSeek-V4 双版本怎么选</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=20260724-5" />
+</head>
+<body data-base="" data-page="variants">
+
+<div class="mobile-bar">
+  <button class="hamburger" id="hamburger" aria-label="切换目录">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <span class="brand-mini">Pro 与 Flash · 双版本怎么选</span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="content">
+    <div class="content-inner">
+      <div class="crumb"><a href="index.html">封面</a><span class="sep">/</span>Pro 与 Flash</div>
+
+      <article id="variants" class="chapter">
+        <div class="chapter-eyebrow"><span class="dot"></span>OVERVIEW · 章节零</div>
+        <h2 class="chapter-title">Pro 与 Flash — 双版本怎么选</h2>
+        <p class="chapter-sub">同一套 V4 技术路线，两种不同的容量与成本取舍。</p>
+
+        <p class="lead">
+          V4-Pro 和 V4-Flash 共享混合注意力、mHC、DeepSeekMoE、Muon、MTP 与 1M 上下文；Flash 不是 Pro 的量化版，而是独立训练的较小模型。两者每个 token 都激活 6 个路由专家，但层数、隐藏维度、专家池和注意力配置不同。报告显示，Flash 在增加推理预算后可在不少 reasoning 任务上接近 Pro；Pro 在知识评测和高难度复杂 Agent 任务上更强。
+        </p>
+
+        <div class="config-table">
+          <table>
+            <thead>
+              <tr><th>项目</th><th>V4-Flash</th><th>V4-Pro</th><th>影响</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>总参 / 激活参数</td><td>284B / 13B</td><td>1.6T / 49B</td><td>Pro 容量更大；Flash 推理更省</td></tr>
+              <tr><td>层数 / 隐藏维度</td><td>43 / 4096</td><td>61 / 7168</td><td>Pro 更深、更宽</td></tr>
+              <tr><td>注意力头</td><td>64</td><td>128</td><td>Pro 的 query head 数为两倍</td></tr>
+              <tr><td>路由专家 / 每 token 激活</td><td>256 / 6</td><td>384 / 6</td><td>Pro 专家池更大，激活数相同</td></tr>
+              <tr><td>CSA top-k</td><td>512</td><td>1024</td><td>Pro 每次选择更多压缩 KV entry</td></tr>
+              <tr><td>前 2 层注意力</td><td>纯 SWA</td><td>HCA</td><td>两者并非只按宽度等比例缩放</td></tr>
+              <tr><td>预训练 token</td><td>32T</td><td>33T</td><td>训练规模接近，Pro 略多</td></tr>
+              <tr><td>1M 时相对 V3.2</td><td>10% FLOPs / 7% KV</td><td>27% FLOPs / 10% KV</td><td>Flash 的单 token 推理成本更低</td></tr>
+              <tr><td>上下文 / 推理模式</td><td>1M；Non-think / High / Max</td><td>1M；Non-think / High / Max</td><td>核心功能一致</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="choice">怎么选</h3>
+        <p>
+          如果优先考虑推理计算量，可先选 Flash；它在 1M 场景下的单 token FLOPs 和 KV cache 都低于 Pro，并能通过更高 reasoning effort 缩小部分数学与代码任务的差距。如果任务依赖广泛事实知识，或属于高难度、长流程 Agent 工作，Pro 的评测结果更稳妥。这里不比较 API 价格或实际响应速度，因为技术报告没有给出统一部署条件下的数据。
+        </p>
+
+        <p class="caption">
+          参数来源：DeepSeek 官方
+          <a href="https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/config.json" target="_blank" rel="noopener">Flash 配置</a>
+          与
+          <a href="https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/raw/main/config.json" target="_blank" rel="noopener">Pro 配置</a>。
+        </p>
+      </article>
+
+      <nav class="page-nav" id="page-nav"></nav>
+    </div>
+  </main>
+
+  <aside class="toc" id="toc">
+    <div class="toc-title">本章目录</div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </aside>
+</div>
+
+<script src="app.js?v=20260724-5"></script>
+</body>
+</html>

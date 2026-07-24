@@ -12,7 +12,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch3">
 
@@ -40,10 +40,10 @@
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂 mHC</div>
           <p class="term-name">mHC = Manifold-constrained Hyper-Connection（流形约束的超连接）</p>
-          <p>把"残差连接"从一根标量 highway 变成 $n_{hc}$ 条并行 highway，再把它们之间的"换道矩阵"强制关进一个<em>不会放大输入</em>的几何集合里。这就是 V4 在 60+ 层超深堆叠下还能稳得住的核心。</p>
+          <p>把单条残差流扩展为 $n_{hc}$ 条并行流，再约束流间混合矩阵，使这部分线性变换保持非扩张。注意：约束针对残差混合路径，并不等于完整网络永远不会放大输入。</p>
           <dl>
             <dt>残差连接（Residual Connection）</dt>
-            <dd>Transformer 里 $x_{l+1} = x_l + F_l(x_l)$ 那条"加法支路"，让深网络的梯度能直接传回去。简单好用，但深度一上去，<em>能量越加越大、异常值越传越远</em>，是这一章一切麻烦的根源。</dd>
+            <dd>Transformer 中的 $x_{l+1}=x_l+F_l(x_l)$ 为梯度和信息提供直接路径。深度增加时，残差状态的尺度与不同分支的贡献可能更难控制，但不能笼统断言其范数会随层数单调上升。</dd>
 
             <dt>Hyper-Connection（HC，Zhu 2025）</dt>
             <dd>把单条残差扩成 $n_{hc}$ 条并行残差流（V4 取 $n_{hc}=4$）。每层多三个学习矩阵 $A_l, B_l, C_l$ 控制"读哪几条流 / 把输出写到哪几条流 / 流之间怎么混"。表达力上去了，但 $B_l$ 无约束 ⇒ <em>稳定性反而更差</em>。</dd>
@@ -54,7 +54,7 @@
             <dt>Constrained（受约束）</dt>
             <dd>把每层学到的"未约束"矩阵 $\tilde B_l$ 用 <strong>Sinkhorn-Knopp 迭代</strong> 20 步可微地投影回 $\mathcal M$。"可微"是关键 —— 反向传播能直接穿过去，整个 mHC 端到端可学。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>把 4 条 highway 之间的"换道矩阵"关进双随机牢笼里，让 60 层堆叠后的累积变换永远不会放大输入。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>mHC 用双随机约束控制 4 条残差流之间的混合，使 $B_l$ 及其乘积保持非扩张；完整层仍包含非线性分支，需要与其它稳定性设计共同分析。</div>
         </div>
 
         <!-- ================== 章首论文图：三段式演进 ================== -->
@@ -62,34 +62,33 @@
           <img src="../figures/ch03/01.png" alt="标准残差、Hyper-Connection、Manifold-Constrained HC 三种结构对比">
           <figcaption>
             <strong>图 3-1 · 标准残差 → HC → mHC 的三段式演进。</strong>
-            <strong>(a) 标准残差</strong>：单条 highway，$x_l \xrightarrow{\mathcal F} \oplus \to x_{l+1}$，下文 §1 讲它为什么扛不住 60 层。
-            <strong>(b) Hyper-Connection</strong>：把残差扩成多条 highway，引入 Pre / Res / Post 三个 <em>无约束</em> 线性 mapping（橙色块），表达力上去了但 §3 会说明它仍会爆炸。
-            <strong>(c) mHC</strong>：把这三个 mapping 都包进流形投影 $\mathcal P_{\mathcal M}(\cdot)$（绿色块），强制落在双随机矩阵的 Birkhoff 多面体上 —— 这就是 §4-6 的故事。
+            <strong>(a) 标准残差</strong>：单条 residual stream。
+            <strong>(b) Hyper-Connection</strong>：扩展为多条 residual streams，并引入 Pre / Res / Post mappings。
+            <strong>(c) mHC</strong>：对这些映射施加有界或流形约束，其中 $B_l$ 通过 Sinkhorn-Knopp 投影到双随机矩阵集合。
             <span class="fig-source">来源：Xie et al. 2026《Manifold-Constrained Hyper-Connection》（V4 论文 §2.2 引用）。</span>
           </figcaption>
         </figure>
 
         <!-- ================== §1 标准残差为什么扛不住 ================== -->
-        <h3 id="motivation">1. 标准残差为什么扛不住 60 层</h3>
+        <h3 id="motivation">1. 深层残差为什么需要更细的尺度控制</h3>
         <p>
-          标准残差连接 $x_{l+1} = x_l + F_l(x_l)$ 看起来无害，但在大深度下有三个具体的失效模式：
+          标准残差连接 $x_{l+1}=x_l+F_l(x_l)$ 很有效，但在深层模型中仍要关注三个问题：
         </p>
         <ul>
-          <li><strong>能量累积</strong>：每个 $F_l$ 都向 $x$ 加一份贡献，$\|x_L\|$ 随 $L$ 增大单调上升。Pre-norm 能缓解但不能消除。</li>
-          <li><strong>有效深度坍缩</strong>：当 $\|x_L\|$ 已经很大时，新加的 $F_L(x_L)$ 相对于累积的 $x_L$ 显得微不足道，<em>后期层的贡献被淹没</em>。模型名义 60 层，实际有效层数远小于 60。</li>
-          <li><strong>异常值不可消除</strong>：残差路径是恒等映射，<em>一旦某一层 $F_l$ 输出含 outlier，它会被原样复制到所有后续层</em>。这是 LLM 训练中"激活异常值"问题的几何根源。</li>
+          <li><strong>尺度累积</strong>：不同层的分支输出可能同向叠加，也可能相互抵消；若缺少约束，残差状态尺度可能逐步漂移。</li>
+          <li><strong>层贡献失衡</strong>：当残差主干尺度远大于新分支输出时，后续层的相对贡献可能变小。</li>
+          <li><strong>异常值传播</strong>：恒等残差路径会保留已有异常值，但它不是异常值产生的唯一原因。</li>
         </ul>
 
         <div class="numex">
           <span class="numex-tag">数值演练</span>
-          假设每层 $F_l$ 的输出范数稳定在 $\|F_l(x)\| \approx 0.05 \cdot \|x\|$（中等贡献）。则
-          $\|x_L\|^2 \le \|x_0\|^2 \cdot \prod_{l=1}^{L}(1 + 0.05)^2 \approx \|x_0\|^2 \cdot 1.05^{2L}$，
-          深度 $L=60$ 时 $\|x_{60}\| / \|x_0\| \approx 1.05^{60} \approx \mathbf{18\times}$。
-          也就是说，最深层看到的输入幅度比最浅层<strong>大一个数量级</strong>，再叠加 LayerNorm 的非线性，训练就开始飘。
+          <strong>示意上界：</strong>若极端假设每层分支都与当前状态同向，且范数为当前状态的 5%，则三角不等式给出
+          $\|x_L\|\le 1.05^L\|x_0\|$，$L=60$ 时上界约为 18 倍。
+          这只是最坏方向一致时的上界，不是标准残差实际必然出现的增长曲线。
         </div>
 
         <p>
-          DeepSeek 团队在 V4-Pro 早期实验（深度 61）里直接撞上了这个问题。常见的解法是改 LayerNorm（DeepNorm、Sandwich-LN 等），但都是<em>压住表象</em>。V4 走了另一条路 —— 直接改残差的<strong>几何结构</strong>。
+          V4 报告称普通 Hyper-Connection 在训练中表现出数值不稳定，因此采用 mHC；报告没有把这一现象具体归因于上述标准残差示意，也没有公布所谓“V4-Pro 早期实验”的细节。
         </p>
 
         <!-- ================== §2 HC ================== -->
@@ -128,7 +127,7 @@
           <p>整个过程比标准残差多了三个旋钮：<em>选择从哪几条流读、写到哪几条流、流之间怎么换道</em>。模型可以学会"这一层我把 outlier 关在第 3 条流里别让它污染主流"这种策略。</p>
         </div>
 
-        <p>$n_{hc}$ 在 V4 取 4 —— 4 条 highway 之间允许"分工 + 兜底"，例如某些流专门承载长程信号、另一些承载局部信号，$B_l$ 决定它们如何借换。</p>
+        <p>$n_{hc}$ 在 V4 中取 4。多条 residual stream 通过 $A_l$、$B_l$、$C_l$ 进行读入、混合与写回；报告没有把某一条流指定为长程或局部通道。</p>
 
         <!-- ================== §3 HC 仍会爆炸 + Viz 1 ================== -->
         <h3 id="why-hc-fails">3. 但 HC 自己仍会"原地爆炸"</h3>
@@ -141,7 +140,7 @@
           <li>如果某些 $B_l$ 学出大的<em>负值</em>，相邻层流之间出现强相消，信息被洗掉；</li>
           <li>训练初期 $B_l$ 几乎随机，谱半径分布很宽 —— 训练前几千步极其不稳。</li>
         </ul>
-        <p>这正是 DeepSeek 在 V4-Pro 早期跑出的现象。HC 本身没解决稳定性，只是<em>把问题包装得更大</em>。</p>
+        <p>V4 报告明确指出普通 HC 存在数值不稳定，而 mHC 的目标是约束这一流间混合路径。</p>
 
         <!-- VIZ 1: 谱范数堆叠曲线 -->
         <div class="viz" id="viz-norm-decay">
@@ -206,7 +205,7 @@
             <span class="viz-readout" id="vnd-readout">…</span>
           </div>
           <p class="viz-caption">
-            拖滑条调整"每层无约束 HC 的谱范数"。红线 = 60 层堆叠后的累积放大；绿线 = mHC 强制每层 ≤ 1，无论怎么堆都不放大。<strong>把滑条拉到 1.05 看 L=60 的红线读数</strong> —— 18 倍放大正是 V4-Pro 早期训练飘掉的根因。
+            拖滑条调整教学模型中“每层无约束 mixing 的谱范数”。红线按最坏方向始终对齐的假设画出 $\|B\|^L$，绿线表示每层 mixing 矩阵谱范数不超过 1 时的上界。<strong>1.05 连乘 60 层约为 18.7</strong>，只用于展示小幅逐层放大的累积效应；论文没有报告 V4-Pro 曾以这一数值失稳，也不能把它视为真实训练曲线。
           </p>
         </div>
 
@@ -237,20 +236,20 @@
           <span class="numex-tag">具体例子</span>
           一个合法的 $4\times 4$ 双随机矩阵：
           $$ M = \begin{pmatrix} 0.6 & 0.1 & 0.2 & 0.1 \\ 0.1 & 0.5 & 0.1 & 0.3 \\ 0.2 & 0.3 & 0.4 & 0.1 \\ 0.1 & 0.1 & 0.3 & 0.5 \end{pmatrix} $$
-          每行加起来 $=1$，每列加起来 $=1$，全员 $\ge 0$。它的谱范数是 $\|M\|_2 \approx 0.91 \le 1$。
+          每行加起来 $=1$，每列加起来 $=1$，全员 $\ge 0$。由于 $M\mathbf{1}=\mathbf{1}$，它有奇异值 1；双随机约束又给出 $\|M\|_2\le1$，所以这里实际有 $\|M\|_2=1$。
           <br><br>
-          反例：把右下角改成 1.5，行和变 1.9，列和也变 1.9 —— 不再双随机，谱范数会爆。
+          反例：把右下角改成 1.5，行和与列和都被破坏，矩阵不再双随机，谱范数也可能超过 1。
         </div>
 
         <div class="callout callout-info">
-          <div class="callout-title">为什么 Birkhoff 多面体能根治放大问题</div>
+          <div class="callout-title">Birkhoff 约束能保证什么</div>
           <ol>
             <li><strong>谱范数恒 $\le 1$</strong>：由 Birkhoff–von Neumann 定理，双随机矩阵 = 置换矩阵的凸组合。所有置换矩阵谱范数为 1，凸组合的谱范数 $\le 1$。所以 $\|B_l\|_2 \le 1$，$\|\prod B_l\|_2 \le 1$ <em>无论堆多深</em>。</li>
-            <li><strong>矩阵乘法下闭合</strong>：双随机矩阵的乘积仍然双随机。这意味着<em>累积变换永远在合法集内</em>，60 层和 6 层在几何稳定性上没有区别。</li>
+            <li><strong>矩阵乘法下闭合</strong>：双随机矩阵的乘积仍为双随机矩阵，因此只考虑 $B_l$ 的累积残差混合时，其谱范数不会随深度指数放大。</li>
           </ol>
         </div>
 
-        <p>几何直观：把 4 条 highway 想成 4 个能量罐。$B_l$ 描述的是"这一步如何把 4 个罐里的水重新分配到 4 个新罐"—— 双随机约束保证<strong>总量守恒、不浓缩、不增减</strong>，最坏情况是所有水均匀混合（$M = \tfrac{1}{n_{hc}} \mathbf{1}\mathbf{1}^T$），最理想情况是直接置换（$M$ 是某个排列）。回到<strong>图 3-1 (c)</strong>：那三个绿色 $\mathcal P_{\mathcal M}(\cdot)$ 框做的就是这件事，把 (b) 里的橙色 mapping 都打回这个集合。</p>
+        <p>几何直观：把 4 条 highway 看作 4 路信号，$B_l$ 负责重新分配各路权重。双随机约束保持行列归一，并让该线性映射的谱范数不超过 1。这个类比只描述 $B_l$；非线性分支 $C_lF_l(A_lX_l)$ 仍会向状态写入新信号。</p>
 
         <p><strong>$A_l, C_l$ 的处理</strong>：</p>
         <ul>
@@ -348,7 +347,7 @@
             <span class="viz-readout" id="sk-colres">列残差 0.00</span>
           </div>
           <p class="viz-caption">
-            初始矩阵是随机正矩阵（模拟 $\exp(\tilde B_l)$ 的输出）。每按"下一步"交替做一次行 / 列归一化。<strong>观察：3-5 步后两个残差就掉到 $10^{-3}$ 量级，10 步后基本归零</strong>。这就是 mHC 选 20 步迭代的安全边界。
+            初始矩阵是随机正矩阵（模拟 $\exp(\tilde B_l)$ 的输出）。每按“下一步”交替做一次行、列归一化。该示例只展示 Sinkhorn–Knopp 的收敛过程；收敛速度取决于输入矩阵，不能用单次随机演示解释为什么报告配置取 20 次迭代。
           </p>
         </div>
 
@@ -366,16 +365,15 @@
         <!-- ================== §7 代价 ================== -->
         <h3 id="cost">7. 代价 / 还没解决的问题</h3>
         <ul>
-          <li><strong>Sinkhorn 计算开销</strong>：每层每步 20 次 $4\times 4$ 矩阵的行列归一化 $\approx$ 320 次乘除。相对 forward+backward 完全可忽略。</li>
+          <li><strong>Sinkhorn 计算开销</strong>：配置使用 20 次 $4\times4$ 矩阵的行列归一化；矩阵本身很小，但 mHC 还会增加 activation memory 与流水通信，不能只按这几次标量运算判断整体开销。</li>
           <li><strong>表达力损失</strong>：双随机 $4\times 4$ 矩阵构成 9 维流形（无约束是 16 维）。理论上表达力下降，但<em>实测 loss 曲线不显著变化</em>，反而稳定性大幅改善。</li>
-          <li><strong>只约束了流间混合，没约束 $F_l$ 本身</strong>：mHC 让残差路径"非膨胀"，但 $F_l$ 仍可能产生大幅 outlier。这部分由 Ch14 的 SwiGLU Clamping 与 Anticipatory Routing 兜底。</li>
-          <li><strong>$n_{hc}$ 必须不大</strong>：$n_{hc} = 4$ 是平衡点。若 $n_{hc} \to 16$，$B_l$ 矩阵变 $16\times 16$，Sinkhorn 仍 cheap，但<em>动态参数化的 $W^{\text{res}}$ 投影维度从 16 涨到 256</em>，参数量上升。V4 取 4 是工程权衡。</li>
+          <li><strong>只约束了流间混合，没约束 $F_l$ 本身</strong>：mHC 的双随机约束作用于残差混合矩阵，不等于整个 block 的输出都被严格限幅。报告另行采用 SwiGLU Clamping 与 Anticipatory Routing 处理训练稳定性问题，但没有用消融证明它们与 mHC 构成一一对应的“兜底”关系。</li>
+          <li><strong>$n_{hc}$ 的配置</strong>：V4 取 $n_{hc}=4$。更大的扩展因子会增加残差状态、映射和通信成本，但报告没有给出 4 与其他取值的消融或“平衡点”结论。</li>
         </ul>
 
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
           <p>
-            <strong>标准残差是无约束加法，60 层堆叠时能量与异常值都会累积。HC 把残差从向量扩成 $n_{hc}$ 条 highway，给每层三个旋钮（读 $A_l$ / 写 $C_l$ / 混合 $B_l$）。但 $B_l$ 无约束仍会爆炸，所以 mHC 把它关进双随机矩阵的 Birkhoff 多面体 —— 谱范数恒 $\le 1$ 且乘法封闭，60 层等同于 6 层的稳定性。代价是 9-vs-16 维表达力损失（实测无影响）和每层 20 步 Sinkhorn（开销可忽略）。</strong>
+            <strong>HC 将单条残差扩展为 $n_{hc}$ 条流，并以 $A_l$、$B_l$、$C_l$ 控制读、混合与写入。mHC 对这些映射施加约束，其中双随机 $B_l$ 的谱范数不超过 1，且其乘积仍保持非扩张。该保证不覆盖完整非线性层。V4 使用 20 步 Sinkhorn-Knopp，并通过融合与重计算将 mHC 的流水线 wall-time 开销控制在 6.7%。</strong>
           </p>
         </div>
 
@@ -415,7 +413,7 @@ flowchart LR
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ================== Ch03 内联交互脚本 ================== -->
 <script>

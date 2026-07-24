@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch12">
 
@@ -40,33 +40,33 @@
           <div class="term-eyebrow">名词速通 · 一分钟看懂推理框架</div>
           <p class="term-name">推理框架要解决：(1) V4 各层 KV 形状各异（SWA 1×、CSA 1/m、HCA 1/m'、Indexer 极小），统一 page 装不下；(2) SWA 有"窗口外即丢"的过期策略与 page 通用回收冲突；(3) 1M 上下文下盘上 KV 复用前缀</p>
           <p>
-            一句话：<strong>把 KV cache 切成 State Cache（位置敏感、按请求分配）和 Block Cache（压缩好、按 lcm(m, m') 对齐分块），两者协议解耦</strong>。共享前缀（system prompt、文档查询）<em>盘上落地</em>，命中后直接 map 进 GPU 跳过整段 prefill。
-            净效果：1M 上下文 prefill 在 cache 命中时几乎免费，未命中时 SWA 与压缩 KV 的存量比例与训练对齐，<strong>不破坏 logits bit-identity</strong>。
+            一句话：<strong>把 KV cache 切成 State Cache（位置敏感、按请求分配）和 classical KV cache（压缩完成、按对齐块管理），分别处理不同的更新与访问规则</strong>。共享前缀可将压缩 KV 落盘复用，从而减少重复 prefill。
+            命中缓存并不等于整个 prefill 免费：末尾未完成压缩的 token 仍需重算，SWA 的恢复成本则取决于所选缓存策略。
           </p>
           <dl>
             <dt>KV Cache</dt>
-            <dd>Transformer 推理的核心结构：每一层每一 token 的 key/value 存下来供后续 token 查 attention。<em>体积线性增长于序列长度</em>，1M token 单层 ~1MB → 全模型 ~60MB/请求 → 万人并发时 ~3.6TB。是百万级上下文的<strong>头号瓶颈</strong>。</dd>
+            <dd>Transformer 推理会缓存历史 key/value 供后续 token 使用，缓存体积通常随序列长度增长。V4 通过 CSA/HCA 压缩、SWA 固定窗口和异构布局降低长期存量；具体字节数取决于模型、精度和部署布局，报告没有给出统一的“每请求 60MB”。</dd>
 
             <dt>SWA / CSA / HCA / Indexer 四类 KV</dt>
-            <dd><strong>SWA</strong>（滑窗）：每层只存最近 $n_{\text{win}}=4096$ token，<em>位置强相关</em>（窗口外即丢）；<strong>CSA</strong>（压缩 + 稀疏）：每 $m=4$ token 压成 1 个；<strong>HCA</strong>（重压缩）：每 $m'=128$ token 压成 1 个；<strong>Indexer</strong>：极小 K-only，用于 top-k 选择。<em>四种形状、四种策略，无法共用 page</em>。</dd>
+            <dd><strong>SWA</strong>（滑窗）：每层只保留最近 $n_{\text{win}}=128$ token；<strong>CSA</strong>：每 $m=4$ token 形成压缩条目；<strong>HCA</strong>：每 $m'=128$ token 形成压缩条目；<strong>Indexer</strong>：为稀疏选择保存独立的 key。它们的尺寸与更新规则不同，不能直接套用同一种 cache policy。</dd>
 
             <dt>PagedAttention（vLLM 经典方案）</dt>
-            <dd>把 KV cache 切成固定大小的 page（如 16 token / page），所有请求共享一个大 page pool，新请求就从 free list 拿、释放就还回。<em>简单高效</em>，但<strong>假设所有层 KV 同构</strong>。V4 一上来就破坏这个假设。</dd>
+            <dd>把 KV cache 分成固定大小的 block，并按请求动态分配。V4 报告指出，混合注意力带来的不同缓存策略和 kernel 对齐约束，使所有层难以直接合并到统一的 PagedAttention 管理方式；问题不只是“各层大小不同”。</dd>
 
             <dt>State Cache（V4 的位置敏感缓存）</dt>
             <dd>装<em>对位置敏感</em>的部分：SWA 当前窗口、CSA/HCA 还没压缩满的尾部 token。<strong>按"请求 → 状态块"映射</strong>，请求结束就释放整块。不与其他请求共享。这是 V4 把"位置敏感性"显式表达的设计。</dd>
 
             <dt>Block Cache（V4 的压缩好缓存）</dt>
-            <dd>装<em>已经压缩完成</em>的 KV：CSA 压缩条目、HCA 压缩条目、Indexer K。<strong>按 $\mathrm{lcm}(m, m') = \mathrm{lcm}(4, 128) = 128$ 对齐分块</strong>，每块产出 $k_1 = 32$ 个 CSA + $k_2 = 1$ 个 HCA 条目。<em>可跨请求共享</em>（前缀复用）。</dd>
+            <dd>装<em>已经压缩完成</em>的 CSA/HCA KV 与 Indexer KV。原始 token 数按 $\mathrm{lcm}(m,m')$ 的整数倍对齐；最小对齐单位是 128，但实际 block 可以取其任意倍数。相同前缀对应的完整压缩块可以复用。</dd>
 
             <dt>lcm(m, m') 对齐分块</dt>
-            <dd>CSA 每 4 token 一压、HCA 每 128 token 一压。两个边界都要落到 block 边界 → block 大小必须是 $\mathrm{lcm}(4, 128) = 128$。<em>每个 block 输入 128 个 token、输出 32+1 个压缩条目</em>。这个对齐是 kernel 与 cache 协同的硬约束。</dd>
+            <dd>CSA 每 4 token 压缩一次，HCA 每 128 token 压缩一次。为让两类边界同时对齐，block 覆盖的原始 token 数应是 $\mathrm{lcm}(4,128)=128$ 的整数倍；128 是最小单位，而非唯一 block 大小。</dd>
 
             <dt>过期策略冲突</dt>
             <dd>SWA 有"窗口外即丢"的过期：滑窗向前推 1 token，最早的 token 就要清除。Page 通用回收没有这个语义 —— 它只在请求结束时回收，<em>SWA 中间过期的 page 无法回收</em>。所以 SWA 必须独立管理。</dd>
 
             <dt>盘上 KV（Disk-resident KV cache）</dt>
-            <dd>把已计算的<strong>压缩 KV 序列化到 SSD</strong>，命中时 mmap + GPU async copy 进显存，跳过整段 prefill。共享前缀（system prompt、长文档 RAG）<em>命中率极高</em>，对长上下文是救命稻草。</dd>
+            <dd>把已计算的<strong>压缩 KV 存到磁盘</strong>，命中共享前缀时读取并复用完整压缩块。尾部不完整块仍需重新计算；SWA 则可在完整缓存、周期检查点和不缓存之间取舍。</dd>
 
             <dt>三档 SWA 缓存策略</dt>
             <dd><strong>Full SWA Caching</strong>：每个请求 SWA 全落盘。最快但 SSD 写入压力大；<strong>Periodic Checkpointing</strong>：每 $p$ 个 token 落一次盘，命中后只重算 tail；<strong>Zero SWA Caching</strong>：不存 SWA，命中时仅靠 CSA/HCA 重算最后 $n_{\text{win}}\cdot L$ 个 token。三档对应不同存储 / 算力权衡。</dd>
@@ -81,23 +81,22 @@
         </p>
 
         <div class="numex">
-          <span class="numex-tag">数值演练 · 四种 KV 体积差距</span>
-          一个 token 在 V4 各层的 KV 占用（FP8）：
+          <span class="numex-tag">四类缓存为什么不能按一种 page 管</span>
           <ul>
-            <li><strong>SWA 层</strong>：$d_h \cdot n_{\text{heads}} = 128 \times 16 = 2048$ B（K + V 各 1024）；</li>
-            <li><strong>CSA 层（每 4 token 压 1）</strong>：$2048 / 4 = 512$ B 压缩条目（摊分）；</li>
-            <li><strong>HCA 层（每 128 token 压 1）</strong>：$2048 / 128 = 16$ B 压缩条目；</li>
-            <li><strong>Indexer K-only</strong>：$d_k \cdot n_{\text{heads}}^{\text{idx}} = 64 \times 4 = 256$ B（只存 K，FP4）= 16 B 实际；</li>
+            <li><strong>SWA KV</strong>：只保留最近 $n_{\text{win}}=128$ 个位置，并采用独立的命中与淘汰策略；</li>
+            <li><strong>CSA KV</strong>：每 $m=4$ 个原始 token 生成一个压缩条目；</li>
+            <li><strong>HCA KV</strong>：每 $m'=128$ 个原始 token 生成一个压缩条目；</li>
+            <li><strong>CSA Indexer KV</strong>：embedding size 与主注意力不同，并额外服务稀疏选择。</li>
           </ul>
-          <strong>体积比 SWA : CSA : HCA : Indexer = 2048 : 512 : 16 : 16 = 128 : 32 : 1 : 1</strong>。把这四种装进同一种 page 必有 128× 浪费；按最小者切则碎片化。<em>必须分类管理</em>。
+          此外，不足一个压缩组的尾部 token 及其 hidden states 必须暂存在 state cache 中。报告没有给出统一的“每 token 多少字节”，因此这里比较更新规则和序列压缩率，而不虚构实际显存占用。
         </div>
 
         <div class="callout callout-warn">
           <div class="callout-title">PagedAttention 不能用的 4 个具体原因</div>
           <ol>
-            <li><strong>体积差异 128×</strong>：上面这条；</li>
+            <li><strong>条目形状与更新频率不同</strong>：CSA、HCA、Indexer 和 SWA 不能共享一种同构布局；</li>
             <li><strong>过期策略冲突</strong>：SWA 滑窗外即丢，page 不知道何时回收；</li>
-            <li><strong>kernel 对齐</strong>：CSA / HCA 的稀疏 attention kernel 要求 cache line 按 lcm(4, 128) 对齐，与 page 的 16 token 边界不兼容；</li>
+            <li><strong>kernel 对齐</strong>：高性能 attention kernel 对 block token 数与 cache-line padding 有约束；V4 通过 cache layout 与 sparse-attention kernel 协同设计，使 block 可覆盖 $\mathrm{lcm}(4,128)$ 的任意整数倍原始 token。报告没有以 16-token page 作为冲突示例；</li>
             <li><strong>压缩边界</strong>：CSA / HCA 的压缩计算横跨 page 边界，page 的"独立单元"假设破坏。</li>
           </ol>
         </div>
@@ -108,11 +107,11 @@
         <h4>2.1 State Cache：位置敏感的尾巴</h4>
         <p>State Cache 装两类东西：</p>
         <ul>
-          <li><strong>SWA 当前窗口</strong>：每层最近 $n_{\text{win}}=4096$ token 的 K/V；</li>
+          <li><strong>SWA 当前窗口</strong>：每层最近 $n_{\text{win}}=128$ token 的 K/V；</li>
           <li><strong>压缩尾部</strong>：CSA / HCA 还没压满 $m$ / $m'$ 个 token 的尾段（称 "in-flight tail"）；</li>
         </ul>
         <p>
-          按<strong>请求生命周期</strong>分配：每请求一开始申请 1 个 State Block（约 60MB），请求结束整块释放。<em>不与其他请求共享</em>。这样过期问题、生命周期问题、对齐问题都内化到单个 State Block 内部，对外只暴露"请求级"的接口。
+          按<strong>请求生命周期</strong>从固定大小的 state-cache pool 动态分配。报告没有给出单个 State Block 的统一字节数；其大小由 SWA 窗口、层配置与未压缩尾部状态共同决定。
         </p>
 
         <h4>2.2 Block Cache：压缩好的躯干</h4>
@@ -123,7 +122,7 @@
           <li>Indexer K（每 token 1 个 FP4 K-only）；</li>
         </ul>
         <p>
-          按 $\mathrm{lcm}(4, 128) = 128$ 对齐分块。每个 Block 输入 128 token，<em>输出 32 个 CSA + 1 个 HCA + 128 个 Indexer K</em>。Block Cache <strong>可跨请求共享</strong> —— 只要前缀相同，多个请求引用同一个 Block，refcount 管理。
+          原始 token 数按 $\mathrm{lcm}(4,128)=128$ 的整数倍对齐。若以最小单位 128 举例，会对应 32 个 CSA 压缩位置和 1 个 HCA 压缩位置；实际 block 大小可以更大。相同前缀的完整压缩块可以跨请求复用。
         </p>
 
         <div class="callout callout-info">
@@ -131,15 +130,15 @@
           <p>$m = 4$, $m' = 128$。要让 CSA 边界（每 4）与 HCA 边界（每 128）<em>同时</em>落到 block 边界：</p>
           <div class="math-block">
             $$
-            \text{block size} = \mathrm{lcm}(m, m') = \mathrm{lcm}(4, 128) = 128
+            \text{block size} = q\cdot\mathrm{lcm}(m, m') = 128q,\qquad q\in\mathbb{Z}_{>0}
             $$
           </div>
           <ul>
             <li><strong>$\mathrm{lcm}$ 是最小公倍数</strong>：能被 $m$ 整除（CSA 边界对齐），也能被 $m'$ 整除（HCA 边界对齐）；</li>
-            <li><strong>每 block 输出</strong>：CSA 条目 = $128 / 4 = 32$ 个；HCA 条目 = $128/128 = 1$ 个；</li>
+            <li><strong>最小对齐单位的输出</strong>：CSA 条目 = $128 / 4 = 32$ 个；HCA 条目 = $128/128 = 1$ 个；</li>
             <li>如果 $m, m'$ 互素，$\mathrm{lcm} = m \cdot m'$；本例 $m | m'$ 所以 $\mathrm{lcm} = m'$。</li>
           </ul>
-          <p>这条对齐是<em>kernel 与 cache 协同的硬约束</em>：sparse attention kernel 假设访问的压缩条目按 cache line 对齐，错位会触发额外 load + reorder。block size 选 lcm 让"一个 block 是一个 kernel iteration 的最小单元"，同时 SWA 窗口 4096 也是 lcm 的整数倍 ($4096 = 32 \times 128$)，三者锁死。</p>
+          <p>报告强调的是 KV cache layout 与 sparse-attention kernel 的协同：block 覆盖的原始 token 数取 128 的整数倍，可以在不同层使用不同压缩条目数而不降低 kernel 性能。它没有把 block 固定为 128，也没有用 SWA 窗口来“锁死”这一取值。</p>
         </div>
 
         <figure class="paper-fig">
@@ -194,9 +193,9 @@
           <p class="viz-caption">
             <strong>读图法</strong>：上排是 Block Cache —— 每 128 token 凑成一块，块内 32 个绿条（CSA）+ 1 个蓝条（HCA）。这部分<em>可跨请求共享</em>，前缀命中时直接 mmap 进显存。
             <br>
-            下排是 State Cache —— 黄段是 SWA 4096 窗口（每请求独占），橙段是不足 128 还没压成的 in-flight tail。请求结束整块释放。<em>不在跨请求共享池里</em>。
+            下排是 State Cache —— 黄段是 SWA 128 窗口（每请求独占），橙段是不足 128、尚未完成 HCA 压缩的 tail。请求结束后归还到 state-cache pool。
             <br>
-            把 token 数从 8192 拉到 32768 你会看到 block 数线性增长但 State Cache 体积几乎不变（SWA 窗口固定 4096 + tail ≤ 128）—— <strong>这就是 V4 长上下文不爆显存的本质</strong>：百万 token 几乎全部进 Block Cache（压缩 32×～128×），State Cache 永远是 ~5K token 的固定占用。
+            把 token 数从 8192 拉到 32768，可以看到 classical KV blocks 随序列增长，而 State Cache 只保留固定 SWA 窗口和未压缩尾部。它显著降低了长期状态，但压缩 KV 本身仍随上下文长度增长。
           </p>
         </div>
 
@@ -215,19 +214,19 @@
         </p>
         <ol>
           <li>请求开始时，对 prompt 哈希 → 查 SSD 是否有命中；</li>
-          <li>命中 → mmap + GPU async copy 进显存，<em>跳过整段 prefill</em>；</li>
+          <li>命中 → 读取并复用截至最后一个完整压缩块的 KV；尾部不完整块仍需重算；</li>
           <li>未命中 → 正常 prefill 后落盘，下次命中。</li>
         </ol>
 
         <div class="numex">
           <span class="numex-tag">数值演练 · 盘上 KV 的 ROI</span>
-          假设一个 1M token 的文档被 100 个 query 反复问：
+          <strong>示意假设：</strong>同一长文档被多个 query 反复使用时，复用完整压缩块可以减少重复 prefill。
           <ul>
-            <li><strong>无盘上 KV</strong>：每次 1M prefill ≈ 30 秒 × 100 query = <strong>3000 秒 GPU</strong>；</li>
-            <li><strong>盘上 KV 命中</strong>：第 1 次 30 秒 + 落盘 ~5 秒；后 99 次 mmap + load ~2 秒 = <strong>30 + 99 × 2 ≈ 230 秒</strong>；</li>
-            <li><strong>13× 加速</strong>。Block Cache 大小 ~60MB / 1M token，1TB SSD 能存 16K 个 1M 上下文。</li>
+            <li><strong>无盘上 KV</strong>：每个请求都要重新计算共享前缀；</li>
+            <li><strong>盘上 KV 命中</strong>：读取压缩 KV，只重算尾部和所选策略要求恢复的 SWA 状态；</li>
+            <li>实际收益取决于 SSD 带宽、前缀长度、命中率和 SWA 策略。报告没有给出 30 秒、2 秒或 13× 等固定数字。</li>
           </ul>
-          这是<em>把"算"换成"存"</em>的经典工程交易，对长上下文应用是质变级的优化。
+          这是用存储与读取换取较少重复计算的工程折中。
         </div>
 
         <h4>3.1 SWA 三档策略</h4>
@@ -235,20 +234,20 @@
           Block Cache 落盘很简单（已压缩，体积小）。<strong>State Cache 难处理</strong>：SWA 是位置敏感的，落盘后下次命中时位置可能不一样。三档策略：
         </p>
         <ol>
-          <li><strong>Full SWA Caching</strong>：每层 SWA 全落盘。最快命中，<em>但 SSD 写入压力大</em>（一个请求写 ~25GB SWA / 1M ctx）；</li>
-          <li><strong>Periodic Checkpointing</strong>：每 $p = 16384$ token 落一次盘，命中后从最近 checkpoint 重算 tail（最多重算 $p$ token）。<em>SSD 写入 ÷ p</em>，重算开销小；</li>
-          <li><strong>Zero SWA Caching</strong>：完全不存 SWA，命中时仅靠 Block Cache 中的 CSA/HCA 重算最后 $n_{\text{win}} \cdot L = 4096 \times 61 \approx 250K$ token 的 SWA。<em>零 SSD 占用</em>，但每次命中都要 ~10 秒重算。</li>
+          <li><strong>Full SWA Caching</strong>：保存每层完整的 SWA 状态，命中时需要的重算最少，但会增加存储写入与容量压力；报告没有给出单请求固定为 25GB 的数字。</li>
+          <li><strong>Periodic Checkpointing</strong>：每隔可调参数 $p$ 保存最近 $n_{\text{win}}$ 个 token 的 SWA 状态，命中后从最近检查点恢复并重算尾部；报告没有指定固定的 $p$。</li>
+          <li><strong>Zero SWA Caching</strong>：完全不存 SWA。对 $L$ 层模型，借助已缓存的 CSA/HCA KV，最多重算最后 $n_{\text{win}}\cdot L=128L$ 个 token，以恢复末层所需的 SWA 状态。</li>
         </ol>
         <p>
-          典型部署：长文档查询用 Periodic Checkpointing（命中频繁、重算可控），冷请求用 Zero（占用最小）。
+          三种策略分别偏向命中恢复速度、存储开销或实现简洁性；应根据命中率、SSD 带宽和可接受的重算量选择。报告没有指定“典型部署”的固定组合。
         </p>
 
         <h3>本章小结</h3>
         <ul>
-          <li>PagedAttention 假设所有层 KV 同构、可独立回收。V4 四类 KV（SWA / CSA / HCA / Indexer）体积比 128:32:1:1，过期策略不同，必须分治。</li>
-          <li><strong>State Cache</strong>：位置敏感的 SWA + in-flight tail，按请求分配；<strong>Block Cache</strong>：压缩好的 CSA / HCA / Indexer K，按 $\mathrm{lcm}(4, 128) = 128$ 分块，跨请求共享。</li>
-          <li>百万 token 几乎全进 Block Cache（压缩 32–128×），State Cache 固定 ~5K token —— <em>显存随上下文长度近似常数增长</em>。</li>
-          <li>盘上 KV + SWA 三档策略让<strong>共享前缀场景 prefill 接近免费</strong>，13× 加速级别。</li>
+          <li>PagedAttention 的同构 cache 假设不适合 V4 的 SWA、CSA、HCA 与 Indexer 状态，因此报告采用异构管理。</li>
+          <li><strong>State Cache</strong>：保存 SWA 和未完成压缩的尾部；<strong>classical KV cache</strong>：保存已完成的 CSA/HCA 与 Indexer KV，并按 128 的整数倍对齐。</li>
+          <li>State Cache 大小受固定窗口约束；压缩 KV 仍随上下文长度增长，只是增速显著低于未压缩注意力。</li>
+          <li>盘上 KV 与三种 SWA 策略减少共享前缀的重复计算；实际收益依赖部署条件。</li>
           <li>这套设计与 Ch11 的 two-stage CP 是<em>训推对偶</em>：训练时跨 CP rank 桥接压缩边界，推理时跨请求共享压缩 block。压缩这一动作是 V4 的统一原语。</li>
         </ul>
 
@@ -264,7 +263,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: 异构 KV 布局
@@ -272,7 +271,7 @@
 <script>
 (function() {
   const BLOCK_SIZE = 128;       // tokens per block
-  const SWA_WIN = 4096;         // SWA window
+  const SWA_WIN = 128;          // official SWA window
   const X0 = 20;
   const TOTAL_W = 680;
   const MAX_TOKENS = 32768;

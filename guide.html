@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
-<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="styles.css?v=20260724-5" />
 </head>
 <body data-base="" data-page="guide">
 
@@ -77,8 +77,8 @@ Ch03 mHC ＋ Ch04 CSA（要点速读）
         <p>如果你在搭自己的 MoE 训练栈，关心通信、低精度、专家路由：</p>
         <pre style="background:var(--code-bg); padding:14px 18px; border-radius:6px; font-size:13px; line-height:1.7; overflow-x:auto;"><code>Ch02 DeepSeekMoE 与 MTP（背景必读）
   │
-  ├──► Ch07 MegaMoE — 让 all-to-all 消失（核心必读）
-  │      重点：把通信完全藏在计算下面、C/B ≤ 6144 阈值
+  ├──► Ch07 MegaMoE — 用流水隐藏 all-to-all（核心必读）
+  │      重点：expert wave 调度、C/B ≤ 6144 理论条件
   │
   ├──► Ch08 TileLang — 写给 GPU 的方言（核心必读）
   │      重点：DSL 替掉成百上千 ATen 算子
@@ -107,8 +107,8 @@ Ch03 mHC ＋ Ch04 CSA（要点速读）
   ├──► Ch17 Tool 接口三件套（重要）
   │      重点：DSML schema、Interleaved Thinking、Quick Instruction
   │
-  ├──► Ch20 DSec — 代码沙箱与安全护城河（推荐）
-  │      重点：单集群 10w+ sandbox、四种执行衬底
+  ├──► Ch20 DSec — Agentic AI 的执行底座（推荐）
+  │      重点：四种执行衬底、分层镜像与 trajectory log
   │
   └──► 附录 A 真实任务胜率（参考）
          重点：Code Agent 67% pass、内部问卷</code></pre>
@@ -212,6 +212,6 @@ flowchart TB
   </aside>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=20260724-5"></script>
 </body>
 </html>

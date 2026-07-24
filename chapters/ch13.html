@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch13">
 
@@ -33,7 +33,7 @@
       <article id="ch13" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第三部分 · 预训练 · 13</div>
         <h2 class="chapter-title">32T Tokens — 预训练的活水</h2>
-        <p class="chapter-sub">数据策展不是"清洗 + 拼接"那么简单：长文档优先怎么改了 packing 的概率分布、采样级 mask 怎么把 cross-sample 的隐性噪声切干净、4K→16K→64K→1M 的阶梯调度怎么和 sparse attention 切换时机配合，以及为什么 V4 在 mid-training 才注入 agentic 数据而不是从头混。</p>
+        <p class="chapter-sub">V4 如何扩展网页、多语言、数学、代码与长文档语料，为什么在 mid-training 加入 agentic data，sample-level attention mask 与 V3 有何不同，以及训练长度如何从 4K 逐步扩展到 1M。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
@@ -41,14 +41,14 @@
           <p class="term-name">32T Tokens = V4-Flash 32 万亿 / V4-Pro 33 万亿训练 token，长文档优先 + 采样级 mask + 阶梯式扩长上下文 + mid-training 注入 agentic 数据</p>
           <p>
             一句话：<strong>把"先用 4K 短样本喂 dense 主干、再扩到 1M 让 sparse attention 接管"做成一条阶梯</strong>，每段长度都对应不同的数据混合 + 不同的 attention 模式。
-            数据本身不是简单"加更多 web"，而是用模板过滤压模型崩塌、扩多语言长尾、把 agentic 任务延到 mid-training 单独注入。
+            数据构造包括过滤批量自动生成和模板化网页内容、扩大多语言语料、强调长文档，并在 mid-training 加入 agentic data。
           </p>
           <dl>
             <dt>32T Tokens（与 V3 的 14.8T 比）</dt>
-            <dd>训练 token 总量 ~翻倍。<em>但 token 本身越来越贵</em>：清洗后高质量 web 增长慢，必须靠"长尾语言扩容 + 长文档加权 + 合成 / 翻译 token"补缺口。<strong>token 总量比 V3 大，但每 token 信息密度更高</strong>，这是 Ch15 Base 跳分的根本来源。</dd>
+            <dd>Flash 使用 32T tokens，Pro 使用 33T tokens，明显高于 V3 的 14.8T。报告说明数据扩展包括更严格的网页过滤、更大的多语言语料、数学与代码数据，以及长文档优先；没有披露合成或翻译 token 的占比，也不能仅凭 benchmark 提升证明“每 token 信息密度更高”。</dd>
 
             <dt>FIM（Fill-In-the-Middle，OpenAI 2022）</dt>
-            <dd>训练时把一段文本切成 prefix / middle / suffix，重排成 <code>&lt;PRE&gt; prefix &lt;SUF&gt; suffix &lt;MID&gt; middle</code> 让模型预测 middle。<em>让模型能"双向"看上下文</em> —— 代码补全、cloze 类任务依赖此。V4 沿用 V3 的 FIM 比例（约 10%）。</dd>
+            <dd>训练时把文本重排为 prefix / suffix / middle，让模型预测中间内容。V4 沿用 V3 的 FIM 策略；本报告没有披露约 10% 之类的采样比例。</dd>
 
             <dt>Packing（样本拼接）</dt>
             <dd>训练时把多个短样本拼到同一个 sequence 长度（如 4K）填满 batch，避免 padding 浪费。<em>问题</em>：默认 attention 让样本 A 的 token 能看到样本 B 的 token，<strong>引入 cross-sample 关联噪声</strong>。这就是接下来 sample-level mask 要解决的事。</dd>
@@ -57,21 +57,21 @@
             <dd>V4 与 V3 的<strong>关键差异</strong>：packed sequence 内部，<em>每个样本只能看自己内部的 token，跨样本一律 mask 掉</em>。等价于"打包但语义独立"。在长文档加权的前提下尤其重要 —— 单个文档可能占满整个 4K，跨样本污染会让长上下文学习被短样本主导。</dd>
 
             <dt>Model Collapse（模型崩塌，Shumailov 2024）</dt>
-            <dd>训练数据混入大量 LLM 生成的<em>模板化文本</em>（SEO、AI 写作、代码片段重复）后，模型分布逐渐塌陷到狭窄模式，<strong>多样性 ↓，幻觉 ↑</strong>。V4 的对策：用专门的<em>模板检测器</em>过滤批量自动生成内容，模板化模式被压低到 ~3% 以下。</dd>
+            <dd>V4 对网页数据增加过滤规则，以移除批量自动生成和模板化内容，降低模型坍塌风险。报告没有说明所用检测器，也没有给出“压到 3% 以下”的比例。</dd>
 
             <dt>Long-Document Priority（长文档优先）</dt>
-            <dd>显著加权学术论文、技术报告、长文献、长代码库。<em>动机</em>：(1) FACTS / Simple-QA 等知识类 benchmark 的 token-efficiency 高度依赖长上下文样本；(2) sparse attention 必须在长样本上才能学到"哪部分该跳过、哪部分该精读"的 selection 模式；(3) 长样本含丰富跨段引用，对 mHC 这种深度堆叠模型的<em>层间依赖</em>训练更有效。</dd>
+            <dd>报告特别强调科学论文、技术报告等具有独特学术价值的长文档。它没有把这一选择与 FACTS、Simple-QA、Indexer 学习或 mHC 层间依赖逐项建立因果关系。</dd>
 
             <dt>Mid-Training（中段训练）</dt>
-            <dd>Pre-train 末段、SFT 之前的一个新阶段：在已经基本收敛的 Base 上<em>注入特定能力数据</em>（V4 注入 agentic 工具调用 + code agent 轨迹）。比 SFT 多得多 token、比 pre-train 更结构化。<strong>这是 V4 报告新引入的概念</strong>，把"工具能力"从 SFT 提到 pre-train 末端，让 OPD 蒸馏起步就有 agent 知识。</dd>
+            <dd>报告称在 mid-training 阶段加入 agentic data，以增强编码能力；没有进一步披露数据是否由工具调用或 code-agent trajectories 构成，也没有给出该阶段的 token 数。</dd>
 
             <dt>序列长度阶梯：4K → 16K → 64K → 1M</dt>
-            <dd>训练分四段，每段序列长度不同：<strong>4K</strong> 阶段（占 token 约 60%）走 dense attention 学语言基础；<strong>16K + 64K</strong>（约 35%）逐步切到 SWA + CSA/HCA 混合，让 sparse 模式 warmup；<strong>1M</strong>（约 5%）让 long-context 模式精修。<em>这条阶梯的存在是因为 sparse attention 在短序列下无优势，只有长序列才能体现压缩+稀疏的价值</em>。</dd>
+            <dd>训练长度依次扩展为 <strong>4K → 16K → 64K → 1M</strong>。Flash 前 1T tokens 使用 dense attention，并在 64K 阶段先 warm up Lightning Indexer、再启用 sparse attention；Pro 的 dense 阶段更长。报告没有给出各长度阶段占总 token 的百分比。</dd>
 
             <dt>Tokenizer（沿用 V3 + 几个特殊 token）</dt>
-            <dd>词表 128K 不变（V3 的 BBPE 训练版本）。新增几个 agentic 控制 token：<code>&lt;|tool_call|&gt;</code>、<code>&lt;|tool_result|&gt;</code> 等。<em>不重训 tokenizer 是为了让 V3 的 KV cache、prompt cache 直接复用</em>，向后兼容。</dd>
+            <dd>V4 基于 V3 tokenizer 增加少量用于 context construction 的特殊 token，词表仍为 128K。报告没有将它们列为 <code>&lt;|tool_call|&gt;</code> 或 <code>&lt;|tool_result|&gt;</code>，也没有声称这样可以直接复用 V3 的 KV cache。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>32T 不是"喂更多数据"那么简单，而是<em>数据策展 + 数据顺序 + attention mask 三件事一起改</em>。读完这章你应该能解释为什么 sample-level mask 在长文档加权后变成了必需，而不是 V3 的可选项。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>V4 的预训练变化不只在 token 总量，还包括数据策展、数据顺序和 sample-level attention mask。报告明确采用样本级 mask 隔离打包序列中的不同样本，但没有把它与长文档加权建立单一因果关系。</div>
         </div>
 
         <!-- ================== §1 V3 数据策略哪里不够 ================== -->
@@ -81,19 +81,19 @@
         </p>
 
         <ul>
-          <li><strong>样本平均长度太短</strong>：V3 的样本平均 ~600 token，packing 后短样本占主导。CSA / HCA 的"跨段选择"在 600 token 内体现不出价值，sparse attention 学不到正确的 selection 模式；</li>
-          <li><strong>模板化数据混入</strong>：V3 训练完成后（2024 末），互联网上 LLM 生成内容比例已超 20%，再用同样的过滤器会把<em>模板化模式</em>带进 V4 → model collapse 风险；</li>
-          <li><strong>Cross-sample 噪声放大</strong>：长文档加权后，单样本可能占满 4K 整个 packing，<em>少量短样本被 attention 覆盖到的概率反升</em>，noise 反而比 V3 严重。</li>
+          <li><strong>长上下文训练需要长样本</strong>：报告强调长文档策展，但没有披露 V3 样本平均约 600 token 的数字。</li>
+          <li><strong>模板化数据混入</strong>：网页中的批量自动生成与模板化内容会提高 model-collapse 风险，因此 V4 增加了相应过滤策略；报告没有估计其在互联网中的占比。</li>
+          <li><strong>样本边界</strong>：把不同来源文档打包进同一训练序列可减少截断，但若只使用普通 causal mask，后面的样本可以看到前面样本。V4 因而改用 sample-level attention mask；报告没有量化此前的噪声比例。</li>
         </ul>
 
         <div class="numex">
-          <span class="numex-tag">数值演练 · 长文档加权后 packing 的样本数变化</span>
-          假设 4K packing window：
+          <span class="numex-tag">示意 · 为什么 packing 需要样本级 mask</span>
+          假设一个训练序列依次装入文档 A 与文档 B：
           <ul>
-            <li><strong>V3 风格（短样本主导）</strong>：平均样本长度 600 token → 每 4K window 装 ~6.7 个样本。Cross-sample attention 涉及的 token pair 数 $\binom{6.7}{2} \approx 22$，每对约 600×600=36 万 token-pair。</li>
-            <li><strong>V4 长文档加权</strong>：平均长度涨到 ~2000 token → 每 4K window 装 ~2 个样本。但 cross-sample token pair 数 $\binom{2}{2} = 1$，<em>每对 2000×2000=400 万 token-pair</em>。</li>
+            <li><strong>只有 causal mask</strong>：B 中的 token 可以看到 A，因为 A 位于序列中更早的位置；</li>
+            <li><strong>叠加 sample-level mask</strong>：B 只能看到 B 内更早的 token，A 与 B 在语义上彼此隔离。</li>
           </ul>
-          单样本对污染量 36→400 万，<strong>噪声密度 ×11×</strong>。V3 的 packing-only 策略下噪声是均匀低水位的；V4 长文档加权后变成"少而极致"的污染源 —— 必须 sample-level mask 切断。
+          报告没有披露平均样本长度或 cross-sample pair 比例，因此不再用 600 / 2000 token 等假设值代替实测。
         </div>
 
         <!-- ================== §2 sample-level mask 怎么改 ================== -->
@@ -116,7 +116,7 @@
             <li><strong>$\mathrm{sid}(i) = \mathrm{sid}(j)$</strong>：新增的同源约束 —— 即便 $j$ 在 $i$ 前面、且都在同一 packed window 里，<em>只要它们属于不同样本就 mask 掉</em>；</li>
             <li><strong>$M_{ij} = -\infty$</strong>：把不可见位置的 attention logit 拍到负无穷，softmax 后权重为 0。</li>
           </ol>
-          <p>这条改动对 V3 是"<em>可选项</em>"（短样本时跨样本噪声小），对 V4 长文档加权后是<strong>必须</strong>。直觉：你不会让一个学术论文的 token 偷看到隔壁拼贴在同一 window 里的论坛帖子，否则模型会学到伪相关性 —— 比如"标题党后面跟方程"这种 packing 制造的虚假分布。</p>
+          <p>报告明确指出 V4 与 V3 的差异是采用 sample-level attention masking，但没有说明 V3 中该策略只是“可选项”，也没有给出跨样本污染的定量分析。直观上，这一 mask 让为了提高利用率而打包到同一序列的不同样本保持语义隔离。</p>
         </div>
 
         <!-- ================== VIZ: sample-level mask ================== -->
@@ -153,7 +153,7 @@
             <br>
             把样本数从 1 拉到 8 你会看到黄色块迅速增多（块状对角阵）。点切换按钮看 V4 把所有黄格变灰 —— <strong>每个样本各自一块独立三角，互不可见</strong>。
             <br>
-            读出"cross-sample 对数 / 因果三角总数"的比例就是 V3 多看到的<em>污染信号比例</em> —— 4 个样本均匀打包时约 25%。
+            右侧比例只是当前等长分块示意中被 sample-level mask 额外屏蔽的 pair 占比，不能等同于 V3 的训练“污染比例”或模型质量损失。
           </p>
         </div>
 
@@ -167,10 +167,10 @@
           <table>
             <thead><tr><th>段</th><th>序列长度</th><th>token 占比</th><th>主要 attention 模式</th><th>主要任务</th></tr></thead>
             <tbody>
-              <tr><td>① 基础</td><td>4K</td><td>~60%</td><td>dense（warmup）</td><td>语言基础 / 短样本知识</td></tr>
-              <tr><td>② 扩长 1</td><td>16K</td><td>~20%</td><td>SWA + CSA 切入</td><td>稀疏 selection 学习</td></tr>
-              <tr><td>③ 扩长 2</td><td>64K</td><td>~15%</td><td>SWA + CSA + HCA 全开</td><td>跨段引用 / 长依赖</td></tr>
-              <tr><td>④ 长精修</td><td>1M</td><td>~5%</td><td>full sparse</td><td>百万 token 训练</td></tr>
+              <tr><td>① 起始</td><td>4K</td><td>未披露</td><td>dense</td><td>Flash 的 dense warmup 从这里开始</td></tr>
+              <tr><td>② 扩长</td><td>16K</td><td>未披露</td><td>dense</td><td>继续扩展上下文</td></tr>
+              <tr><td>③ 引入稀疏</td><td>64K</td><td>未披露</td><td>Indexer warmup → sparse</td><td>两阶段启用 sparse attention</td></tr>
+              <tr><td>④ 长上下文</td><td>1M</td><td>未披露</td><td>sparse</td><td>百万 token 训练</td></tr>
             </tbody>
           </table>
         </div>
@@ -179,27 +179,26 @@
           <div class="callout-title">📖 为什么不是从头跑 1M</div>
           <p>有三个根本原因让"一开始就 1M"不可行：</p>
           <ol>
-            <li><strong>显存账</strong>：1M token 单层 KV ~60MB，全模型 ~3.6GB/请求。带 dense attention 时 attention score 矩阵 1M×1M = $10^{12}$ 项，<em>显存 + 计算都爆</em>。必须先在 4K 学到一个能切 sparse 的初值。</li>
-            <li><strong>稀疏 selection 需要先验</strong>：CSA 的 Lightning Indexer 要学"哪部分该精读"。模型未收敛时<em>indexer 选的是噪声</em>，sparse 训练发散。所以前 60% token 走 dense 让模型先学到基本语义。</li>
+            <li><strong>计算与缓存</strong>：dense attention 的 score 数量随序列长度二次增长，1M 上下文代价很高；报告没有给出“单层 60MB / 全模型 3.6GB”的统一缓存数字。</li>
+            <li><strong>稀疏 selection 需要 warmup</strong>：V4 先训练 dense 模型，再短暂 warm up Lightning Indexer，随后进行 sparse attention 训练。报告没有说未 warmup 一定发散，也没有给出前 60% token 的比例。</li>
             <li><strong>长样本稀缺</strong>：可用的 1M 长样本（书籍、超长仓库）token 数远少于短样本。把它放最后一段精修是 token 效率最优。</li>
           </ol>
-          <p>这条阶梯在工程层与 Ch11 的 two-stage CP 完美对接：① 阶段 CP 不需要（4K 单卡能装），② 阶段开始 CP=2，③ CP=4，④ CP=8 ~ 16。<em>序列长度调度同时是并行度调度</em>。</p>
+          <p>长序列训练会结合 Ch11 的 contextual parallelism。报告说明了 two-stage CP 如何处理压缩边界，但没有披露 4K/16K/64K/1M 分别对应的 CP 并行度。</p>
         </div>
 
         <h3 id="agentic">4. Mid-Training：把 agentic 数据延后注入</h3>
         <p>
-          V3 把代码、数学、工具调用数据从 pre-train 头到尾混在一起。V4 改为：<strong>pre-train 末端用一段独立 mid-training 阶段集中注入 agentic 数据</strong>（工具调用轨迹、code agent 多步推理、long-horizon 任务）。
+          V4 报告说明数学与编程语料仍是预训练核心，并在 mid-training 阶段加入 agentic data 以增强编码能力。它没有详细披露 V3 的混合方式，也没有列出 agentic data 的具体组成。
         </p>
 
         <div class="callout callout-good">
           <div class="callout-title">为什么延后注入</div>
           <ol>
-            <li><strong>结构化数据干扰早期学习</strong>：agentic 轨迹含大量结构化 token（<code>&lt;|tool_call|&gt;</code> JSON 等），早期混入会让模型把 token 分布学偏，普通文本生成质量下降；</li>
-            <li><strong>需要稳定的语言基础</strong>：工具调用本质是"语言 → 结构 → 语言"的转换，模型必须先有扎实语言能力才能学好这层映射；</li>
-            <li><strong>Mid-training 可以大胆调高 lr</strong>：相比 SFT 的少量数据 + 低 lr，mid-training 用 pre-train 量级的 lr + 大量 token，让 agentic 能力<em>真正进权重</em>而不是"表层 SFT"；</li>
-            <li><strong>给 OPD 一个高起点</strong>：Ch18 的 reverse-KL 蒸馏期望学生模型已经能调用工具，否则 specialist teacher 蒸不下来。</li>
+            <li><strong>论文事实</strong>：agentic data 在 mid-training 阶段加入，用于进一步增强 coding capabilities。</li>
+            <li><strong>合理解释</strong>：在主干能力形成后再加入结构化 agentic 数据，可能有利于控制数据配比和能力注入；这是本文解读，不是报告给出的因果实验。</li>
+            <li>报告没有披露这一阶段的 learning rate、token 数、工具 schema 或对 OPD 的消融影响。</li>
           </ol>
-          <p>这是 V4 报告新加的<em>训练阶段</em>，对标 Anthropic / OpenAI 内部已经在做的"capability training"，但 DeepSeek 第一次把它形式化写进开源报告。</p>
+          <p>因此，这一节只保留报告明确披露的训练位置与目标，不再推测其它公司的内部流程或宣称“首次”。</p>
         </div>
 
         <h3 id="hyperparams">5. V4-Flash / V4-Pro 关键超参对比</h3>
@@ -226,19 +225,18 @@
 
         <div class="numex">
           <span class="numex-tag">数值演练 · 训练总 FLOPs</span>
-          V4-Pro：每 token 激活参数 49B，按"前向 6 ND，反向 12 ND"经验估：
+          若采用常见的粗略估算 $\text{training FLOPs}\approx6N_{\text{active}}D$，并暂时忽略 attention、路由和稀疏 kernel 的差异：
           <ul>
-            <li>每 token forward+backward ≈ $6 \cdot 49\text{B} = 2.94 \times 10^{11}$ FLOPs；</li>
+            <li>每 token 训练计算约 $6 \cdot 49\text{B} = 2.94 \times 10^{11}$ FLOPs；</li>
             <li>33T tokens × $2.94 \times 10^{11}$ ≈ <strong>$9.7 \times 10^{24}$ FLOPs</strong>；</li>
-            <li>按 H100 BF16 989 TFLOPs/s 与实际 MFU ~35% 算，等价 <strong>$\approx 880{,}000$ H100-小时</strong>，即 <em>10K 卡集群跑 ~3.7 天净计算</em>。</li>
+            <li>报告没有披露训练所用 GPU 数、MFU、总 H100-hours 或训练天数，因此不对 wall-time 作反推。</li>
           </ul>
-          实际带通信开销 + spike 重算 + multi-stage 切换，wall-time 约 60–80 天。这就是为什么 Ch11 的训练框架优化能省下来的每 1% 都极贵。
+          这是按激活参数套用 dense-model 经验式的数量级估算，不是报告给出的训练 FLOPs，也不足以推出实际训练时长。
         </div>
 
         <h3 id="summary">6. 一句话总结</h3>
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
-          <p>32T token 不是"加更多数据"那么简单，而是 <em>长文档加权 + 采样级 mask + 阶梯式扩长 + mid-training 注入</em> 四件事联动 —— 它们共同把 V3 的"短样本稳态"改造成 V4 的"长上下文默认"。Sample-level mask 是这套改造里最朴素也最关键的一步：它让 packing 这种工程必需不再污染长文档的语义。</p>
+          <p>Flash 与 Pro 分别训练 32T 和 33T tokens。数据侧扩大并清理网页、多语言、数学、代码与长文档语料，并在 mid-training 加入 agentic data；训练侧采用 sample-level attention mask，将序列长度从 4K 逐步扩展到 16K、64K 和 1M，并分阶段引入 sparse attention。</p>
         </div>
 
       </article>
@@ -253,7 +251,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: sample-level attention mask

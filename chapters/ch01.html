@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch1">
 
@@ -55,7 +55,7 @@
                 <td><strong>V2</strong></td>
                 <td>2024-05</td>
                 <td>236B / 21B 激活</td>
-                <td><strong>MLA</strong>（Multi-head Latent Attention）首次把 KV 沿头维做低秩压缩；<strong>DeepSeekMoE</strong> 首次引入"细粒度专家 + 共享专家"。</td>
+                <td><strong>MLA</strong>（Multi-head Latent Attention）把 KV 沿头维做低秩压缩；<strong>DeepSeekMoE</strong> 引入"细粒度专家 + 共享专家"。</td>
                 <td>"压缩 KV"和"细粒度 MoE"这两个 V4 母题在这里第一次被验证可行。</td>
               </tr>
               <tr>
@@ -69,13 +69,13 @@
                 <td>V3.1 / V3.2</td>
                 <td>2025</td>
                 <td>同 V3</td>
-                <td>稳定性补丁与小幅扩长；<strong>DSA</strong>（DeepSeek Sparse Attention）作为 V4 CSA 的祖先在 V3.2 首次上线。</td>
+                <td>稳定性补丁与小幅扩长；<strong>DSA</strong>（DeepSeek Sparse Attention）在 V3.2 中上线，并成为 V4 CSA 的前序设计。</td>
                 <td>稀疏注意力的工程经验。V4 的 CSA 不是凭空冒出来的。</td>
               </tr>
               <tr>
                 <td><strong>V4</strong></td>
                 <td>2026-04-24</td>
-                <td>1.6T / 49B（Pro）<br/>284B / 19B（Flash）</td>
+                <td>1.6T / 49B（Pro）<br/>284B / 13B（Flash）</td>
                 <td>本书主角。围绕"<em>把 1M 做成默认</em>"重写五件套。</td>
                 <td>—</td>
               </tr>
@@ -114,8 +114,8 @@
               <tr><td>①</td><td>注意力</td><td>MLA + DSA（V3.2）</td><td><strong>CSA × HCA 交替</strong></td><td>1M 仍 $O(n^2)$ FLOPs；MLA 仅省 KV 不省算力</td><td>Ch4 / Ch5</td></tr>
               <tr><td>②</td><td>残差通路</td><td>标准 pre-norm 残差</td><td><strong>mHC</strong>（Birkhoff 多面体上的 Hyper-Connection）</td><td>深堆叠下谱范数发散、outlier 沿残差累积</td><td>Ch3</td></tr>
               <tr><td>③</td><td>优化器</td><td>AdamW</td><td><strong>Muon + Hybrid NS</strong></td><td>AdamW 对矩阵参数做逐元素更新，丢失谱结构</td><td>Ch6</td></tr>
-              <tr><td>④</td><td>MoE 路由</td><td>Sigmoid + 256 专家 + $M{=}4$ 节点上限</td><td>Sqrt(Softplus) + 384 专家 + 取消上限 + Hash 早层</td><td>规模上来后 Sigmoid 饱和、节点上限扭曲路由</td><td>Ch2</td></tr>
-              <tr><td>⑤</td><td>预训练长度</td><td>4K 训 → 128K 外推</td><td><strong>4K → 16K → 64K → 1M 阶梯训练</strong></td><td>外推到 1M 失真；32T tokens 配 Anticipatory Routing</td><td>Ch13~15</td></tr>
+              <tr><td>④</td><td>MoE 路由</td><td>Sigmoid + 256 专家 + $M{=}4$ 节点上限</td><td>Sqrt(Softplus) + 384 专家 + 取消上限 + Hash 早层</td><td>调整打分函数、负载均衡与路由约束</td><td>Ch2</td></tr>
+              <tr><td>⑤</td><td>预训练长度</td><td>4K 基础训练 → 32K / 128K 扩展</td><td><strong>4K → 16K → 64K → 1M 阶梯训练</strong></td><td>在预训练中逐步学习更长上下文；总量为 32T / 33T</td><td>Ch13~15</td></tr>
               <tr><td>⑥</td><td>后训练</td><td>SFT + 多阶段 RL（GRPO）</td><td><strong>OPD</strong>（10+ 教师全词表 reverse KL 蒸馏）</td><td>多阶段 RL 难收敛、reward hacking、能力此消彼长</td><td>Ch18 / Ch19</td></tr>
               <tr><td>+1</td><td>量化</td><td>BF16 / FP8 训练</td><td><strong>FP4 QAT</strong></td><td>权重显存 / 通信带宽再降一半</td><td>Ch10</td></tr>
             </tbody>
@@ -132,8 +132,8 @@
 
         <p><strong>V4 的 CSA × HCA 怎么破</strong>：在 KV 序列上做<em>两次压缩 + 一次稀疏</em>。</p>
         <ul>
-          <li><strong>CSA（Compressed Sparse Attention）</strong>：每 $m{=}4$ 个 token 压成一个"超 KV"；再用 Lightning Indexer 选 top-$k{=}1024$ 个超 KV 做精细注意力；这一支只看 $4{,}096$ 个有效细粒度 token。</li>
-          <li><strong>HCA（Heavy Compressed Attention）</strong>：每 $m'{=}128$ 个 token 压成一个"重超 KV"；不做 top-$k$，对全部 $n/m' = 8K$ 个重超 KV 做稠密注意力；管"全局摘要"。</li>
+          <li><strong>CSA（Compressed Sparse Attention）</strong>：以 $m{=}4$ 的序列压缩率产生压缩条目，再用 Lightning Indexer 选 top-$k{=}1024$ 个条目做核心注意力。条目由重叠窗口学习聚合，不能等同为逐字读取 4096 个原始 token。</li>
+          <li><strong>HCA（Heavily Compressed Attention）</strong>：每 $m'{=}128$ 个 token 压成一个"重压缩 KV"；不做 top-$k$，而是对全部 $n/m' = 8K$ 个压缩条目做稠密注意力，用于提取全局摘要。</li>
           <li><strong>层间交替</strong>：CSA / HCA 隔层穿插，由 mHC 残差通路把两支信号叠起来 —— <em>4K 局部细节 + 8K 全局粗视野</em>互补。</li>
         </ul>
 
@@ -141,15 +141,15 @@
 
         <h3 id="res">5. 改动② 残差：vanilla → mHC</h3>
 
-        <p><strong>V1 / V2 / V3 的标准残差</strong>：$x_{l+1} = x_l + F_l(x_l)$。简单、可微；但深堆叠下谱范数会以 $\prod_l \|I + J_l\|$ 累乘 —— 一旦每层 $\|J_l\| > 0$，深度上去就<em>谱发散</em>。V3 在 671B / 61 层时已经在加 RMSNorm × 多处来摁住，但治标不治本。</p>
+        <p><strong>V1 / V2 / V3 的标准残差</strong>：$x_{l+1}=x_l+F_l(x_l)$。深层网络的 Jacobian 是多层映射的乘积，可能出现放大或衰减；仅有 $\|J_l\|>0$ 并不能推出谱必然发散。V4 报告将 mHC 的双随机约束用于提高深层信号传播的稳定性。</p>
 
-        <p><strong>它在 V4 规模上更难</strong>：V4-Pro 1.6T / 80+ 层，且引入了 CSA / HCA 这种"输出尺度对压缩比敏感"的注意力，谱稳定要求陡升。继续靠 RMSNorm 堆补丁，会把训练 loss 卡在某个台阶上不动。</p>
+        <p><strong>它在 V4 规模上更难</strong>：V4-Pro 有 1.6T 总参数、61 层，并引入了 CSA / HCA 等压缩注意力结构。报告将 mHC 用于增强深层训练的稳定性，但没有把训练问题归结为 RMSNorm，也没有声称不用 mHC 就会让 loss 卡住。</p>
 
-        <p><strong>V4 的 mHC（manifold-constrained Hyper-Connection）</strong>：把残差从"加法"升级到"加权混合"，并把权重矩阵 $\mathbf{M}_l$ 约束在 <strong>Birkhoff 多面体</strong>（双随机矩阵集合）上 —— 行和、列和都为 1、元素非负。这给出三个免费保障：</p>
+        <p><strong>V4 的 mHC（manifold-constrained Hyper-Connection）</strong>：把残差从单路加法升级为多路加权混合，并将残差混合矩阵 $B_l$ 约束在 <strong>Birkhoff 多面体</strong>（双随机矩阵集合）上，即元素非负且每行、每列之和均为 1。由此可以严格得到：</p>
         <ul>
-          <li>谱范数 $\|\mathbf{M}_l\|_2 \le 1$（Perron-Frobenius），<em>层数堆多少都不发散</em>；</li>
-          <li>行和为 1 让"信号能量"逐层守恒，没有指数衰减；</li>
-          <li>列和为 1 让 outlier 不能沿单一通道无限放大。</li>
+          <li>残差混合矩阵满足 $\|B_l\|_2 \le 1$，残差流之间的线性混合本身不会扩张；</li>
+          <li>双随机约束让多条残差流的权重保持归一，避免无约束混合矩阵在深度方向反复放大；</li>
+          <li>这一保证只作用于 $B_lX_l$。完整更新还包含 $C_lF_l(A_lX_l)$，因此不能据此断言整层或整网能量守恒、永不放大。</li>
         </ul>
         <p>实现上用 Sinkhorn-Knopp 迭代把任意非负矩阵投影回 Birkhoff 多面体，<em>训练全程在流形上跑</em>，无需事后归一化。</p>
 
@@ -175,26 +175,26 @@
               <tr><th>子改动</th><th>V3</th><th>V4</th><th>动机</th></tr>
             </thead>
             <tbody>
-              <tr><td>路由打分</td><td>Sigmoid</td><td>Sqrt(Softplus)</td><td>384 专家间饱和区无区分度</td></tr>
-              <tr><td>负载均衡</td><td>仅 aux-free</td><td>aux-free + 序列内 balance</td><td>长序列内单序列偏置 aux-free 看不见</td></tr>
-              <tr><td>路由节点上限</td><td>$M{=}4$</td><td>取消</td><td>路由质量被通信预算扭曲</td></tr>
-              <tr><td>头几层 FFN</td><td>Dense</td><td>Hash-Routed MoE</td><td>避免学习型 router 早期不稳，又享受 MoE 红利</td></tr>
-              <tr><td>MTP 权重</td><td>0.3</td><td>0.3 → 衰减期降 0.1</td><td>主 loss 后期减少 MTP 干扰</td></tr>
+              <tr><td>路由打分</td><td>Sigmoid</td><td>Sqrt(Softplus)</td><td>更换专家 affinity 的打分函数</td></tr>
+              <tr><td>负载均衡</td><td>aux-loss-free</td><td>aux-free + 序列级 balance loss</td><td>增加轻量序列级均衡约束</td></tr>
+              <tr><td>路由节点上限</td><td>$M{=}4$</td><td>取消</td><td>不再限制每个 token 的目标节点数</td></tr>
+              <tr><td>头几层 FFN</td><td>Dense</td><td>Hash-Routed MoE</td><td>前 3 个 MoE 层使用预定义 hash 路由</td></tr>
+              <tr><td>MTP 权重</td><td>0.3</td><td>0.3 → 衰减期降 0.1</td><td>报告披露的训练配置，未给单独消融</td></tr>
             </tbody>
           </table>
         </div>
 
-        <p>这五处合在一起，专家数从 256 涨到 <strong>384</strong>，激活专家从 8 涨到 9（Pro），总参数从 V3 的 671B 涨到 1.6T —— <em>规模上得去，路由不抖</em>。</p>
+        <p>这些改动用于适配更大的专家池。V4-Pro 有 <strong>384</strong> 个 routed experts，V4-Flash 有 256 个；两者每个 token 都激活 <strong>6</strong> 个 routed experts，另有 1 个 shared expert。</p>
 
         <h3 id="train-len">8. 改动⑤ 预训练：4K → 1M 阶梯式扩长</h3>
 
-        <p><strong>V3 的做法</strong>：4K 上预训练 14T tokens，再用 YaRN 把上下文外推到 128K，再做 long-SFT。<em>训练时几乎不见长序列</em>。</p>
+        <p><strong>V3 的做法</strong>：预训练共使用 14.8T tokens，基础序列长度为 4K，随后通过两阶段 context extension 扩展到 32K 和 128K。它与 V4 在预训练中逐步扩至 1M 的安排不同。</p>
 
         <p><strong>它的代价</strong>：YaRN 把 RoPE 频谱拉伸 32 倍后，远距离需要的"位置精度"丢了；同时模型的"能容纳长程依赖"能力<strong>没有真的训出来</strong>，只是被外推糊住了。</p>
 
         <p><strong>V4 的做法</strong>：</p>
         <ul>
-          <li><strong>32T tokens</strong> 预训练（V3 是 14T，× 2.3 倍）；</li>
+          <li><strong>32T / 33T tokens</strong> 预训练（Flash / Pro；V3 为 14.8T）；</li>
           <li>分四档阶梯：<strong>4K → 16K → 64K → 1M</strong>；每档单独训一段，让模型在每个尺度上都见过真长序列；</li>
           <li>训长序列时引入 <strong>Anticipatory Routing</strong>（预读未来路由信号，避免长序列内 router 抖动）与 <strong>SwiGLU Clamping</strong>（防止 FFN 激活在长序列里飞）来摁住 loss spike；</li>
           <li>1M 阶段配合 CSA / HCA，让"训得起 + 部署得起"同时成立。</li>
@@ -208,14 +208,14 @@
         <ul>
           <li><strong>On-Policy</strong>：学生自己采样 rollout，教师对学生的 rollout 打 logit；不会像 SFT 那样陷入"学生看不见自己常犯的错"；</li>
           <li><strong>Reverse KL</strong>：mode-seeking，让学生<em>聚焦</em>教师的高概率区间，避免 forward KL 的"分布抹平"；</li>
-          <li><strong>全词表</strong>：不是只蒸 top-$k$ logit，全 152K 词表的 logit 一起蒸 —— 教师的"决策边界"完整传递。</li>
+          <li><strong>全词表</strong>：不是只蒸 top-$k$ logit，而是在 128K 词表上计算完整 KL，从而降低 token-level 近似带来的梯度方差。</li>
         </ul>
 
         <p>OPD 把 V3 时代"多个 RL 流程互相打架"的乱局，改成"多教师 → 单蒸馏"的一次性收敛过程。详见 <a href="ch18.html">Ch18</a>。</p>
 
         <h3 id="quant">10. 额外改动：FP4 QAT</h3>
 
-        <p>训练用 FP8 是 V3 已经实战化的；V4 进一步把<em>权重</em>量化到 FP4（4-bit 浮点）做 QAT —— Quantization-Aware Training。这一步把权重显存 / 节点间通信带宽<strong>再降一半</strong>，是把 1.6T Pro 模型塞进合理硬件的最后一块拼图。详见 <a href="ch10.html">Ch10</a>。</p>
+        <p>V4 在后训练阶段对 MoE expert weights 与 CSA Indexer QK 路径采用 FP4 QAT。Rollout 与 inference-only forward 直接使用原生 FP4，以减少权重内存流量和采样延迟；训练 backward 仍复用现有 FP8 mixed-precision 框架。详见 <a href="ch10.html">Ch10</a>。</p>
 
         <h3 id="numbers">11. 数字回报：V4 vs V3.2 / BF16-GQA8</h3>
 
@@ -229,7 +229,7 @@
             <tbody>
               <tr><td>KV Cache（相对）</td><td>100%</td><td>~14%</td><td><strong>10% vs V3.2</strong>（~1.4% vs baseline）</td><td><strong>7% vs V3.2</strong>（~1.0% vs baseline）</td></tr>
               <tr><td>单 Token FLOPs</td><td>100%</td><td>~50%</td><td><strong>27% vs V3.2</strong></td><td><strong>10% vs V3.2</strong></td></tr>
-              <tr><td>预训练 tokens</td><td>—</td><td>14T</td><td><strong>32T</strong></td><td>32T 共享</td></tr>
+              <tr><td>预训练 tokens</td><td>—</td><td>14.8T</td><td><strong>33T</strong></td><td>32T</td></tr>
               <tr><td>Putnam-2025（数学证明）</td><td>—</td><td>—</td><td><strong>120/120</strong></td><td>—</td></tr>
               <tr><td>SimpleQA-Verified</td><td>—</td><td>—</td><td><strong>+20pp</strong> vs 同档开源 / 逼近 Gemini-3.1-Pro</td><td>—</td></tr>
               <tr><td>Codeforces Elo</td><td>—</td><td>—</td><td><strong>3206</strong></td><td>—</td></tr>
@@ -274,7 +274,6 @@
         </div>
 
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
           <p>
             <strong>V4 = V3 + 六条改进主线 ×「把 1M 做成默认」</strong>。
             注意力 MLA → CSA × HCA、残差 vanilla → mHC、优化器 AdamW → Muon、MoE 五处补漏、训练 4K 外推 → 1M 阶梯、后训练混合 RL → OPD，外加 FP4 QAT。
@@ -293,6 +292,6 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="p2">
 
@@ -53,10 +53,10 @@
           <div class="objectives-eyebrow">▸ LEARNING OBJECTIVES</div>
           <h3>读完这部分，你将能够</h3>
           <ul>
-            <li>用一行不等式（C/B ≤ 6144 FLOPs/Byte）说出 MegaMoE 的"硬件协设公式"，并解释超过这个值堆带宽为什么没用。</li>
+            <li>用不等式（C/B ≤ 6144 FLOPs/Byte）解释 V4-Pro 的 MegaMoE 理论隐藏条件，并判断何时增加带宽仍有帮助。</li>
             <li>解释 TileLang 替掉 ATen 的三个动机：host 开销、SMT 求解、位级可复现。</li>
             <li>区分"批不变"与"确定性"是两件事，并说出 V4 是怎么在 Attention / MatMul / Sparse Attn / MoE 反向里分别保证的。</li>
-            <li>画出 FP4 QAT 的"FP32 master → FP4 → FP8 反量化 → forward"信号链，说出为什么 FP4→FP8 反量化是无损的。</li>
+            <li>画出 FP4 QAT 的"FP32 master → FP4 → FP8 展开 → forward"信号链，并说明当前权重满足何种 scale 条件时，展开步骤不引入额外舍入。</li>
             <li>说清 Muon + ZeRO 冲突的根因，以及 V4 是怎么"稠密 / MoE 二分 + FP32→BF16 SR 通信"折中的。</li>
             <li>对比 PagedAttention 与 V4 的 State Cache + Block Cache 二分，列出至少 3 处不能共用的原因。</li>
             <li>面对一个新模型的部署问题，能从"通信、内核、数值、梯度切分、KV 布局"五个维度独立诊断。</li>
@@ -68,7 +68,7 @@
           <a class="roadmap-card" href="../chapters/ch07.html">
             <div class="roadmap-num">CH 07 · ★</div>
             <h4>计算-通信全融合：MegaMoE</h4>
-            <p>专家波（wave）调度，把通信完全藏到计算下面。</p>
+            <p>专家 wave 调度，提高 dispatch、combine 与 GEMM 的重叠。</p>
           </a>
           <a class="roadmap-card" href="../chapters/ch08.html">
             <div class="roadmap-num">CH 08</div>
@@ -78,12 +78,12 @@
           <a class="roadmap-card" href="../chapters/ch09.html">
             <div class="roadmap-num">CH 09</div>
             <h4>批不变 与 确定性</h4>
-            <p>同一 token bit-identical 复现，让 loss spike 可调试。</p>
+            <p>批不变与确定性 kernel，改善跨 batch、跨运行的复现与调试。</p>
           </a>
           <a class="roadmap-card" href="../chapters/ch10.html">
             <div class="roadmap-num">CH 10</div>
             <h4>FP4 量化感知训练</h4>
-            <p>MoE 专家与 Indexer QK 路径降到 FP4，反量化无损接 FP8。</p>
+            <p>MoE expert weights 与 Indexer QK 路径使用 FP4；满足 scale 条件时，FP4 可无额外舍入地展开到 FP8。</p>
           </a>
           <a class="roadmap-card" href="../chapters/ch11.html">
             <div class="roadmap-num">CH 11</div>
@@ -113,10 +113,10 @@
           <div class="recap-eyebrow">▾ KEY TAKEAWAYS</div>
           <h3>核心要点回顾</h3>
           <ul>
-            <li><strong>通信（Ch7 · MegaMoE）</strong>：把 dispatch / L1 / act / L2 / combine 切 wave 流水，通信完全藏在计算下；C/B ≤ 6144 FLOPs/Byte 是硬件协设的目标线。</li>
-            <li><strong>内核（Ch8 · TileLang）</strong>：用 DSL 替手写 CUDA，host 开销 &lt;1µs，Z3 SMT 入编译器，bit-identical 与 CUDA 对齐。</li>
-            <li><strong>可重放（Ch9 · 批不变 + 确定性）</strong>：放弃 split-K / atomicAdd 等非结合优化，换来 train / RL / infer 三段 bit 一致。</li>
-            <li><strong>数值（Ch10 · FP4 QAT）</strong>：FP32 master → FP4 → FP8 反量化无损 → forward；推理直接吃真 FP4 权重。</li>
+            <li><strong>通信（Ch7 · MegaMoE）</strong>：用 expert wave 流水重叠通信与计算；对 Pro，$C/B\le6144$ FLOPs/Byte 是理论上的完全隐藏条件。</li>
+            <li><strong>内核（Ch8 · TileLang）</strong>：host codegen 将 CPU validation overhead 降至每次调用低于 1µs，Z3 辅助整数分析，并支持按需与 CUDA baseline 位级对齐。</li>
+            <li><strong>可重放（Ch9 · 批不变 + 确定性）</strong>：为关键 kernel 固定归约或累加顺序，减少 batch 组织和重复运行带来的数值差异；报告没有概括成所有 train / RL / infer 路径逐位一致。</li>
+            <li><strong>数值（Ch10 · FP4 QAT）</strong>：FP32 master → FP4 → FP8 展开 → forward；在报告验证的 scale 条件下，展开步骤不引入额外舍入，推理则直接加载 FP4 权重。</li>
             <li><strong>训练（Ch11 · ZeRO + CP）</strong>：稠密 / MoE 二分切；FP32→BF16 stochastic rounding 减半通信；mHC 融合 kernel + DualPipe overlap，把开销压到 6.7%；二阶段 CP 跨压缩边界。</li>
             <li><strong>推理（Ch12 · KV 异构）</strong>：State Cache 装位置敏感的 SWA / 尾巴，Block Cache 装压缩 KV；盘上 KV 给共享前缀复用。</li>
           </ul>
@@ -130,7 +130,7 @@
               <tr><td>MegaMoE 协设</td><td><code>C/B ≤ 2d = 6144 FLOPs/Byte</code></td><td>每 GBps 互联养 6.1 TFLOP/s</td></tr>
               <tr><td>TileLang host 开销</td><td>&lt; 1 µs</td><td>从 ATen 的几十~几百 µs 砍下来</td></tr>
               <tr><td>FP4 sub-block</td><td>1 × 32（FP4 E2M1）</td><td>scale 比值落在 FP8 E4M3 动态范围内</td></tr>
-              <tr><td>FP8 量化块</td><td>128 × 128（FP8 E4M3）</td><td>与 FP4 sub-block 嵌套，反量化无损</td></tr>
+              <tr><td>FP8 量化块</td><td>128 × 128（FP8 E4M3）</td><td>与 FP4 sub-block 嵌套；当前权重满足无额外舍入的 scale 条件</td></tr>
               <tr><td>Indexer 提速</td><td>2× / 99.7% recall</td><td>FP4 QK + BF16 score</td></tr>
               <tr><td>mHC wall-time 开销</td><td>6.7%</td><td>融合 kernel + DualPipe overlap 后</td></tr>
               <tr><td>二阶段 CP 输出长度</td><td><code>s/m + 1</code></td><td>压缩边界 + 1 token 同步</td></tr>
@@ -141,7 +141,7 @@
         <h3>设计直觉地图</h3>
         <ul>
           <li>架构层（Part 1）的每个新元素，在基础设施层都对应一项"代价"：mHC → 融合 kernel + 张量级 ckpt；CSA → 二阶段 CP + 盘上 KV；FP4 → 反量化嵌套；Muon → 混合 ZeRO + SR。</li>
-          <li>Ch9 的"批不变 + 确定性"是<strong>看不见但最关键</strong>的护城河 —— 没有它，前面所有 trick 都不可调试。</li>
+          <li>Ch9 的批不变与确定性 kernel 主要服务于复现、稳定性分析和跨训练/推理流水的一致性；报告未与其他系统作“护城河”式比较。</li>
           <li>"硬件协设"不只是 Ch7 的 6144 FLOPs/Byte：FP4 嵌套、TileLang 与 SMT、KV 异构布局，都是同一个"软硬协同"姿态。</li>
         </ul>
 
@@ -150,7 +150,7 @@
         <div class="quiz">
           <p class="quiz-q">Q1. C/B ≤ 6144 FLOPs/Byte 这个阈值的物理含义是什么？为什么超过它再堆带宽是浪费？</p>
           <details><summary>查看参考答案</summary>
-            <p>它给出的是"通信完全能被计算覆盖"的临界点：每通信 1 字节，对应的计算时间够掩盖通信时间。低于此值，瓶颈在通信，加带宽有用；高于此值，瓶颈在计算，加带宽不会让训练更快。</p>
+            <p>它给出的是通信可被计算完全覆盖的临界点。若硬件 $C/B$ 高于 6144，说明计算相对网络过快，通信仍会暴露，增加带宽有帮助；若已低于阈值，通信可以被计算隐藏，继续增加带宽的边际收益很小。</p>
           </details>
         </div>
 
@@ -171,7 +171,7 @@
         <div class="quiz">
           <p class="quiz-q">Q4. FP4 → FP8 反量化为什么是无损的？</p>
           <details><summary>查看参考答案</summary>
-            <p>FP4 sub-block (1×32) 与 FP8 量化块 (128×128) 的 scale 比值刚好落在 FP8 E4M3 的动态范围内，所以反量化时 scale 本身能精确表达，不引入舍入误差。这是 V4 把"训练用模拟 FP4 / 推理用真 FP4"无缝衔接的关键。</p>
+            <p>FP4 sub-block (1×32) 与 FP8 量化块 (128×128) 使用嵌套 scale。报告验证当前权重的 scale 比值满足阈值，因此从 FP4 视图展开到 FP8 时不引入额外舍入；这里的“无损”只指展开步骤，不指 FP32 量化到 FP4 的过程。</p>
           </details>
         </div>
 
@@ -190,6 +190,6 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 </body>
 </html>

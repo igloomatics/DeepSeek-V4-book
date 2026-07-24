@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="styles.css?v=20260724-5" />
 </head>
 <body data-base="" data-page="home">
 
@@ -56,25 +56,25 @@
           <div class="stat"><span class="stat-num">1M</span><span class="stat-lab">原生上下文</span></div>
           <div class="stat"><span class="stat-num">10%</span><span class="stat-lab">vs V3.2 KV Cache</span></div>
           <div class="stat"><span class="stat-num">27%</span><span class="stat-lab">vs V3.2 单 Token FLOPs</span></div>
-          <div class="stat"><span class="stat-num">32T</span><span class="stat-lab">预训练 Tokens</span></div>
+          <div class="stat"><span class="stat-num">32T / 33T</span><span class="stat-lab">Flash / Pro 预训练 Tokens</span></div>
         </div>
 
         <div class="release-card">
           <div class="release-card-tag">RELEASE · 2026-04-24</div>
           <h3 class="release-card-title">DeepSeek-V4 Preview 释出</h3>
           <p>
-            2026 年 4 月 24 日，DeepSeek-AI 在 Hugging Face 上同步开源了 <strong>V4-Flash</strong>（284B 总参 / 19B 激活）与 <strong>V4-Pro</strong>（1.6T 总参 / 49B 激活）的 Base 与 Instruct 权重，并发布 56 页技术报告。本次更新围绕"<em>把百万 token 上下文做成日常默认</em>"重写了五件套：
+            2026 年 4 月 24 日，DeepSeek-AI 发布了 <strong>V4-Flash</strong>（284B 总参 / 13B 激活）与 <strong>V4-Pro</strong>（1.6T 总参 / 49B 激活）的预览版及 58 页技术报告。报告主要介绍以下五部分：
           </p>
           <ul>
-            <li><strong>注意力</strong>：CSA（压缩 + Lightning Indexer top-k）与 HCA（m'=128 重压缩）交替穿插，1M 上下文不再 OOM；</li>
+            <li><strong>注意力</strong>：CSA（压缩 + Lightning Indexer top-k）与 HCA（m'=128 重压缩）交替使用，以降低 1M 上下文的计算与 KV cache 成本；</li>
             <li><strong>残差</strong>：mHC 把 Hyper-Connection 约束到 Birkhoff 多面体，谱范数 ≤ 1；</li>
-            <li><strong>预训练</strong>：32T tokens、4K → 16K → 64K → 1M 阶梯式扩长，Anticipatory Routing + SwiGLU Clamping 压住 loss spike；</li>
-            <li><strong>后训练</strong>：用 OPD（多教师 reverse KL 蒸馏）整体替掉 V3 的混合 RL，配套 DSec 单集群 10w+ sandbox；</li>
-            <li><strong>评测</strong>：Codeforces Elo 3206、Putnam-2025 拿下 120/120、内部 Code Agent 67% pass。</li>
+            <li><strong>预训练</strong>：Flash 使用 32T tokens，Pro 使用 33T tokens；训练上下文从 4K 逐步扩展到 1M，并用 Anticipatory Routing 与 SwiGLU Clamping 改善稳定性；</li>
+            <li><strong>后训练</strong>：先训练领域 specialist，再用多教师 OPD 整合到统一模型；DSec 为带工具和代码执行的任务提供沙箱；</li>
+            <li><strong>评测</strong>：Pro-Max 的 Codeforces rating 为 3206；Frontier formal reasoning 设置下 DeepSeek-V4 为 120/120；内部 30 题 R&amp;D Coding Benchmark 的通过率为 67%。</li>
           </ul>
           <div class="release-card-links">
             <a class="btn" href="https://huggingface.co/collections/deepseek-ai/deepseek-v4" target="_blank" rel="noopener">🤗 开源模型</a>
-            <a class="btn" href="https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf" target="_blank" rel="noopener">📄 技术报告 PDF</a>
+            <a class="btn" href="https://arxiv.org/abs/2606.19348" target="_blank" rel="noopener">📄 技术报告 PDF</a>
             <a class="btn" href="https://www.deepseek.com/" target="_blank" rel="noopener">🌐 DeepSeek 官网</a>
           </div>
         </div>
@@ -89,7 +89,7 @@
       <section id="reading-guide" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>HOW TO READ · 阅读地图</div>
         <h2 class="chapter-title">本书地图</h2>
-        <p class="chapter-sub">把 56 页技术报告拆解为 20 章 + 两份附录，按"部分"组织，每个部分以学习目标开头、以小结收尾。每章独立可读，可按兴趣跳读。</p>
+        <p class="chapter-sub">把 58 页技术报告拆解为 20 章 + 两份附录，按"部分"组织，每个部分以学习目标开头、以小结收尾。每章独立可读，可按兴趣跳读。</p>
 
         <div class="grid-3">
           <a class="card" href="chapters/ch03.html">
@@ -114,7 +114,7 @@
           </a>
           <a class="card" href="chapters/ch07.html">
             <div class="card-tag">★★★★</div>
-            <h4>MegaMoE：通信完全藏在计算下面</h4>
+            <h4>MegaMoE：用流水隐藏通信</h4>
             <p>把专家切成 wave，给出 C/B ≤ 6144 FLOPs/Byte 的硬件协设建议。</p>
           </a>
           <a class="card" href="chapters/ch18.html">
@@ -139,7 +139,7 @@
           <a class="roadmap-card" href="parts/part3.html">
             <div class="roadmap-num">PART 3 · 3 章</div>
             <h4>预训练</h4>
-            <p>32T 数据、Anticipatory Routing、SwiGLU 钳位、Base 评测 —— V4 的"基"。</p>
+            <p>32T / 33T 数据、Anticipatory Routing、SwiGLU 钳位与 Base 评测。</p>
           </a>
           <a class="roadmap-card" href="parts/part4.html">
             <div class="roadmap-num">PART 4 · 5 章</div>
@@ -149,7 +149,7 @@
           <a class="roadmap-card" href="appendix_a.html">
             <div class="roadmap-num">附录 A</div>
             <h4>评测结果</h4>
-            <p>Benchmark 跑分 + 真实任务胜率，含 Codeforces Elo 3206、Putnam 120/120、Code Agent 67% pass。</p>
+            <p>标准 benchmark 与内部真实任务评测，并标明模型、推理预算和测试设置。</p>
           </a>
           <a class="roadmap-card" href="appendix_b.html">
             <div class="roadmap-num">附录 B</div>
@@ -169,6 +169,6 @@
   </aside>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=20260724-5"></script>
 </body>
 </html>

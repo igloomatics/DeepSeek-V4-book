@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch11">
 
@@ -54,7 +54,7 @@
             <dd>V4 的折中方案：<strong>稠密参数</strong>（attention 投影、共享 FFN）限制 ZeRO 并行度 $\le P_{\max}$，用<em>背包均衡</em>把不同 shape 的稠密层打包到 $\le P_{\max}$ 个 rank；<strong>MoE 参数</strong>每个 expert 独立优化，flatten 所有 down/up/gate 后跨 rank 平均切，<em>不限</em> ZeRO 并行度（因为 expert 之间彼此独立做 NS）。</dd>
 
             <dt>背包均衡（knapsack-balanced sharding）</dt>
-            <dd>稠密层的 shape 千差万别（一些是 $7168\times 7168$，一些是 $7168\times 28672$），简单平均会让某 rank 严重超载。V4 把"shape 大小"看作物品体积，用<em>背包近似算法</em>把所有稠密层装到 $P_{\max}$ 个桶里，<em>每桶总体积差距 ≤ 5%</em>。最后 padding 对齐到最大 bucket。</dd>
+            <dd>稠密参数矩阵的尺寸不同，简单按矩阵数量分配容易失衡。V4 用背包算法把矩阵分配到受限数量的 ZeRO ranks，使各 rank 负载大致均衡，再把 bucket padding 到最大 bucket 的尺寸。报告称这种 padding 的内存开销通常低于 10%。</dd>
 
             <dt>FP32 → BF16 Stochastic Rounding（SR）</dt>
             <dd>跨 rank 同步梯度时的<em>带宽减半</em>方案：发送方把 FP32 梯度<strong>随机舍入</strong>成 BF16 再发。$E[\text{round}] = $ 原 FP32 值（无偏），跨多步统计平均不引入偏差。比 round-to-nearest（有偏）好得多。</dd>
@@ -66,15 +66,15 @@
             <dd>双向流水线（V3 引入，V4 沿用）：每个 micro-batch 走"前向 → 后向"循环，1 个 forward 紧跟 1 个 backward 排队。可以把不同 micro-batch 的 forward 与 backward 重叠。<em>给 mHC 的融合 kernel 提供 overlap 窗口</em>。</dd>
 
             <dt>mHC 工程优化（融合 kernel + 选择性 ckpt）</dt>
-            <dd>mHC 残差路径的 wall-time 开销原本 ~12%（因为 8 次小 reduce + 8 次 sum 都是细粒度算子）。V4 用 TileLang 把 forward / backward 各融成 1 个 kernel，再用<em>选择性 checkpoint</em>（保留 normalized 输入、重算其余）省显存，再调 DualPipe 顺序让通信和 mHC 计算重叠 —— <strong>压到 6.7%</strong>。</dd>
+            <dd>V4 为 mHC 的训练与推理设计融合 kernel，选择性 checkpoint 中间张量，并调整 DualPipe 1F1B 的重叠方式。三项优化合计把 mHC 的 wall-time 开销限制在重叠流水阶段的 6.7%；报告没有披露优化前的比例。</dd>
 
             <dt>Tensor 级 Activation Checkpointing</dt>
-            <dd>传统 ckpt 是 module 级（保存一个 transformer block 输入，重算整块）。V4 用 TorchFX 反向追溯<em>最小重算子图</em>，按 tensor 决定保留还是重算。<em>无额外开销，更省显存</em>。</dd>
+            <dd>V4 选择性保存中间张量：重算大部分层间 hidden state 和所有 normalized layer input，同时避免重算计算密集的操作，以平衡显存与计算开销。报告没有提到 TorchFX 或“无额外开销”。</dd>
 
             <dt>Two-stage CP（Context Parallelism）</dt>
             <dd>长上下文沿序列维切到多 rank。CSA/HCA 把序列每 $m$ token 压成 1 个 → CP 边界经常落在压缩块中间，传统 CP 无法直接切。V4 的方案：<strong>Stage 1</strong>: 每 rank 把自己 $m$ 个未压缩 KV 发给下一 rank 合并压缩，固定输出长度 $s/m + 1$；<strong>Stage 2</strong>: 跨 rank all-gather + select-and-pad 重组完整压缩序列。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>架构层（Part 1）每个新元素都在工程层有对应代价：mHC 用融合 kernel + ckpt 抹平、Muon 用稠密 / MoE 二分切 + SR 抹平、CSA/HCA 用 two-stage CP 抹平。这三件事合起来定义了 V4 的训练框架 —— <em>它的存在感几乎全部用来支付架构层创新的工程帐</em>。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>训练框架分别为 Muon、mHC 和混合注意力补上并行与内存方案：混合 ZeRO bucket 分配处理完整矩阵更新，融合 kernel 与选择性重算控制 mHC 成本，两阶段 CP 则处理压缩序列的跨 rank 通信。</div>
         </div>
 
         <!-- ================== §1 Muon × ZeRO ================== -->
@@ -96,18 +96,17 @@
             MM^T = \sum_{i=1}^P M_i M_i^T
             $$
           </div>
-          <p><strong>这条等式里 $M_i M_i^T$ 是 $n \times n$</strong> —— 即<em>每 rank 都要算一个 full size $n \times n$ 中间矩阵</em>。$n = 7168$ 时单个就是 200MB FP32，乘 $P=64$ rank → 13GB 临时占用。然后 reduce-sum 得到完整 $MM^T$ 才能继续 NS 迭代。</p>
-          <p>这<em>能做但贵</em>。V4 的判断：稠密参数太大、不值得；MoE 的每个 expert 单独 ~$3.6$B 但 expert 之间独立、可以各 rank 一个 expert。<strong>所以稠密限制 ZeRO 并行度 $P_{\max}$，MoE 不限</strong>。</p>
+          <p><strong>这条等式里 $M_i M_i^T$ 仍是 $n \times n$</strong>，所以简单切分并不会把 Newton–Schulz 所需的矩阵计算变成逐元素优化。V4 因而限制稠密参数的最大 ZeRO 并行规模；对彼此独立的 MoE expert，则允许使用全部 ranks。</p>
         </div>
 
         <h4>1.1 稠密：背包均衡</h4>
         <p>
-          稠密层 shape 不一致：QKV 投影 $7168\times 7168$、FFN up $7168\times 28672$、FFN down $28672\times 7168$ ……如果简单"每个层切到 P 个 rank"，shape 大的层把 rank 拖慢、shape 小的层 rank 闲。V4 用背包均衡：把所有稠密层 flatten 后按总参数量分配到 $P_{\max}=8$ 个 rank，每 rank 总参数量误差 ≤ 5%。最后<em>padding 对齐</em>到最大 bucket，方便统一 NS。
+          稠密参数矩阵尺寸不同，按矩阵数量平均分配会造成负载不均。V4 用背包算法把矩阵分配到受限数量的 ZeRO ranks，并把各 bucket padding 到最大 bucket 的尺寸，便于执行 reduce-scatter。报告没有给出 $P_{\max}$ 的具体值，也没有承诺 rank 间误差不超过 5%；明确披露的是 padding 通常带来不足 10% 的内存开销，且每个 rank 最多管理 5 个参数矩阵。
         </p>
 
         <h4>1.2 MoE：每 expert 独立切</h4>
         <p>
-          MoE 的 384 个 expert 彼此独立做 NS。所以每 expert 看作一个独立的"小模型"，flatten 它的 down/up/gate 三个矩阵后跨 rank 切。<em>不限 ZeRO 并行度</em> —— 反正每 expert 独立，rank 想切几片切几片，最后做完 NS 再合回来即可。
+          对 MoE 参数，V4 分别展平所有层、所有 experts 的 down、up 和 gate 投影矩阵，再进行 padding，使向量可以在不拆分逻辑独立矩阵的前提下均匀分到各 ranks。由于 expert 数量多，MoE 参数不限制 ZeRO 并行规模，padding 开销也可以忽略。
         </p>
 
         <h4>1.3 通信精度：SR FP32→BF16</h4>
@@ -128,67 +127,27 @@
             <li><strong>vs round-to-nearest</strong>：RTN 是有偏的（小数总是往最近偶数靠），多步累积会漂移；SR 不漂移，<em>跨多步取平均逼近真值</em>；</li>
             <li><strong>方差</strong>：$\mathrm{Var}[\mathrm{SR}(x)] = p(1-p) \cdot (\lceil x \rceil - \lfloor x \rfloor)^2 \le \frac{1}{4} \cdot \mathrm{ULP}^2$，与 RTN 同量级。</li>
           </ul>
-          <p>对训练的影响：单步梯度噪声 $\uparrow$ 一点（相当于多了一些 SR 噪声），但<em>训练本身就是 SGD，对噪声鲁棒</em>。多步平均后逼近 FP32 同等收敛。<strong>带宽减半，质量几乎无损</strong>。</p>
+          <p>SR 的期望值无偏，但单次舍入仍会引入方差。报告称 Newton–Schulz 的 BF16 矩阵乘保持稳定，并通过本地 FP32 求和避免低精度累加误差；它没有给出“质量几乎无损”的独立消融数据。</p>
         </div>
 
-        <h3 id="mhc">2. mHC 的 6.7%：怎么从 12% 压下来</h3>
+        <h3 id="mhc">2. mHC 的 6.7%：融合、重算与流水重叠</h3>
         <p>
-          mHC 残差路径每层有 8 个 expansion / projection sum + reduce（见 Ch03）。原始 PyTorch 实现下：
+          mHC 相比普通残差连接会增加 activation memory 和流水阶段间的通信量。报告给出三项优化：
         </p>
         <ol>
-          <li>每个 reduce / sum 是独立 kernel，host 开销大（参考 Ch08）；</li>
-          <li>每层中间 activation 都要存（forward 16 个、backward 用全部），显存压力大；</li>
-          <li>反向链与主路径反向串行，无 overlap。</li>
-        </ol>
-        <p>V4 三件事：</p>
-        <ol>
-          <li><strong>融合 kernel</strong>：TileLang 把 mHC forward 全 8 步合一个 kernel，backward 同理。<em>host 开销从 16×30µs 降到 2×1µs</em>；</li>
-          <li><strong>选择性 checkpoint</strong>：只保留 mHC 输入的 normalized 版本，其余 8 个中间 activation backward 时<em>从 normalized 输入重算</em>。重算开销 ~3% 但显存省 ~40%；</li>
-          <li><strong>DualPipe overlap</strong>：把 mHC backward 嵌到 DualPipe 1F1B 流水里和别的 micro-batch 的通信 overlap，<em>掩掉 mHC 计算时间</em>。</li>
+          <li><strong>融合 kernel</strong>：为 mHC 的训练和推理实现专用融合 kernel；</li>
+          <li><strong>选择性 checkpoint</strong>：重算大部分层间 hidden state 和全部 normalized layer input，同时避开计算密集操作的重复执行；</li>
+          <li><strong>DualPipe overlap</strong>：调整 1F1B 重叠方案，以容纳更多流水通信，并让部分 mHC 操作并发执行。</li>
         </ol>
 
-        <div class="numex">
-          <span class="numex-tag">数值演练 · mHC wall-time 拆账</span>
-          基线 PyTorch eager mode：
-          <ul>
-            <li>16 个独立 kernel × 30µs host + 16 × ~50µs device = 1.28 ms/层 × 61 层 × 4（fwd+bwd 双向）= <strong>312 ms/step</strong>，约 12% wall-time；</li>
-          </ul>
-          融合 kernel + ckpt + DualPipe overlap：
-          <ul>
-            <li>2 个融合 kernel × 1µs host + 2 × ~70µs device = 0.14 ms/层 × 61 × 4 = 34 ms；</li>
-            <li>+ ckpt 重算 ~10 ms；</li>
-            <li>+ overlap 后实际暴露 wall-time ~150 ms = <strong>6.7%</strong>。</li>
-          </ul>
-          这就是<em>为什么 V4 敢推 mHC</em> —— 残差成本可控。
+        <div class="callout callout-info">
+          <div class="callout-title">6.7% 应该怎样读</div>
+          <p>这是上述优化共同作用后，mHC 相对于 overlapped 1F1B pipeline stage 的 wall-time overhead。报告没有给出 eager 基线、单 kernel 微秒数、重算比例或显存节省比例，因此无法把 6.7% 拆成更细的时延账。</p>
         </div>
 
-        <!-- ================== VIZ: ZeRO 切分对比 ================== -->
-        <div class="viz" id="viz-zero">
-          <div class="viz-head">
-            <div class="viz-title">Demo · 稠密 / MoE 二分切（拖动 P 看每 rank 显存占用）</div>
-            <span class="viz-tag">交互</span>
-          </div>
-          <svg viewBox="0 0 720 320" id="zero-svg" xmlns="http://www.w3.org/2000/svg">
-            <text x="20" y="22" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">稠密参数（限制 P_max = 8）</text>
-            <text x="20" y="178" font-size="13" fill="#1c2433" font-weight="600" font-family="Inter">MoE 参数（不限 P）</text>
-
-            <g id="zero-dense"></g>
-            <g id="zero-moe"></g>
-
-            <text x="20" y="148" font-size="11" fill="#1c2433">稠密总 param ≈ 200B · 每 rank 占 <tspan id="dense-pp" fill="#dc2626" font-family="JetBrains Mono">25 GB</tspan> · 总通信 BF16 SR <tspan id="dense-comm" font-family="JetBrains Mono">100 GB</tspan>/step</text>
-            <text x="20" y="304" font-size="11" fill="#1c2433">MoE 总 param ≈ 1.4T · 每 rank 占 <tspan id="moe-pp" fill="#dc2626" font-family="JetBrains Mono">175 GB</tspan> · expert 独立 NS</text>
-          </svg>
-          <div class="viz-controls">
-            <label>实际 ZeRO 并行度 P
-              <input type="range" id="p-slider" min="1" max="64" step="1" value="8">
-              <span class="viz-readout" id="p-readout">8</span>
-            </label>
-          </div>
-          <p class="viz-caption">
-            <strong>读图法</strong>：每个色块代表 1 个 rank 持有的参数切片。稠密路径限制到 $P_{\max}=8$，超过 8 时<em>每 8 个 rank 共享一份切片</em>（多份冗余、显存不再降）；MoE 路径不限，越切越细，<em>显存随 P 线性下降</em>。
-            <br>
-            把 P 拉到 64 你能直观看到稠密区每 8 个 rank 还在重复同一片切片（颜色重），<strong>这就是稠密被限制在 $P_{\max}$ 的视觉表达</strong>。
-          </p>
+        <div class="callout callout-warn">
+          <div class="callout-title">证据边界：$P_{\max}$ 未披露</div>
+          <p>报告只说明稠密参数限制最大 ZeRO 并行规模，超出的 data-parallel groups 会冗余计算 Muon update；它没有披露 $P_{\max}$、稠密参数总量或每步通信量，因此只能说明机制，不能绘制带固定配置数字的显存图。</p>
         </div>
 
         <h3 id="cp">3. Two-stage CP：让 CSA/HCA 压缩边界与 CP 边界和谐共处</h3>
@@ -215,27 +174,27 @@
 
         <h3 id="ckpt">4. Tensor 级 Activation Checkpointing</h3>
         <p>
-          传统 module 级 ckpt：每个 transformer block 只存输入，反向时把整块重算。<em>问题</em>：mHC 的 16 个细 activation 重算开销大，占 ~10% 训练时间。
+          传统 module 级 checkpointing 通常按模块边界保存输入，反向时重算模块内部。mHC 引入了更多细粒度中间张量，因此 V4 改用选择性的 tensor-level checkpointing，在显存与重算之间取舍。报告没有给出“重算占约 10%”的数字。
         </p>
         <p>
-          V4 用 <strong>TorchFX</strong>（PyTorch 的图变换库）做反向 trace：从 backward 计算图<em>反向追溯哪些 tensor 被多次使用</em>，决定保留还是重算的最小集。结果：
+          V4 使用选择性 checkpoint，在保存与重算之间取平衡。报告明确给出的策略是：
         </p>
         <ul>
-          <li>对 mHC 的 8 个中间 sum 结果<em>保留 normalized 输入</em>，其余重算；</li>
-          <li>对 attention 的 score 矩阵<em>不存</em>，反向用 Q/K 重算；</li>
-          <li>对 FFN 中间 SwiGLU activation<em>存 1 个</em>，省其余两个；</li>
+          <li>重算大部分层间 hidden state；</li>
+          <li>重算所有 normalized layer input；</li>
+          <li>避免重算计算密集的操作。</li>
         </ul>
         <p>
-          总体显存 ↓ ~40%，重算开销 ~3% wall-time，<strong>无需手动标 ckpt 边界</strong>。
+          报告没有披露总体显存节省比例、重算 wall-time 或是否由图变换系统自动选择边界。
         </p>
 
         <h3>本章小结</h3>
         <ul>
           <li>Muon 要完整梯度，ZeRO 切分梯度 → V4 把"稠密限制 $P_{\max}$ + MoE 不限"二分；通信精度 BF16 SR 减半带宽。</li>
-          <li>mHC 原始开销 12%，靠融合 kernel + 选择性 ckpt + DualPipe overlap <strong>压到 6.7%</strong>。</li>
+          <li>融合 kernel、选择性 checkpoint 与 DualPipe overlap 共同把 mHC 的 wall-time overhead 限制在 <strong>6.7%</strong>。</li>
           <li>CSA/HCA 压缩边界让传统 CP 无法切，two-stage CP（邻居桥接 + all-gather）固定输出 $s/m + 1$ 解决。</li>
-          <li>Tensor 级 ckpt 省 ~40% 显存，重算开销 ~3% wall-time。</li>
-          <li>合起来：架构层每一项创新都有对应工程代价，训练框架的存在感几乎全部用来"<em>支付架构层的工程帐</em>"。</li>
+          <li>选择性 checkpoint 重算大部分 hidden state 与 normalized input，同时避开计算密集操作。</li>
+          <li>这些机制分别处理优化器切分、残差路径开销和长上下文并行问题。</li>
         </ul>
 
       </article>
@@ -250,63 +209,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
-<!-- ============================================================
-     VIZ: ZeRO 二分切分（稠密 vs MoE）
-     ============================================================ -->
-<script>
-(function() {
-  const PMAX = 8;
-  const DENSE_TOTAL = 200; // GB equivalent
-  const MOE_TOTAL = 1400;  // GB
-  const X0 = 20, BAR_W = 680;
-
-  function render(P) {
-    document.getElementById('p-readout').textContent = P;
-
-    // Dense row: limited to PMAX, beyond that share copies
-    const denseG = document.getElementById('zero-dense');
-    denseG.innerHTML = '';
-    const effDense = Math.min(P, PMAX);
-    const dWidth = BAR_W / P;
-    const dColors = ['#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#1e40af', '#2563eb', '#1d4ed8', '#3730a3'];
-    for (let i = 0; i < P; i++) {
-      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      r.setAttribute('x', X0 + i * dWidth); r.setAttribute('y', 36);
-      r.setAttribute('width', Math.max(1, dWidth - 1)); r.setAttribute('height', 92);
-      // duplicate color: rank i shares with rank (i mod PMAX)
-      r.setAttribute('fill', dColors[i % effDense]);
-      r.setAttribute('stroke', '#ffffff'); r.setAttribute('stroke-width', '0.5');
-      denseG.appendChild(r);
-    }
-    const dPP = DENSE_TOTAL / effDense;
-    document.getElementById('dense-pp').textContent = dPP.toFixed(1) + ' GB';
-    // comm: BF16 SR halves; rough estimate dense*4 (roundtrip)
-    document.getElementById('dense-comm').textContent = (DENSE_TOTAL * 0.5).toFixed(0) + ' GB';
-
-    // MoE row: linear scaling with P, no cap
-    const moeG = document.getElementById('zero-moe');
-    moeG.innerHTML = '';
-    const mWidth = BAR_W / P;
-    const mColors = ['#fbbf24', '#fb923c', '#f97316', '#ea580c', '#c2410c', '#9a3412', '#7c2d12'];
-    for (let i = 0; i < P; i++) {
-      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      r.setAttribute('x', X0 + i * mWidth); r.setAttribute('y', 192);
-      r.setAttribute('width', Math.max(1, mWidth - 1)); r.setAttribute('height', 92);
-      r.setAttribute('fill', mColors[i % mColors.length]);
-      r.setAttribute('stroke', '#ffffff'); r.setAttribute('stroke-width', '0.5');
-      moeG.appendChild(r);
-    }
-    const mPP = MOE_TOTAL / P;
-    document.getElementById('moe-pp').textContent = mPP.toFixed(0) + ' GB';
-  }
-
-  document.getElementById('p-slider').addEventListener('input', e => {
-    render(parseInt(e.target.value, 10));
-  });
-  render(8);
-})();
-</script>
 </body>
 </html>

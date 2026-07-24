@@ -12,7 +12,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
-<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="styles.css?v=20260724-5" />
 </head>
 <body data-base="" data-page="abstract">
 
@@ -56,7 +56,7 @@
             <li>1M token 场景下，V4-Pro 仅用 V3.2 的 <strong>27% 单 token FLOPs</strong> 与 <strong>10% KV cache</strong>。</li>
             <li>V4-Flash 进一步压到 <strong>10% FLOPs / 7% KV</strong>，相对 BF16-GQA8 baseline 更是降到约 <strong>2%</strong>。</li>
             <li>V4-Pro-Max 在 SimpleQA-Verified 上比同档开源模型高 <strong>20+ 个百分点</strong>，逼近 Gemini-3.1-Pro。</li>
-            <li>Putnam-2025 形式化推理，DeepSeek-V4 拿下 <strong>120/120</strong>，证明完美。</li>
+            <li>Putnam-2025 的 frontier hybrid formal-informal 设置下，DeepSeek-V4 得到 <strong>120/120</strong>；这与 Practical 设置下 Flash-Max 的 81 分不是同一评测配置。</li>
           </ul>
         </div>
 
@@ -78,7 +78,7 @@
           <li><strong>更稀疏的 embedding</strong>：CCSE 等方向（Cheng 2026）的引入；</li>
           <li><strong>低延迟长上下文</strong>：让 1M 真正走入交互式部署，而不只是离线批处理；</li>
           <li><strong>长程多轮 agent</strong>：继续打磨 long-horizon、多 round tool-use；</li>
-          <li><strong>多模态</strong>：明确写在 to-do 中，下一代会带；</li>
+          <li><strong>多模态</strong>：团队表示正在为模型加入多模态能力，但没有承诺具体版本或发布时间；</li>
           <li><strong>更好的数据合成与策展</strong>：持续投入。</li>
         </ul>
 
@@ -101,6 +101,6 @@
   </aside>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=20260724-5"></script>
 </body>
 </html>

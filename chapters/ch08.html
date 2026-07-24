@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch8">
 
@@ -33,7 +33,7 @@
       <article id="ch8" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 08</div>
         <h2 class="chapter-title">TileLang — 写给 GPU 的方言</h2>
-        <p class="chapter-sub">为什么 V4 这种"几百个细粒度算子"的架构在 PyTorch + ATen 下会被 host 开销吃掉性能，TileLang 是怎么用 SMT 求解器 + host codegen 把 per-invocation 开销从几十微秒压到 1µs 以内，以及为什么"位级可复现"是这次替换最值钱的副产品。</p>
+        <p class="chapter-sub">V4 的细粒度架构会产生数百个 ATen operators。TileLang 通过轻量 host code、编译期验证和显式布局控制降低调度开销，并在需要时支持与 CUDA 对齐的位级输出。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
@@ -41,69 +41,59 @@
           <p class="term-name">TileLang = 一种把 GPU kernel 写成 tile-级 Python DSL 的语言，自带 SMT 求解器、host codegen、位级可复现的 lowering 钉死机制</p>
           <p>
             一句话：<strong>把"写 CUDA"变成"写 Python 描述 tile 怎么搬"，编译器负责把 host 代码静态生成、用 Z3 解决索引非线性、用 layout 标注钉死代码生成顺序</strong>。
-            净效果：每次 kernel 调用的 host 端开销从 PyTorch + ATen 的 30–100 µs 压到 &lt; 1 µs，并且生成的 SASS 与手写 CUDA <em>bit-identical</em>。
+            报告给出的结果是：CPU 侧参数验证从几十到数百微秒降至低于 1 微秒。通过让简化规则、layout 与 lowering 对齐 CUDA 实现，TileLang 可以在需要时生成位级一致的<strong>输出</strong>；这不等于 SASS 指令字节完全相同。
           </p>
           <dl>
             <dt>ATen（被替代的对象）</dt>
-            <dd>PyTorch 的算子库（"A Tensor library"）。每个 op 走"Python → C++ dispatcher → 算子选择 → CUDA launch"四层。<em>per-call 开销 30–100 µs</em>，对粗粒度算子（大 matmul）无所谓，但 V4 一层有 <em>几百</em> 个细算子（CSA 的 indexer / mHC 的 sum reduce / FP4 dequant…），累计后 host 开销吃掉 30%+ wall-time。</dd>
+            <dd>PyTorch 的 ATen 算子层会进行参数检查、调度和 kernel launch。V4 报告称细粒度算子使 CPU 侧验证开销不可忽略，但没有给出“每次 30–100µs”或“占 wall-time 30%”的统一测量。</dd>
 
             <dt>Host 开销 vs Device 开销</dt>
-            <dd><strong>Device</strong>：GPU 真正算的时间；<strong>Host</strong>：CPU 把 kernel 排上队的时间（参数打包、stream 选择、launch 系统调用）。<em>kernel 越小，host 占比越高</em>。1µs 这个数字是 PCIe + ioctl 的物理下限附近 —— TileLang 几乎做到了硬件能给的极限。</dd>
+            <dd><strong>Device</strong> 是 GPU 执行 kernel 的时间；<strong>Host</strong> 是 CPU 侧验证、参数封送和发起调用的开销。kernel 越短，固定 host 开销占比通常越高。报告量化的是 CPU-side validation 低于 1µs，不是整个 CUDA launch 的物理下限。</dd>
 
             <dt>DSL（Domain-Specific Language）</dt>
-            <dd>领域专用语言。TileLang 是嵌入 Python 的 DSL：你写 Python，但只能用 TileLang 提供的"tile / shared memory / barrier / reduce"等抽象。<em>没有 numpy / for-loop 自由</em> —— 因为编译器要能静态推理。</dd>
+            <dd>领域专用语言。TileLang 提供面向 tile、shared memory、barrier 与 reduce 等 GPU kernel 抽象的编程接口，让编译器能够生成和优化设备代码。</dd>
 
             <dt>Z3 / QF_NIA（编译器里的 SMT 求解器）</dt>
             <dd>Z3 是微软的 SMT 求解器（Satisfiability Modulo Theories）。<strong>QF_NIA</strong> = "Quantifier-Free Nonlinear Integer Arithmetic" —— 处理无量词、整数、含乘除的算术约束。TileLang 用它判断"<em>这个张量索引 `i*M + j*K + k` 在所有合法 `(i,j,k)` 下是否唯一</em>"等问题，从而决定是否能向量化、能否合并访存。<em>把传统编译器需要"启发式 + fallback"的部分，换成可证明的精确判断</em>。</dd>
 
             <dt>T.annotate_layout（钉死 lowering）</dt>
-            <dd>TileLang 提供的标注：告诉编译器"这块 shared memory 必须按 `swizzle(8, 64)` 排列、这个 thread 必须负责 idx ∈ [0, 32) 的元素"。<em>把"编译器自由发挥"的部分变成显式约束</em>。代价是写 kernel 时多花心思；收益是<strong>同一段 TileLang 代码每次编译都生成同一份 SASS</strong> → 与手写 CUDA bit-identical。</dd>
+            <dd>TileLang 允许开发者显式标注布局，并让编译器的简化与 lowering 规则贴近 CUDA 实现，从而在需要时获得位级一致的输出。报告没有声称每次编译都会生成与手写 CUDA 完全相同的 SASS。</dd>
 
             <dt>IEEE-754 严格 vs fast-math</dt>
-            <dd>IEEE-754 严格：浮点遵守标准，<em>结合律不成立</em>但每步可预测；fast-math：编译器可任意重排（如 `(a*b)+c` → `fma(a,b,c)`，把 a+b+c 拆成树形归约），<em>速度↑但结果不可预测</em>。TileLang 默认严格，<strong>opt-in 才用 fast-math</strong>（如 <code>T.__exp</code> 走快速指数）。这是"位级可复现"的根基。</dd>
+            <dd>TileLang 默认关闭编译器级 fast-math，把影响精度的近似操作设为显式 opt-in；需要严格语义时，还提供带明确舍入模式的 IEEE-754 intrinsics。fast-math 可能改变运算与舍入结果，但不等于结果随机。</dd>
 
             <dt>位级可复现（bit-identical reproducibility）</dt>
-            <dd>同一段代码、同一份输入，每次跑都<em>逐 bit 相同</em>。比"数值精度一致"更严格。是 V4 工程哲学的核心：<strong>没有 bit-identity，loss spike 无法复现，调试就是赌博</strong>。Ch 09 会展开。</dd>
+            <dd>在指定输入、实现与执行条件下得到逐 bit 一致的输出，比数值近似一致更严格。它便于核对 TileLang 与 CUDA baseline，也有助于复查训练异常；并非所有调试都必须以逐位一致为前提。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>当一层网络从 5 个粗算子变成 200 个细算子时，"PyTorch 调度开销" 会突然变成主要瓶颈。TileLang 是 V4 拿来止血的工具：<em>用 DSL 替手写 CUDA，用 SMT 替启发式优化，用 layout 标注替"编译器自由"</em>，以"少一点写代码自由 + 多一点编译期可证明"换 30% wall-time 与位级可调试性。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>TileLang 用 DSL、轻量 host code、SMT 辅助验证和显式 layout 支撑 V4 的融合 kernel 开发。论文明确量化的是 CPU 参数验证开销降至 1µs 以下，没有给出全模型节省 30% wall-time 的结果。</div>
         </div>
 
         <!-- ================== §1 ATen 哪里不够 ================== -->
-        <h3 id="aten">1. 为什么 V4 不能再用 ATen</h3>
+        <h3 id="aten">1. 为什么要减少细粒度 ATen 调用</h3>
         <p>
-          PyTorch 的 ATen 算子库是给"中等粒度算子"设计的：你写 <code>linear(x, W)</code>，它走 Python → C++ dispatcher → 选择最优 kernel → cudaLaunchKernel。<em>调度路径长，但因为 kernel 本身要算 100 µs+，host 的 30 µs 占比可接受</em>。
-          V4 改变了这个前提：
+          通过 Python / ATen 调用细粒度 kernel 时，运行期检查和参数封送会产生固定成本。对短 kernel，这类 CPU 开销更容易限制利用率。V4 的新模块又会展开成大量细粒度操作，因此作者引入 TileLang host codegen：
         </p>
         <ul>
-          <li><strong>CSA 的 Lightning Indexer</strong>：每层一次 FP4 QK + top-k，单次 kernel ~50 µs，<em>host 开销和它一个量级</em>；</li>
-          <li><strong>mHC 残差</strong>：每层 8 次小 reduce + 8 次 sum，每次 kernel 1–5 µs，<em>host 开销远大于 device</em>；</li>
-          <li><strong>FP4 dequant</strong>：每个 GEMM 前一次小 kernel，单次 ~3 µs；</li>
-          <li><strong>Sparse attention 反向</strong>：上百个 SM-level 的 reduce kernel。</li>
+          <li><strong>架构侧</strong>：mHC、hybrid attention 与低精度路径都需要定制 kernel；</li>
+          <li><strong>调用侧</strong>：模型结构会展开成数百个 ATen operators，放大逐次 validation 的固定成本；</li>
+          <li><strong>编译侧</strong>：复杂 layout、索引和数值语义需要比普通算子组合更强的分析能力。</li>
         </ul>
         <p>
-          一层 V4 有 <strong>200+ 个 kernel launch</strong>，按 ATen 的 30 µs 算 host 开销 = 6 ms，而 device 真正算的时间 ~10 ms。<em>host 占了 wall-time 的 30%+</em>。
+          <strong>示意：</strong>当一层由大量细粒度 operators 组成时，每次参数验证与 launch 的固定成本会累积。V4 报告只说架构会产生数百个 ATen operators，没有公布每层实际 launch 数、device 时间或 wall-time 占比。
         </p>
 
         <div class="numex">
-          <span class="numex-tag">数值演练 · host 开销吃掉多少 wall-time</span>
-          假设 V4-Pro 一层 attention：
-          <ul>
-            <li>SWA 主干 GEMM × 4：device 1.2 ms，host 4×30 µs = 0.12 ms（10%）；</li>
-            <li>CSA Indexer + topk + gather：device 0.3 ms，host 6×30 µs = 0.18 ms（<strong>60%</strong>）；</li>
-            <li>mHC 残差：device 0.05 ms，host 16×30 µs = 0.48 ms（<strong>~10×</strong>）；</li>
-          </ul>
-          一层合计：device 1.55 ms，host 0.78 ms → wall-time 2.33 ms，其中 host 占 33%。一个 step 61 层 × 2 forward+backward = <strong>~95 ms 单步浪费在 launch</strong>。换 TileLang 后 host 单次 0.8 µs：61×2×200×0.8µs = ~20 ms → <em>每步省 75 ms</em>，相当于 train throughput +10–15%。
-          <br><br>
-          这<em>纯粹是把 launch 的系统调用成本压下去</em>带来的 free lunch —— 不改算法、不改硬件、不改精度，只换语言。
+          <span class="numex-tag">怎样理解固定 host 开销</span>
+          若一段计算由 $N$ 次细粒度调用组成，CPU 侧固定开销可近似写成 $N\cdot T_{\text{validation}}$。kernel 越短，这一固定项在 wall-time 中越显眼。报告称生成的轻量 host code 将参数验证开销从每次调用几十或数百微秒降到 1µs 以下；这个数字只针对 CPU-side validation，不是整个 kernel launch 的耗时，也不能单独推出固定的端到端加速倍数。
         </div>
 
         <!-- ================== §2 TileLang 在做什么 ================== -->
         <h3 id="design">2. TileLang 怎么做到 &lt; 1 µs</h3>
         <p>三件事：</p>
         <ol>
-          <li><strong>Host codegen</strong>：把 shape 校验、stride 计算、grid/block size 选择全部静态生成成 C++，编译时就钉好。运行时 host 路径只剩"打包参数 + ioctl"。</li>
-          <li><strong>无 dispatcher</strong>：每个 TileLang 函数直接编译为一个 CUDA kernel + 一段 host stub，没有 PyTorch 的 op 注册 / dtype 分发链路。</li>
-          <li><strong>编译产物长存</strong>：编译结果按签名 cache，第二次调用直接走 hot path，不再编译。</li>
+          <li><strong>共同生成 device kernel 与轻量 host launcher</strong>：把 dtype、rank / shape 约束和 stride / layout 假设写入生成代码；</li>
+          <li><strong>TVM-FFI 调用约定</strong>：通过紧凑接口与 zero-copy tensor interop 降低参数封送成本；</li>
+          <li><strong>移出 Python 热路径</strong>：运行时验证和 marshaling 在生成的 host code 中完成。</li>
         </ol>
 
         <div class="callout callout-info">
@@ -114,13 +104,7 @@
             T_{\text{host}} \;=\; \underbrace{T_{\text{py}}}_{\text{Python 字节码}} + \underbrace{T_{\text{disp}}}_{\text{ATen 选 kernel}} + \underbrace{T_{\text{check}}}_{\text{shape/dtype 校验}} + \underbrace{T_{\text{launch}}}_{\text{cudaLaunchKernel}}
             $$
           </div>
-          <ul>
-            <li><strong>$T_{\text{py}}$</strong> ~10 µs：Python 解释器栈帧、参数对象创建。<em>TileLang 把它变成一次 C++ stub 调用</em> ≈ 0.2 µs。</li>
-            <li><strong>$T_{\text{disp}}$</strong> ~5 µs：ATen 按 dtype/device 在哈希表里找实现。<em>TileLang 没 dispatcher</em> = 0。</li>
-            <li><strong>$T_{\text{check}}$</strong> ~5–10 µs：检查 contiguous、stride、broadcast。<em>TileLang 在编译期就把这些条件钉成静态约束</em> ≈ 0。</li>
-            <li><strong>$T_{\text{launch}}$</strong> ~5 µs：CUDA 驱动走 ioctl 进 kernel 队列。<em>无法消除，是物理下限</em>。</li>
-          </ul>
-          <p>所以 ATen 的 30 µs 里有 25 µs 是<em>语言/框架开销</em>，可以全部砍掉，剩下 5 µs 就是 cudaLaunchKernel 本身。1 µs 的承诺 = 0.2 µs Python stub + 0.6 µs launch + 0.2 µs 杂项。</p>
+          <p>这只是概念拆分。V4 报告没有分别给出 $T_{\text{py}}$、$T_{\text{disp}}$ 与 $T_{\text{launch}}$；它测得的是 CPU-side validation overhead 从几十或数百微秒降至每次调用低于 1 微秒。</p>
         </div>
 
         <!-- ================== §3 SMT 进编译器 ================== -->
@@ -141,7 +125,7 @@
             $$
           </div>
           <p>翻译成大白话：<strong>"存在两组下标，下标本身不同但映射到的地址相同"</strong> —— 如果存在解 → 有冲突，不能向量化；不存在解 → 安全。</p>
-          <p>对启发式来说这条要靠"<em>看 stride 是不是常数</em>"猜，错了直接 segfault。对 SMT 来说这是<em>10ms 内可证明的判定问题</em>。整个编译过程多花几秒，换来运行时<strong>每个 kernel 自动选最优 layout</strong>，不需要手写 hint。</p>
+          <p>SMT solver 可以形式化判断这类整数表达式是否满足所需性质，并把结果用于 layout inference、memory hazard detection、bound analysis、vectorization 与 barrier insertion。报告只说在合理资源限制下，整体编译开销控制在数秒；没有给出单次查询 10 ms，也没有承诺自动找到全局最优 layout，开发者仍可用 <code>T.annotate_layout</code> 固定布局决策。</p>
         </div>
 
         <!-- ================== VIZ: ATen vs TileLang 时间分布 ================== -->
@@ -180,36 +164,34 @@
             </label>
           </div>
           <p class="viz-caption">
-            <strong>读图法</strong>：每条横向条形是一次 kernel launch 的"时间预算"。ATen 的红/黄/橙段是<em>语言开销</em>（python 10µs + dispatcher 5µs + check 8µs），紫段是 cudaLaunchKernel（5µs，物理下限），蓝段是真正在 GPU 上算的时间。
+            <strong>读图法</strong>：每条横向条形是一组教学时间预算。红、黄、橙、紫段的数值是为了演示固定 host 成本，不是报告实测，也不是硬件下限；蓝段表示可调的 device 时间。
             <br>
-            把 device 滑到 <strong>10 µs 以下</strong>（V4 里 mHC 小算子的真实区间）你会看到 ATen 条形里蓝色不到 1/3 —— 这就是为什么细粒度算子下 host 是主瓶颈。TileLang 把红/黄/橙合到 0.2 µs 以内，紫的 launch 是省不掉的 5 µs，但相对占比一下子降到 50% 以下，<em>device 越大 TileLang 优势越不明显</em>，反过来<strong>device 越小 TileLang 越是救命稻草</strong>。
+            把 device 时间调短，可以观察固定 host 成本占比上升。可确认的论文结果只有 validation overhead 低于 1µs；端到端差异仍取决于 kernel、硬件、调用路径和 workload。
           </p>
         </div>
 
         <!-- ================== §4 IEEE-754 严格 + bit-identical ================== -->
-        <h3 id="repro">4. 位级可复现：默认严格、显式 opt-in fast-math</h3>
+        <h3 id="repro">4. 数值精度与按需位级复现</h3>
         <p>
-          浮点加法不满足结合律：$(a+b)+c \ne a+(b+c)$ 在 FP32 下也常出现 1ULP 的差异。一旦编译器自由地把 $a+b+c+d$ 重排成<em>树形归约</em>或<em>SIMD 横向求和</em>，<strong>同一段代码每次运行结果就不一样</strong>。这对调试是灾难。
+          浮点加法不满足结合律：$(a+b)+c \ne a+(b+c)$，因此代数化简、lowering 与布局选择都可能改变最后几位。若要与手写 CUDA baseline 逐位比较，编译器需要尽量保持相同的求值与累加顺序。
         </p>
         <p>
-          TileLang 默认走 IEEE-754 严格：所有归约保持源码顺序，FMA 不自动融合（除非显式写 <code>T.fma</code>）。需要 fast-math 时<em>必须显式调用</em> <code>T.__exp</code>、<code>T.__div</code> 等。配合 <code>T.annotate_layout</code> 钉死 shared memory 排布，<strong>同一份 TileLang 源码 → 同一份 SASS → 同一字节输出</strong>。这就是 Ch 09 整章的"批不变 + 确定性"赖以成立的语言层基础。
+          TileLang 默认关闭编译器级 fast-math，把影响精度的近似作为显式 opt-in 操作，例如 <code>T.__exp</code>、<code>T.__log</code> 和 <code>T.__sin</code>。需要严格 IEEE-754 语义时，还可以使用带明确舍入模式的 <code>T.ieee_fsqrt</code>、<code>T.ieee_fdiv</code> 和 <code>T.ieee_add</code>。配合 <code>T.annotate_layout</code> 和对齐 CUDA toolchain 的化简、lowering 规则，可以在需要时得到与参考 CUDA 实现位级一致的输出；这不等于生成完全相同的 SASS。
         </p>
 
         <div class="callout callout-good">
-          <div class="callout-title">"语言级 bit-identical" 在调试里的实战价值</div>
+          <div class="callout-title">位级复现为什么有用</div>
           <p>
-            假设训练在第 13417 步出现 loss spike。如果代码不是 bit-identical：你重启复现 → 在第 13420 才 spike，参数已经偏了几步，找不到根因。
-            <br>
-            如果是 bit-identical：你保存 13416 步 checkpoint，重新跑一遍 → <strong>每个 logits 字节相同</strong>，可以在出现 NaN 的那一层、那一个 token 上接 debugger，直接看是哪个 attention head 在哪几步爆掉。这就是 V4 把 1.6T 参数训练做工程化的根本姿态：<em>所有"难以复现的 bug"先用工具变成"必然复现"，再去解</em>。
+            与参考 kernel 位级对齐，可以把差异定位到具体算子，而不必先判断偏差来自算法、布局还是浮点重排。报告没有给出某个训练 step 的调试案例，也没有声称 TileLang 单独保证整次训练从 checkpoint 开始逐字节复现。
           </p>
         </div>
 
         <h3>本章小结</h3>
         <ul>
-          <li>V4 的细粒度算子化让 host 开销从"可忽略"变成"占 30% wall-time"，必须换语言止血。</li>
-          <li>TileLang 用 host codegen + 无 dispatcher + 编译 cache 把 per-launch 开销从 30 µs 压到 &lt; 1 µs。</li>
+          <li>V4 的细粒度 operators 让 host 侧验证和调度值得专门优化；报告未给出其占 wall-time 的百分比。</li>
+          <li>TileLang 的 host codegen 将运行时检查和参数封装移出 Python 路径，使 CPU 侧 validation overhead 从几十或数百微秒降到每次调用低于 1 微秒。</li>
           <li>Z3 SMT 进编译器解决张量索引的非线性约束，<em>把启发式的保守换成可证明的精确</em>。</li>
-          <li>默认 IEEE-754 严格 + 显式 layout 钉死 → 同源同 SASS 同输出 → Ch09 的 bit-identical 调试由此成立。</li>
+          <li>通过显式 layout 与对齐 CUDA 的简化/lowering 规则，TileLang 可以在需要时获得位级一致的输出；不应扩写成“同一 SASS”。</li>
         </ul>
 
       </article>
@@ -224,7 +206,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: ATen vs TileLang launch 时间分布

@@ -211,6 +211,15 @@ a.side-section-head:hover .side-section-arrow { color: var(--accent); transform:
   color: var(--fg-mute);
   letter-spacing: 0.2px;
 }
+.side-link-copy { min-width: 0; }
+.side-link .side-link-title {
+  color: var(--fg);
+  font-weight: 700;
+}
+.side-link .side-link-sub {
+  color: var(--fg-3);
+  font-weight: 400;
+}
 .side-link:hover { background: var(--bg-soft); color: var(--fg); }
 .side-link.active {
   background: var(--accent-soft);
@@ -218,6 +227,14 @@ a.side-section-head:hover .side-section-arrow { color: var(--accent); transform:
   font-weight: 600;
 }
 .side-link.active .num { color: var(--accent); }
+.side-link.active .side-link-title {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+.side-link.active .side-link-sub {
+  color: var(--fg-2);
+  font-weight: 400;
+}
 
 .side-bottom {
   flex-shrink: 0;

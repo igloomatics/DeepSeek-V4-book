@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="p4">
 
@@ -54,11 +54,11 @@
           <h3>读完这部分，你将能够</h3>
           <ul>
             <li>讲清"先做 N 个 specialist，再用 OPD 合成一个 student"的两阶段范式，并解释这与 V3 混合 RL 的根本不同。</li>
-            <li>列出 Non-think / Think High / Think Max 三档的训练 context（8K/128K/384K）与响应格式差异。</li>
+            <li>列出 Non-think / Think High / Think Max 三档的响应格式差异，并区分未披露的训练窗口与 8K/128K/384K 评测窗口。</li>
             <li>说出 Generative Reward Model（GRM）相比 scalar RM 的两个优势。</li>
-            <li>能复述 OPD 损失 <code>L = Σ w_i KL(π_θ ‖ π_E_i)</code>，并解释为什么必须是 reverse KL + on-policy。</li>
+            <li>能复述 OPD 损失 <code>L = Σ w_i KL(π_θ ‖ π_E_i)</code>，并解释报告为何采用 reverse KL 与 on-policy trajectory。</li>
             <li>列出全词表 OPD 的四个工程支柱（FP4 集成 / Teacher Scheduling / WAL Rollout / Million-token RL）。</li>
-            <li>说出 Quick Instruction 的 6 个特殊 token 各自的角色，以及它为何能省掉一个独立的小模型。</li>
+            <li>说出 Quick Instruction 的 7 个特殊 token、6 类辅助任务，以及它为何能省掉一个独立的小模型。</li>
             <li>解释 token 粒度 WAL 为什么不能"从头重生" unfinished requests，以及它如何避免 length bias。</li>
             <li>列出 DSec 的四种执行衬底（Function / Container / microVM / fullVM）与 3FS 的协作关系。</li>
           </ul>
@@ -89,7 +89,7 @@
           <a class="roadmap-card" href="../chapters/ch20.html">
             <div class="roadmap-num">CH 20</div>
             <h4>DSec 沙箱平台</h4>
-            <p>四衬底 + 3FS 横向扩 → 单集群 10w+ sandbox。</p>
+            <p>四种执行衬底、统一 SDK、分层镜像与 trajectory log。</p>
           </a>
         </div>
 
@@ -107,11 +107,11 @@
           <div class="recap-eyebrow">▾ KEY TAKEAWAYS</div>
           <h3>核心要点回顾</h3>
           <ul>
-            <li><strong>Specialist（Ch16）</strong>：SFT → GRPO，每个专家在三档 reasoning effort 下分别训练；GRM 用"以生成代评分"省掉海量人工标注。</li>
-            <li><strong>交互（Ch17）</strong>：<code>&lt;|DSML|&gt;</code> 替代 JSON tool-call；Interleaved Thinking 在 tool-calling 模式跨轮保留 thinking；Quick Instruction 6 token 共享主 KV，TTFT 大幅降低。</li>
-            <li><strong>范式（Ch18）</strong>：V3 的"混合 RL"被整体替成 OPD —— 学生 on-policy rollout，向 N 个领域 teacher 求 reverse KL 加权和；选 reverse KL 是因为 mode-seeking 适合"合并"。</li>
+            <li><strong>Specialist（Ch16）</strong>：领域 fine-tuning → GRPO；不同 RL 配置形成三档 reasoning effort，GRM 以较少的多样化人工标注覆盖难验证任务。</li>
+            <li><strong>交互（Ch17）</strong>：带 DSML 标记的 XML 风格 schema 减少工具调用错误；Interleaved Thinking 在 tool-calling 模式跨轮保留 reasoning；Quick Instruction 用 7 个 token 表达 6 类任务并共享主 KV。</li>
+            <li><strong>范式（Ch18）</strong>：多个 specialist 通过 OPD 整合到统一学生——学生 on-policy rollout，并对 N 个领域 teacher 的 reverse KL 求加权和。</li>
             <li><strong>工程（Ch19）</strong>：FP4 全量启用 + 不实例化 logits + 按 teacher 排序 batching + async I/O + TileLang KL kernel = 全词表 trillion 教师 KL 才跑得起；token 粒度 WAL 让 rollout 可抢占可容错且无 length bias。</li>
-            <li><strong>沙箱（Ch20）</strong>：DSec 四衬底 + 单 SDK + 3FS 横向扩 → 10w+ sandbox 同集群；分层 EROFS / overlaybd 让冷启动毫秒化。</li>
+            <li><strong>沙箱（Ch20）</strong>：DSec 以统一 SDK 管理四种执行衬底，借助 3FS、EROFS 与 overlaybd 按需加载镜像，并用 trajectory log 支持恢复和溯源。</li>
           </ul>
         </div>
 
@@ -125,10 +125,10 @@
                 <td><code>L = Σ_i w_i · KL(π_θ ‖ π_{E_i})</code></td>
                 <td>reverse KL，on-policy rollout，多教师加权</td>
               </tr>
-              <tr><td>三档 RL 上下文</td><td>8K / 128K / 384K</td><td>Non-think / High / Max</td></tr>
-              <tr><td>Quick Instruction</td><td>6 个特殊 token 共享主 KV</td><td>免独立小模型，TTFT 降</td></tr>
+              <tr><td>三档评测上下文</td><td>8K / 128K / 384K</td><td>Non-think / High / Max；训练窗口具体值未披露</td></tr>
+              <tr><td>Quick Instruction</td><td>7 个特殊 token、6 类任务</td><td>复用主 KV，避免额外小模型重复 prefill</td></tr>
               <tr><td>FP4 适用范围</td><td>rollout + teacher / reference forward</td><td>backward 仍 FP8</td></tr>
-              <tr><td>DSec 规模</td><td>10w+ sandbox / 单集群</td><td>架在 3FS 上横向扩</td></tr>
+              <tr><td>DSec 规模</td><td>数十万个并发 sandbox / 单集群</td><td>报告披露的生产规模</td></tr>
               <tr><td>WAL 粒度</td><td>token-level</td><td>无 length bias</td></tr>
             </tbody>
           </table>
@@ -136,9 +136,9 @@
 
         <h3>设计直觉地图</h3>
         <ul>
-          <li>OPD 取代混合 RL 的核心动机：<em>RL 只学到"reward 期望"，KL 蒸馏能学到"分布形状"</em> —— 所以 reverse KL 比单纯 reward 更适合"知识合并"。</li>
+          <li>OPD 用 logits-level alignment 整合多个 specialist；全词表 KL 相比单 token KL 估计方差更低。报告没有把优势简化成“RL 只学期望、蒸馏才学分布”。</li>
           <li>Anticipatory Routing（Ch14）与 mHC（Ch3）共享同一种思路：<em>把"会爆炸"的路径在更新阶段隔离掉</em>。Quick Instruction 与 KV 异构（Ch12）共享另一种思路：<em>把"控制平面"压进"数据平面"</em>。</li>
-          <li>Ch19 的四个工程支柱中，<strong>Teacher Scheduling</strong> 是 V4 区别于其它开源蒸馏工作的真正护城河 —— 没有这一节，trillion 教师全词表 KL 只是 PPT。</li>
+          <li>Ch19 的 teacher scheduling、hidden-state 缓存与 fused KL kernel 共同解决多教师全词表蒸馏的显存和数据搬运问题；报告没有与其他开源实现作横向比较。</li>
         </ul>
 
         <h3 id="quiz">自检题</h3>
@@ -146,12 +146,12 @@
         <div class="quiz">
           <p class="quiz-q">Q1. 为什么 OPD 选用 reverse KL（KL(π_θ ‖ π_E)）而不是 forward KL？</p>
           <details><summary>查看参考答案</summary>
-            <p>reverse KL 是 mode-seeking：让学生分布去贴 teacher 分布的高概率区域。配合 on-policy rollout，学生不会被 teacher 的低概率长尾误导，更适合"把多个领域 teacher 合并到一个学生"。forward KL 反而是 mass-covering，会把学生拉成 mean of teachers，丢失各 teacher 的强项。</p>
+            <p>在受限分布族中，reverse KL 通常更偏向高概率模式；on-policy trajectory 则让监督落在学生实际访问的状态上。对多个同时具有正权重的 teacher，最优分布更接近它们的加权几何组合，而不是自动选择“最强 teacher”。Forward KL 常表现出更强的 mass-covering 倾向，但具体结果取决于模型族和权重。</p>
           </details>
         </div>
 
         <div class="quiz">
-          <p class="quiz-q">Q2. trillion 教师做全词表 KL，单凭"加显存"为什么不可能？V4 是怎么破的？</p>
+          <p class="quiz-q">Q2. 大规模 teacher 做全词表 KL，为什么不适合直接把所有 logits 常驻显存？V4 是怎么处理的？</p>
           <details><summary>查看参考答案</summary>
             <p>|V| > 100k 的 logits × batch × seq 已经吃光显存。V4：teacher 权重 offload 到中央存储按需加载；不实例化 logits，只缓存 last hidden state；batch 内按 teacher index 排序让每个 prediction head 只装载一次；logits async I/O 不阻塞前向；KL 由专门的 TileLang kernel 计算避免动态分配。</p>
           </details>
@@ -165,14 +165,14 @@
         </div>
 
         <div class="quiz">
-          <p class="quiz-q">Q4. Quick Instruction 把 6 个辅助任务编码成 token 而非小模型，工程收益是什么？</p>
+          <p class="quiz-q">Q4. Quick Instruction 把 6 类辅助任务编码成 7 个特殊 token，工程收益是什么？</p>
           <details><summary>查看参考答案</summary>
-            <p>(1) 复用主 KV cache，零额外 prefill —— TTFT 降低；(2) 消掉一个独立 inference 进程，运维与版本对齐成本归零；(3) 所有辅助任务能"自然地"利用主模型的能力，不再需要单独训练小模型。这是把"控制平面"压进"数据平面"的典型系统级优化。</p>
+            <p>它复用主模型已经计算的 KV cache，避免额外小模型再次 prefill 同一输入；同时省去维护和迭代该小模型的工程成本。query、authority、domain 等任务还可以并行执行。报告没有给出固定的 TTFT 降幅。</p>
           </details>
         </div>
 
         <div class="interactive-slot">
-          预留位：OPD reverse KL 与 forward KL 的可视化对比、teacher scheduling 时间线动画、token-WAL 的"丢弃重跑 vs 续 decode" 演示、Quick Instruction 6-token 序列演示。
+          预留位：OPD reverse KL 与 forward KL 的可视化对比、teacher scheduling 时间线动画、token-WAL 的"丢弃重跑 vs 续 decode" 演示、Quick Instruction 序列演示。
         </div>
       </article>
 
@@ -186,6 +186,6 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 </body>
 </html>

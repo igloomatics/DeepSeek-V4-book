@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="styles.css?v=20260724-5" />
 </head>
 <body data-base="" data-page="appendix_b">
 
@@ -62,10 +62,10 @@
               <tr><td>$m'$</td><td>HCA 重压缩率</td><td>128</td><td>128</td></tr>
               <tr><td>$n_h$</td><td>核心 attention head 数</td><td>128</td><td>64</td></tr>
               <tr><td>$d_h$</td><td>每个 head 的 value dim</td><td>512</td><td>512</td></tr>
-              <tr><td>$d_c$</td><td>query 压缩 latent 维（MQA 共享 KV）</td><td>1536</td><td>1536</td></tr>
+              <tr><td>$d_c$</td><td>query 压缩 latent 维（MQA 共享 KV）</td><td>1536</td><td>1024</td></tr>
               <tr><td>$n^I_h$</td><td>Lightning Indexer head 数</td><td>64</td><td>64</td></tr>
               <tr><td>$c^I$</td><td>Indexer head dim</td><td>128</td><td>128</td></tr>
-              <tr><td>$g$</td><td>Grouped Output Projection 组数</td><td>16</td><td>16</td></tr>
+              <tr><td>$g$</td><td>Grouped Output Projection 组数</td><td>16</td><td>8</td></tr>
               <tr><td>$d_g$</td><td>每组中间 dim</td><td>1024</td><td>1024</td></tr>
               <tr><td>$n_{\text{win}}$</td><td>SWA 窗口长度</td><td>128</td><td>128</td></tr>
               <tr><td>$r_{\text{rope}}$</td><td>Partial RoPE 维数（仅最后 r 维做位置编码）</td><td>64</td><td>64</td></tr>
@@ -82,8 +82,8 @@
               <tr><td>$E_{\text{shared}}$</td><td>共享专家数</td><td>1</td><td>1</td></tr>
               <tr><td>$K$</td><td>每 token 激活专家数（top-K）</td><td>6</td><td>6</td></tr>
               <tr><td>$d_{\text{ff}}$</td><td>专家 FFN 中间维</td><td>3072</td><td>2048</td></tr>
-              <tr><td>$W$</td><td>MegaMoE wave 数</td><td>4–6</td><td>4–6</td></tr>
-              <tr><td>$C / B$</td><td>硬件协设公式 $\le 2d$ FLOPs/Byte</td><td>$\le 14336$</td><td>$\le 8192$</td></tr>
+              <tr><td>$W$</td><td>MegaMoE wave 数</td><td colspan="2">报告未给出固定值</td></tr>
+              <tr><td>$C / B$</td><td>完全隐藏通信的条件 $\le 2d_{\text{ff}}$ FLOPs/Byte</td><td>$\le 6144$</td><td>$\le 4096$（按同式推算）</td></tr>
             </tbody>
           </table>
         </div>
@@ -107,7 +107,7 @@
             <tbody>
               <tr><td>$\mu$</td><td>动量系数（与 AdamW $\beta_1$ 同位）</td><td>0.95</td></tr>
               <tr><td>$\lambda$</td><td>weight decay 系数</td><td>0.1</td></tr>
-              <tr><td>$\gamma$</td><td>RMS 重缩放系数（调到 AdamW 同档 lr）</td><td>$\approx 0.2$</td></tr>
+              <tr><td>$\gamma$</td><td>RMS 重缩放系数（调到 AdamW 同档 lr）</td><td>0.18</td></tr>
               <tr><td>$(a_1, b_1, c_1)$</td><td>Hybrid NS 第 1 段（激进，前 8 步）</td><td>$(3.4445,\, -4.7750,\, 2.0315)$</td></tr>
               <tr><td>$(a_2, b_2, c_2)$</td><td>Hybrid NS 第 2 段（标准，后 2 步）</td><td>$(2,\, -1.5,\, 0.5)$</td></tr>
               <tr><td>NS 总步数</td><td>编译期常数（CUDA Graph 友好）</td><td>10</td></tr>
@@ -120,8 +120,8 @@
           <table>
             <thead><tr><th>符号 / 项</th><th>含义</th><th>V4 取值</th></tr></thead>
             <tbody>
-              <tr><td>三档 RL ctx</td><td>Non-think / Think High / Think Max 训练上下文</td><td>8K / 128K / 384K</td></tr>
-              <tr><td>$G$</td><td>GRPO 组内采样数</td><td>8</td></tr>
+              <tr><td>三档评测 ctx</td><td>Non-think / Think High / Think Max 的评测上下文；训练窗口具体值未披露</td><td>8K / 128K / 384K</td></tr>
+              <tr><td>$G$</td><td>GRPO 组内采样数</td><td>报告未披露</td></tr>
               <tr><td>$N_{\text{teacher}}$</td><td>OPD 蒸馏的领域 teacher 数</td><td>10+</td></tr>
               <tr><td>$D_{\text{KL}}(\pi_\theta \| \pi_E)$</td><td>OPD 损失（reverse KL，on-policy）</td><td>—</td></tr>
               <tr><td>WAL 粒度</td><td>rollout write-ahead log</td><td>token-level</td></tr>
@@ -264,6 +264,6 @@
   </aside>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=20260724-5"></script>
 </body>
 </html>

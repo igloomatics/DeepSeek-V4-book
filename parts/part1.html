@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="p1">
 
@@ -53,12 +53,12 @@
           <div class="objectives-eyebrow">▸ LEARNING OBJECTIVES</div>
           <h3>读完这部分，你将能够</h3>
           <ul>
-            <li>用一句话说清"为什么 1M 上下文必须改架构"，并说出 KV cache 与单 token FLOPs 的两条天花板。</li>
+            <li>说明 vanilla 全注意力在 1M 上下文下面临的 KV cache 与计算瓶颈，以及 V4 为什么选择改造架构。</li>
             <li>区分 V3 → V4 在 MoE 路由打分、负载均衡、MTP 上的具体改动，并解释每一处改动想解决什么。</li>
-            <li>解释 mHC 把残差矩阵约束在 <em>Birkhoff 多面体</em>上的几何意义，说出谱范数 ≤ 1 与堆叠稳定性的因果关系。</li>
-            <li>画出 CSA 的"压缩 → 索引 → top-k → MQA"四段流水线，并指出 Lightning Indexer 为什么用 ReLU 不用 softmax。</li>
+            <li>解释 mHC 把残差 mixing 矩阵约束在 <em>Birkhoff 多面体</em>上的几何意义，以及这一约束如何控制该混合路径的谱范数。</li>
+            <li>画出 CSA 的"压缩 → 索引 → top-k → MQA"四段流水线，并说明 Lightning Indexer 如何用多头 ReLU 分数完成选择。</li>
             <li>说出 HCA 与 CSA 的"近视/远视"互补关系，理解为什么二者要交替穿插而不是择一。</li>
-            <li>背出 Muon 的 Hybrid NS 两段式系数，解释"前 8 步 + 后 2 步"为什么是收敛与稳定的折中。</li>
+            <li>读懂 Muon 的 Hybrid Newton–Schulz 两段系数，并理解报告为何先快速压缩奇异值、再切换到稳定收敛的迭代。</li>
             <li>面对一个新的"长序列效率"问题，能判断：先压、还是先稀疏、还是先换优化器。</li>
           </ul>
         </div>
@@ -112,12 +112,12 @@
           <div class="recap-eyebrow">▾ KEY TAKEAWAYS</div>
           <h3>核心要点回顾</h3>
           <ul>
-            <li><strong>问题（Ch1）</strong>：1M 上下文下 vanilla attention 的 O(n²) 与 KV cache 同时爆炸 ⇒ 必须从架构层动手。</li>
+            <li><strong>问题（Ch1）</strong>：1M 上下文下，vanilla attention 的二次计算量与线性增长的 KV cache 都变得昂贵；V4 选择从注意力架构同时削减两者。</li>
             <li><strong>继承（Ch2）</strong>：DeepSeekMoE 与 MTP 保留，路由打分换成 Sqrt(Softplus)、加序列级 balance、首层换 Hash-MoE。</li>
-            <li><strong>残差（Ch3 · mHC）</strong>：把 B_l 投影到 Birkhoff 多面体，谱范数 ≤ 1 ⇒ 深堆叠数值稳定，无需改 LayerNorm。</li>
+            <li><strong>残差（Ch3 · mHC）</strong>：把残差 mixing 矩阵投影到 Birkhoff 多面体，使该路径的谱范数不超过 1；这有助于控制信号传播，但不是对整个网络稳定性的单独证明。</li>
             <li><strong>近视刀（Ch4 · CSA）</strong>：m=4 压缩 + Lightning Indexer + top-k=1024 ⇒ query 只为关心的块付计算。</li>
             <li><strong>远视刀（Ch5 · HCA）</strong>：m'=128 极致压缩，dense 不稀疏，与 CSA 交替穿插提供全局粗概览。</li>
-            <li><strong>优化器（Ch6 · Muon）</strong>：Hybrid Newton–Schulz 两段式 10 步，把更新矩阵正交化到 UV<sup>T</sup>。</li>
+            <li><strong>优化器（Ch6 · Muon）</strong>：Hybrid Newton–Schulz 用两组系数近似极分解，使更新矩阵的奇异值向 1 靠近。</li>
           </ul>
         </div>
 
@@ -129,12 +129,12 @@
               <tr>
                 <td>mHC 残差</td>
                 <td><code>X_{l+1} = B_l X_l + C_l F(A_l X_l), &nbsp; B_l ∈ Birkhoff</code></td>
-                <td>谱范数 ≤ 1，能量永不放大</td>
+                <td>$B_l$ mixing 路径谱范数 ≤ 1；不代表完整非线性 block 永不放大</td>
               </tr>
               <tr>
                 <td>CSA 索引</td>
                 <td><code>I_{t,s} = Σ_h w · ReLU(q · K^IComp)</code></td>
-                <td>用 ReLU 避免长序列 softmax 数值塌陷</td>
+                <td>多头 ReLU 分数加权求和后选择 top-k；报告未单独解释 ReLU 的动机</td>
               </tr>
               <tr>
                 <td>HCA 压缩</td>
@@ -163,21 +163,21 @@
         <div class="quiz">
           <p class="quiz-q">Q1. 为什么 mHC 选择把 B_l 约束到 Birkhoff 多面体而不是改 LayerNorm？</p>
           <details><summary>查看参考答案</summary>
-            <p>LayerNorm 是事后归一化，治不了"残差路径上能量被反复放大"的根因。Birkhoff 多面体保证 ‖B_l‖₂ ≤ 1 且乘法闭合，从源头让深堆叠不发散，60+ 层也能稳定训练。</p>
+            <p>LayerNorm 归一化每个位置的特征，而 mHC 直接约束多流残差 mixing 矩阵。Birkhoff 多面体使该矩阵的谱范数不超过 1，并在矩阵乘法下保持双随机性，因此能控制这条混合路径的放大；它有助于深层训练稳定，但不是对整个网络“绝不发散”的证明。</p>
           </details>
         </div>
 
         <div class="quiz">
-          <p class="quiz-q">Q2. CSA 的 Lightning Indexer 为什么用 ReLU 而不是 softmax 来打分？</p>
+          <p class="quiz-q">Q2. CSA 的 Lightning Indexer 如何从多头分数得到 top-k 选择？</p>
           <details><summary>查看参考答案</summary>
-            <p>1M 序列上做 softmax 会导致大量小概率被指数压平、数值塌陷，且无法快速 top-k。ReLU 直接保留正得分，零得分天然剪枝，配合 top-k=1024 既快又稳。</p>
+            <p>每个 indexer head 先计算 query-key 内积，对结果施加 ReLU，再乘该 head 的动态权重并跨 head 求和，最后选择最高的 k 个压缩 KV。报告给出了这一设计，但没有用“softmax 在长序列上数值塌陷”来解释选择 ReLU 的原因。</p>
           </details>
         </div>
 
         <div class="quiz">
           <p class="quiz-q">Q3. 给定 V4-Pro 配置（m=4, m'=128, k=1024, n=1M），CSA 和 HCA 各自要看多少个压缩 token？</p>
           <details><summary>查看参考答案</summary>
-            <p>CSA：1M / 4 = 256k 个压缩 token，但每个 query 只看 top-1024。<br>HCA：1M / 128 = 8k 个压缩 token，dense 全看。<br>所以 CSA 是"细粒度选 1024"，HCA 是"粗粒度看全 8k"。</p>
+            <p>若按 $2^{20}$ 个 token 计算，CSA 会产生 262,144 个压缩条目；若把 1M 作为十进制近似，则约为 250K。Pro 的每个 query 从中选 top-1024。HCA 同理约产生 8K 个条目并全部参与核心注意力。两者分别提供较高分辨率的稀疏选择与低分辨率的全局覆盖。</p>
           </details>
         </div>
 
@@ -203,6 +203,6 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 </body>
 </html>

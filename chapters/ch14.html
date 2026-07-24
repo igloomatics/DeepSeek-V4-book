@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch14">
 
@@ -33,68 +33,56 @@
       <article id="ch14" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第三部分 · 预训练 · 14</div>
         <h2 class="chapter-title">Anticipatory + SwiGLU — 长序列的稳定带</h2>
-        <p class="chapter-sub">两个朴素到几乎"配方级"的稳定性 trick：把 router 的更新时刻往前挪 Δt 步、把 SwiGLU 的线性 / 门控分量分别钳到 [-10,10] / ≤10。论文罕见地写"理论解释还不够，先开源给社区"——这一章把"为什么有效"补上去。</p>
+        <p class="chapter-sub">V4 用历史参数提前计算未来 batch 的 routing indices，并对 SwiGLU 两个分量分别施加 [-10,10] 与上界 10 的钳位。报告强调两者来自经验验证，完整理论解释仍是开放问题。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂"两条稳定带"</div>
           <p class="term-name">Anticipatory Routing = 路由用 $\theta_{t-\Delta t}$ 算 index、特征用 $\theta_t$ 算激活；SwiGLU Clamping = 线性分量 $[-10, 10]$ / 门控分量 $\le 10$ 的硬钳位</p>
           <p>
-            一句话：<strong>spike 经常源自路由把 outlier 放大成全局正反馈，钳位经常是"局部 outlier 被 SwiGLU 的乘性结构指数放大"</strong>。
-            两个 trick 的核心都是<em>把"会失控的子系统"短暂或永久地隔离出主路径</em> —— 与 mHC（Ch3）"残差矩阵从主干隔出"是同一个工程哲学。
+            一句话：<strong>报告观察到 loss spike 与 MoE outliers 相关，routing 可能加剧这些 outliers；Anticipatory Routing 解耦路由与主干参数时刻，Clamping 则直接限制 SwiGLU 的数值范围</strong>。
           </p>
           <dl>
             <dt>Loss Spike（损失尖峰）</dt>
-            <dd>训练曲线突然从 $\sim 2.0$ 跳到 $\sim 5.0$ 甚至 NaN 的现象。1.6T 模型上几乎周期性出现。<em>根因之一</em>：MoE 路由把某个 outlier token 推向所有 expert（路由分布塌陷成 one-hot），导致 expert 输出爆炸 → 残差爆炸 → 整层 NaN。<strong>是 LLM 工程化的头号敌人</strong>。</dd>
+            <dd>训练损失突然上升、随后可能需要回滚的现象。报告观察到 spike 与 MoE 层的异常值持续相关，并认为 routing 机制可能加剧异常值形成；没有披露固定损失幅度、出现周期或单一因果链。</dd>
 
             <dt>MoE Router（路由网络）</dt>
-            <dd>计算 $r = \mathrm{softmax}(W_r \cdot x)$，按 top-$k$ 选 expert。$W_r$ 是路由权重矩阵。<em>问题</em>：$W_r$ 跟主干一起训，<strong>当 $x$ 出现 outlier 时 $W_r \cdot x$ 也出 outlier</strong>，softmax 塌成 one-hot，路由失稳。</dd>
+            <dd>根据 token 表示计算专家 affinity score，再选择 top-$k$ 专家。V4 使用 Sqrt(Softplus) 计算 affinity，并结合负载均衡机制。报告指出 routing 可能加剧 MoE outlier，但没有把过程具体归结为 softmax 塌缩。</dd>
 
             <dt>$\theta_t$ vs $\theta_{t-\Delta t}$（参数解耦）</dt>
-            <dd>$\theta_t$ = 当前 step 的全部参数；$\theta_{t-\Delta t}$ = $\Delta t$ 步前的快照。Anticipatory 的核心：<em>路由 index 用 $\theta_{t-\Delta t}$ 中的 $W_r$ 算</em>，而 expert 内部权重和主干仍用 $\theta_t$。<strong>路由的更新慢半拍</strong>，从而对当前 batch 的 outlier 不敏感。</dd>
+            <dd>$\theta_t$ 是当前 step 的参数，$\theta_{t-\Delta t}$ 是历史参数。Anticipatory 的核心是：特征计算使用 $\theta_t$，路由 index 则提前用 $\theta_{t-\Delta t}$ 计算并缓存，从而解耦 backbone 与 routing network 的同步更新。</dd>
 
             <dt>Anticipatory（前瞻 / 提前 fetch）</dt>
             <dd>具体实现：在 step $t-\Delta t$ 时就把"将来 step $t$ 要用的路由 index"算好缓存起来。$\Delta t$ 步后，主干用最新 $\theta_t$ 算激活，但路由 index 直接读缓存（用的是历史 $\theta$）。<em>开销 ~20%</em>（要多跑一次 router 前向 + EP 通信，但与 EP 通信 overlap），<em>仅在 spike 检测器触发时启用</em>。</dd>
 
             <dt>SwiGLU（Shazeer 2020）</dt>
-            <dd>$\mathrm{SwiGLU}(x) = (W_g x \odot \sigma(W_g' x)) \cdot W_o$ —— 其中 $W_g x$ 是<em>线性分量</em>，$\sigma(W_g' x)$ 是 sigmoid 门控（亦写作 $\mathrm{SiLU}$ 形式 $\sigma(z)\cdot z$）。<strong>乘性结构是其表达力的来源，也是 outlier 放大器</strong>：两个 ~5 的值相乘成 ~25，再过 $W_o$ 又是一次放大。</dd>
+            <dd>SwiGLU 将线性分量与经过 SiLU 的门控分量逐元素相乘，再经过输出投影。V4 分别限制这两个输入分量的数值范围，以直接抑制 MoE 层中的异常激活。</dd>
 
             <dt>Outlier（异常激活值）</dt>
-            <dd>训练中正常激活范数 ~$O(1)$，但偶尔出现某个 channel 上 ~10–100 的极端值。来源多：(1) 罕见 token 在某 head 触发；(2) RoPE 在长序列下某些频率累积；(3) MoE 某个 expert 训练不足。<em>SwiGLU 把它们指数放大，路由把它们变成 one-hot —— 两条都是稳定性杀手</em>。</dd>
+            <dd>报告观察到 MoE 层中的 outliers 与 spike 一致出现，并认为 routing 会加剧其形成；没有将来源进一步归因于罕见 token、RoPE 频率或特定 expert，也没有给出 10–100 的数值范围。</dd>
 
             <dt>Clamping（硬钳位 / 截断）</dt>
-            <dd>$\mathrm{clamp}(x, a, b) = \min(\max(x, a), b)$。比 LayerNorm / RMSNorm 更暴力的截断方式，<em>无参数</em>。优点：单次前向就能杀掉 outlier；缺点：在边界处梯度为 0，模型可能"学不到"边界外的有用信号。<strong>V4 的实证结论：[-10,10] 阈值下，性能不掉、稳定性大涨</strong>。</dd>
+            <dd>$\mathrm{clamp}(x, a, b) = \min(\max(x, a), b)$。V4 将线性分量限制在 $[-10,10]$，并把门控分量的上界设为 10。报告称这种做法有效消除 outlier、改善稳定性，且未观察到性能受损。</dd>
 
             <dt>实证主义（"先开源，理论再说"）</dt>
-            <dd>论文罕见地写"理论解释还不充分"。这是 DeepSeek 工程文化的体现：<em>1.6T 训练上反复证明有效就值得公开</em>，藏起来反而是社区损失。这种实证 &gt; 解释的姿态，本身是 V4 报告值得学习的部分。</dd>
+            <dd>报告明确说，两项技术虽在训练中有效，其底层机制仍缺少完整理论理解，并公开这些经验以供社区继续研究。这里应把“实测有效”与“机制已被解释”分开。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>这两个 trick 都不"治本"，但都"治标"得极好 —— Anticipatory 把路由的反馈环延迟 Δt 步打断正反馈，Clamping 把 SwiGLU 的乘性放大器加上电压保护。它们与 Ch11 的训练框架优化、Ch9 的 bit-identical 一起，让 V4 的 1.6T 训练真的能跑完 60 天而不爆。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>Anticipatory Routing 用历史参数计算 routing indices，SwiGLU Clamping 直接限制异常激活。两者均在 V4 训练中改善稳定性；报告没有披露训练持续 60 天，也没有证明它们完全消除 spike。</div>
         </div>
 
-        <!-- ================== §1 spike 的解剖 ================== -->
-        <h3 id="anatomy">1. Loss Spike 的解剖：路由 + SwiGLU 的双正反馈</h3>
+        <!-- ================== §1 spike 的观察 ================== -->
+        <h3 id="anatomy">1. 报告观察到什么：MoE outlier 与 loss spike 相关</h3>
         <p>
-          要理解这两条 trick 为什么有效，先看 spike 是怎么诞生的。在 1.6T MoE 训练里，一次 spike 的<em>典型时序</em>：
+          简单回滚只能暂时恢复训练，不能阻止 spike 再次出现。报告进一步观察到，spike 持续伴随 MoE 层 outlier，routing 机制似乎会加剧 outlier。作者因此从两个方向处理问题：
         </p>
         <ol>
-          <li><strong>$t=0$</strong>：某个 batch 含罕见 token 序列（如 base64 编码、emoji 集群）；</li>
-          <li><strong>$t=0$ 内</strong>：该 token 在某层产生 outlier 激活 $\|x\|$ ~ 50（正常 ~1）；</li>
-          <li><strong>$t=0$ 内</strong>：路由 $W_r \cdot x$ 也跟着 ~50，softmax 塌成 one-hot 全发某 expert；</li>
-          <li><strong>$t=0$ 内</strong>：那个 expert 收到全部流量，SwiGLU 乘性结构把 50 ×50 → 2500，再过 $W_o$ → 输出范数 ~200；</li>
-          <li><strong>$t=1$</strong>：反向梯度 $\nabla W_r \propto x \cdot \nabla r$ 也是 ~50 量级，<strong>$W_r$ 朝"再次塌成 one-hot 那个方向"被推</strong> → 下次相似 token 时 spike 更严重；</li>
-          <li><strong>几步内</strong>：路由完全固化，所有流量都去那个 expert，其他 expert 失活，loss 一路飞。</li>
+          <li><strong>解耦同步更新</strong>：用历史参数提前计算 routing indices；</li>
+          <li><strong>直接限制异常值</strong>：对 SwiGLU 的线性和门控分量施加明确阈值。</li>
         </ol>
 
         <div class="numex">
-          <span class="numex-tag">数值演练 · spike 的指数放大链</span>
-          假设 outlier token 在某层制造 $\|x\| = 50$（正常 ~1）：
-          <ul>
-            <li><strong>SwiGLU 的双线性结构</strong>：线性分量 ~50，门控 sigmoid 饱和到 ~1，乘积 ~50。再过 $W_o$（按 Frobenius 范数 ~3），输出 ~150；</li>
-            <li><strong>路由的 softmax 塌陷</strong>：$\mathrm{softmax}([50, 1, 1, ..., 1])$ 第一项 $\approx 1$，其余 $\approx 0$。<em>top-6 被压成 top-1</em>；</li>
-            <li><strong>残差累积</strong>：mHC 残差 $\|B\| \approx 1.05$ 下放大 $1.05^{61} \approx 18\times$，输出 ~2700；</li>
-            <li><strong>loss 跳变</strong>：cross-entropy 对 logits 范数敏感，$\|z\| = 2700$ 量级让 softmax 塌成 one-hot 错误预测，<strong>单 token loss 从 ~2 跳到 ~20</strong>。</li>
-          </ul>
-          这条链的每一步单独看都"小",合起来就是 spike。两条 trick 各斩断一环：<strong>Anticipatory 切第 5 步（路由的反馈环）；Clamping 切第 1 步（outlier 进 SwiGLU 前直接钳到 10）</strong>。
+          <span class="numex-tag">来源边界</span>
+          报告没有披露触发 spike 的 token 类型、outlier 范数、路由分布、损失跳变量或逐 step 因果轨迹。因此不应把 base64、emoji、one-hot 路由或一组假设范数写成 V4 的实测过程。
         </div>
 
         <!-- ================== §2 Anticipatory Routing ================== -->
@@ -114,13 +102,13 @@
           <div class="callout-title">📖 公式白话翻译</div>
           <p>这条公式翻成大白话是<strong>"路由用旧权重选 expert，expert 内部用新权重算激活"</strong>：</p>
           <ol>
-            <li><strong>$W_r^{(t-\Delta t)}$</strong>：$\Delta t$ 步前缓存下来的路由权重 —— 这是<em>慢的部分</em>，对当前 batch 的 outlier 不敏感；</li>
-            <li><strong>$x_t$</strong>：当前 step 真实激活 —— 即使 $x_t$ 出现 outlier，乘以的 $W_r$ 是旧版，<em>没有被它"教坏"过</em>；</li>
+            <li><strong>$W_r^{(t-\Delta t)}$</strong>：提前计算 routing indices 时使用的历史路由参数；</li>
+            <li><strong>$x_t$</strong>：符号上表示 step $t$ 的数据特征；实现中，step $t$ 的数据会在 $t-\Delta t$ 时提前取出并完成路由计算；</li>
             <li><strong>$\mathrm{topk}$</strong>：照常选 top-$k$ expert；</li>
             <li><strong>$\mathrm{Expert}_i^{(t)}$</strong>：expert 内部权重用最新 $\theta_t$ —— 这是<em>快的部分</em>，正常学习；</li>
             <li><strong>$x_t$ 仍走 $\theta_t$ 主干</strong>：所以特征质量不受影响。</li>
           </ol>
-          <p><strong>关键洞察</strong>：spike 的正反馈环 是 "outlier $x$ → $W_r \cdot x$ outlier → $\nabla W_r$ 朝 outlier 方向 → 下次更 outlier"。<em>把 $W_r$ 推迟 $\Delta t$ 步</em> 等于在反馈环里插了一段"延时电路"，它来不及响应这个 batch 的 outlier，等几步后噪声平均掉了，反馈环就<strong>断了</strong>。这就是为什么"治标"（不修 $W_r$ 本身）也能治住 spike。</p>
+          <p><strong>关键点</strong>：routing indices 与当前 backbone 特征不再由同一时刻的参数同步产生。报告实测这种解耦能改善稳定性，但也明确指出底层机制尚未得到完整解释，因此不把它扩写成已经证实的梯度反馈链。</p>
         </div>
 
         <h4 id="when">2.1 触发条件 + 开销</h4>
@@ -128,14 +116,14 @@
           Anticipatory 不是常开的。它只在<strong>spike 检测器</strong>报警时才启用：
         </p>
         <ul>
-          <li>检测器：监控 router output 的<em>熵</em>，当熵在几步内 ↓ 超过阈值（说明分布在塌陷成 one-hot）→ 触发；</li>
-          <li>触发后 ~100 step 持续启用 anticipatory，让反馈环冷却；</li>
-          <li>稳定后回退 standard router；</li>
-          <li>开销：anticipatory 模式下 ~20%（多算一次 router 前向、与 EP 通信 overlap），<em>正常模式 0 开销</em>。</li>
+          <li>系统自动检测 loss spike，触发短回滚并启用 Anticipatory Routing；</li>
+          <li>运行一段时间后恢复标准训练；报告没有披露检测指标、阈值或持续步数；</li>
+          <li>启用时需要为未来数据额外进行一次前向，并通过流水与 EP 通信重叠，将 wall-clock 开销控制在约 20%；</li>
+          <li>由于只在 spike 后动态启用，报告将总体额外训练开销描述为 negligible。</li>
         </ul>
 
         <p>
-          所以训练总开销几乎无感（按 spike 触发率 ~2% step 估算，wall-time 增加 0.4%），<strong>但 spike 频率从每 2K step 一次降到几乎为 0</strong>。
+          报告没有公开 spike 触发率、总 wall-time 百分比或“每 2K steps 一次”等频率，因此无法进一步推算总体触发次数。
 
         </p>
 
@@ -162,11 +150,11 @@
           <div class="callout-title">📖 公式白话翻译</div>
           <p>这两条钳位翻成大白话是<strong>"线性分量给上下界电压保护，门控分量只防爆顶"</strong>：</p>
           <ol>
-            <li><strong>$g \leftarrow \mathrm{clamp}(g, -10, 10)$</strong>：线性分量是<em>对称的</em>（可正可负），$\pm 10$ 双向截断。$\pm 10$ 这个值远超正常激活的 ±3-4，所以正常 token 不受影响；</li>
+            <li><strong>$g \leftarrow \mathrm{clamp}(g, -10, 10)$</strong>：线性分量同时设置上下界；报告没有披露正常激活的经验分布；</li>
             <li><strong>$u \leftarrow \min(u, 10)$</strong>：门控经过 SiLU 后<em>近似 ReLU</em>（负值被压到 0 附近），只需要防上爆；</li>
             <li><strong>无下界</strong>：因为 SiLU 本身能处理负值（导数小但非 0），不需要钳。</li>
           </ol>
-          <p>这条 clamp 的关键性质是<em>对正常激活完全无感</em> —— 99.9% 的 token 激活在 $|g| \le 4$ 区间，钳位不触发。但 0.1% 的 outlier 触发后，乘积 $g \cdot u \le 100$，<strong>而非未钳位时的 $\sim 50 \times 50 = 2500$</strong>。一刀斩掉 25× 的乘性放大。</p>
+          <p>钳位只会改变越过阈值的分量，因此阈值内激活保持不变。报告没有披露 99.9%/0.1% 的分布，也没有给出统一的 25× 降幅。</p>
         </div>
 
         <div class="viz" id="viz-swiglu">
@@ -229,9 +217,9 @@
             </label>
           </div>
           <p class="viz-caption">
-            <strong>读图法</strong>：横轴是输入激活范数 $|x|$，纵轴是 SwiGLU 输出范数（log 标度）。红线是未钳位的 SwiGLU $\sim x^2$ 增长（线性 × 门控），<em>$|x|=50$ 时输出已 ~2500</em>。绿线是钳位后：在 $|x| \le 10$ 段两条重合（钳位不触发，正常学习），$|x| > 10$ 后绿线被截断在 ~100。
+            <strong>读图法</strong>：这是把两个分量都简化为同一个标量 $x$ 后得到的示意曲线，不是实际 SwiGLU 分布。它只说明乘性结构在输入变大时增长更快，以及钳位如何限制示例上界。
             <br>
-            把滑条拉到 <strong>30 以上</strong>看"倍数差" —— 钳位让最严重的 outlier 输出降低 25×+，<em>这就是单步 spike 被切断的根因</em>。99.9% token 在 $|x| \le 4$ 区间，钳位对它们等同 no-op。
+            把滑条拉到 <strong>30 以上</strong>可以观察示意模型中的差距。实际收益取决于两个 SwiGLU 分量的联合分布；报告只给出“稳定性改善且不损性能”的经验结论。
           </p>
         </div>
 
@@ -242,18 +230,17 @@
             Anticipatory Routing 和 SwiGLU Clamping 看似无关，但它们共享一种<em>反"完美主义"</em>的工程姿态：
           </p>
           <ol>
-            <li><strong>不假装子系统永远正常</strong>：路由会塌陷、SwiGLU 会爆，<em>这是物理事实</em>，不可能靠纯优化消除；</li>
+            <li><strong>直接约束已观察到的失稳路径</strong>：报告记录了 routing collapse 与异常 SwiGLU activation，并分别用历史路由参数和 clamping 缓解；</li>
             <li><strong>但限制爆炸的传播半径</strong>：路由爆 → 延迟 $\Delta t$ 步让反馈断；SwiGLU 爆 → 钳位让乘积有上界；</li>
-            <li><strong>正常路径完全无干扰</strong>：trigger 触发率 &lt;1%，正常 token 走原路径；</li>
+            <li><strong>按需启用</strong>：Anticipatory Routing 只在检测到 spike 后短暂启用；报告没有披露触发率；</li>
             <li><strong>实证 &gt; 解释</strong>：DeepSeek 老实承认理论尚不充分，但 1.6T 训练上反复验证有效。</li>
           </ol>
-          <p>这与 mHC（Ch3）"残差矩阵从主干隔出"、Ch9 "批不变换可调试性"是同一种姿态：<strong>把"难驯服"的子系统物理隔离，而不是花无穷力气让它"完美"</strong>。这就是 V4 工程文化的核心。</p>
+          <p>两项机制都把稳定性问题转化为显式约束：routing indices 暂时使用历史参数计算，异常 SwiGLU activation 则被限制在阈值内。它们与 mHC、确定性 kernel 的目标不同，不宜归为同一种算法。</p>
         </div>
 
         <h3 id="summary">5. 一句话总结</h3>
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
-          <p>spike 是"outlier → router 塌陷 / SwiGLU 放大"两条正反馈环的合谋；<strong>Anticipatory 把 router 那条延迟 $\Delta t$ 步打断，Clamping 把 SwiGLU 那条加电压保护</strong>。两者都不治本（outlier 仍然存在），但都"治标"得极好 —— 这就是 V4 在 1.6T 规模下能稳定训练 60 天的关键之一。</p>
+          <p>报告观察到 spike 与 MoE outliers 相关，routing 可能进一步加剧它们。Anticipatory Routing 解耦 routing indices 与当前主干参数，Clamping 则限制 SwiGLU 数值范围。两项技术在 V4 训练中有效，但作者明确指出其完整理论机制仍待研究。</p>
         </div>
 
       </article>
@@ -268,7 +255,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: SwiGLU clamping curve

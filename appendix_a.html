@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="styles.css?v=20260724-5" />
 </head>
 <body data-base="" data-page="appendix_a">
 
@@ -41,20 +41,20 @@
           <p class="term-name">五条战线 = 知识 / 推理 / Agent / 长上下文 / 真实任务；前四条由 standard benchmark 衡量，最后一条由内部盲评 + 工程师问卷衡量</p>
           <p>
             一句话：<strong>把 standard benchmark 的"客观分数"和真实使用的"主观胜率"分开看</strong>。
-            前者是<em>能力上限</em>（V4 是否在 SOTA 半径内），后者是<em>体感下限</em>（V4 是否真好用）。论文 §5.3 + §5.4 分别承担这两件事。
+            前者便于横向比较模型能力，后者补充真实使用中的主观偏好与任务通过率。两类评测回答的问题不同，不能互相替代。
           </p>
           <dl>
             <dt>Reasoning Effort（推理强度）</dt>
-            <dd>同一模型用不同长度 thinking chain 解题。V4 训练成三档：<strong>Non-think</strong> / <strong>High</strong> / <strong>Max</strong>（详见 Ch16），对应 RL 阶段不同 length penalty + context window。<em>所有 V4 评测都标了档位</em>，比如 "DS-V4-Pro Max"。</dd>
+            <dd>同一模型支持三档：<strong>Non-think</strong> / <strong>High</strong> / <strong>Max</strong>（详见 Ch16），对应 RL 阶段不同 length penalty 与 context window。报告在相关评测表中区分这些模式，例如 “DeepSeek-V4-Pro-Max”。</dd>
 
             <dt>Pass@k / Pass@1</dt>
-            <dd>k 次采样里至少 1 次答对的概率（k=1 即一发命中率）。代码 / 数学 benchmark 标准指标。Pass@8 比 Pass@1 严格许多 —— 8 次都不许答对才算失败，但成本也是 8×。</dd>
+            <dd>k 次采样里至少 1 次答对的比例（k=1 即一发命中率）。在其它条件相同的情况下，Pass@8 比 Pass@1 更容易取得高分，因为 8 次中任意一次成功即可；代价是最多使用 8 倍采样预算。</dd>
 
             <dt>Pass Rate（DeepSeek 内部 Code Agent 评测）</dt>
             <dd>论文 §5.4.4 的"Code Agent"任务通过率：从 50+ 工程师真实工单筛选 ~200 任务，人工评分后保留 30 任务作为评测集，跑通就计 pass。<em>不是 Pass@1，是单次跑通率</em>，因为每个任务可能涉及多文件 + 多步执行，重采样意义不大。</dd>
 
             <dt>MRCR（Multi-Round Coreference Resolution）</dt>
-            <dd>1M 长上下文核心 benchmark：在 8K~1M context 下做 8-needle 多指代解析。指标 MMR (mean reciprocal rank) 越高越好。<em>对长上下文是命门测试</em>，因为指代关系跨段引用，必须真正"看到"远端 token 才能答对。</dd>
+            <dd>1M 长上下文 benchmark，在 8K–1M context 下测试 8-needle 多轮指代解析。V4 报告将指标记为 Average MMR，但没有在正文中展开缩写；这里不将其擅自定义为 mean reciprocal rank。</dd>
 
             <dt>HLE (Humanity's Last Exam)</dt>
             <dd>2025 年推出的"前沿研究水平"高难度测试，覆盖数学 / 物理 / 化学 / 生物 / 历史 / 法律。<em>对 reasoning effort 极敏感</em>：Non-think 几乎全错，Max 模式下 V4-Pro 拿到 ~38%。</dd>
@@ -63,10 +63,10 @@
             <dd>形式化数学的双轨设计：<strong>Practical</strong>（Putnam-200 Pass@8 + 最小工具 + 受限采样，测"工程友好"上限）和 <strong>Frontier</strong>（Putnam-2025 hybrid formal-informal + 大算力，测"理论可达"上限）。两轨同评，反映模型在<em>受限</em>与<em>放开</em>两种条件下的能力分布。</dd>
 
             <dt>Codeforces Rating（Elo）</dt>
-            <dd>实时编程竞赛 Elo 评级，与人类选手在同一池里排位。V4-Pro Max 拿到 <strong>3206</strong>（论文 Table 6, p. 38），相当于<em>人类前 23 名</em>，是首个在 Codeforces 上压过 GPT-5.4 与 Gemini-3.1-Pro 的开源模型。</dd>
+            <dd>基于 14 场 Codeforces Div. 1、共 114 道题的内部评测，并按标准 Codeforces 评级体系计算。V4-Pro-Max 得到 <strong>3206</strong>（论文 Table 6, p. 38），对应人类候选者第 23 名；表中 GPT-5.4 为 3052，Gemini-3.1-Pro 未报告 Codeforces 分数。</dd>
 
             <dt>SimpleQA-Verified</dt>
-            <dd>简单事实问答的精确匹配版本（每答必须精确，无 partial credit）。<em>对幻觉极敏感</em>：模型不知道就乱答的话，分数会塌。是"知识储量"的金标准之一。</dd>
+            <dd>简单事实问答的核验版本，以精确答案衡量参数化知识表现。它能反映一部分事实准确性，但不能单独代表开放式回答中的总体幻觉率。</dd>
 
             <dt>Agentic Search vs RAG（论文 §5.4.2, p. 42）</dt>
             <dd><strong>RAG</strong>：retrieval 一次后把结果喂给模型；<strong>Agentic Search</strong>：模型可<em>迭代</em>调用 search/fetch 工具直到满意。前者对应 Non-think 模式、后者对应 Think 模式。<em>Agentic 版总成本仅<strong>略高</strong>于 RAG，但复杂任务提升显著</em>（Table 9 vs Table 11）。</dd>
@@ -111,7 +111,7 @@
             横轴 Total Tokens（推理消耗），纵轴 Pass@1 (%)。
             <strong>左 HLE</strong>：V4-Pro 与 V4-Flash 从 None → High → Max 三档逐档攀升，Pro-Max 摸到 ~38%，Flash-Max ~33%；V3.2-Speciale 仅在 Think 模式下 ~15%。
             <strong>右 TerminalBench 2.0</strong>：V4-Pro Max 接近 70%，V4-Flash Max ~60%，V3.2 折合到 Think 也只 ~30%。
-            两张图都在告诉一个事实 —— <em>V4 三档 reasoning effort（Ch16）兑现了"同模型覆盖 100× token budget"的承诺</em>。
+            两张图展示 reasoning effort 与长上下文评测结果。8K、128K、384K 是三档评测窗口，不应改写为“训练覆盖 100× token budget”的承诺。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 10，p. 41。</span>
           </figcaption>
         </figure>
@@ -120,7 +120,7 @@
           论文 Figure 10（p. 41）的 HLE 与 TerminalBench 2.0 曲线：Non-think → Think High → Think Max 三档 token 成本接近线性，但 Pass@1 增量显著。这条曲线说明三件事：
         </p>
         <ul>
-          <li><strong>Max 不是简单加更多 think token</strong>，而是 RL 阶段降低长度惩罚 + 增大上下文窗口（Ch16 §4 详述：context 8K / 128K / 384K 对应三档）；</li>
+          <li><strong>Max 不只是多生成 token</strong>：三档在 RL 中使用不同 length penalty、context window 和 response format，Max 还加入特殊 system prompt；8K / 128K / 384K 是评测窗口。</li>
           <li>同一 reasoning budget 下，V4 的 token 利用率高于 V3.2-Speciale（论文 Figure 10 中 V3.2-Speciale 的 None/High 点位明显低于 V4 同等档）；</li>
           <li>Flash-Max 与 Pro-Max 在简单任务上几乎重合，复杂任务（如 Apex / HLE）才显著拉开。</li>
         </ul>
@@ -133,7 +133,7 @@
             <li>高 budget 下：模型已经把主要 lemma 推完，剩下 token 在<em>验证 / 重述</em>，$\Delta I$ 衰减；</li>
             <li>所以 Pass@1 随 budget 是<strong>对数饱和</strong>形，不是线性 —— 这就是 Figure 10 曲线的形状根源。</li>
           </ol>
-          <p>实际意义：<em>很难任务下"再加 token" 仍有收益</em>（Max 比 High 贵 2× 但精度仍能涨 2–3 分）；<em>简单任务上 Max 浪费</em>（多花 60K token 涨不到 1 分）。这就是为什么 V4 把三档训成三个 checkpoint 而非用同一 checkpoint 配不同 budget。</p>
+          <p>实际意义：困难任务在更高 reasoning effort 下仍可能受益，简单任务则可能出现边际收益递减。报告说明三档在 RL 中采用不同 length penalty、context window 与 response format，但没有说它们是三个独立发布 checkpoint。</p>
         </div>
 
         <h3 id="mrcr">2. MRCR 1M 衰减曲线（论文 Figure 9, p. 40）</h3>
@@ -143,7 +143,7 @@
           <figcaption>
             <strong>图 A-3 · MRCR 8-needle 长上下文衰减曲线（论文 Figure 9，§5.3.2，p. 40）。</strong>
             横轴 8K → 1024K 输入 token，纵轴 Average MMR。32K 处 V4-Pro-Max 摸到峰值 0.94，V4-Flash-Max 0.87；进入 256K 后两条曲线一起下滑，<strong>1024K 时 Pro 降至 0.59、Flash 降至 0.49</strong>。
-            <em>解读</em>：CSA + HCA + 长 context schedule（Ch13）让 128K 之内几乎无衰减、256K-512K 有可控下降；超过 512K 后召回准确率明显折损 —— 这是 V4 长上下文能力的<em>真实边界</em>，比厂商常说的"支持 1M"更诚实。
+            <em>解读</em>：两款模型在 8K–128K 间有波动但没有持续下降；从 256K 起分数明显降低。曲线反映整套模型与训练配置的结果，不能仅凭该图把表现单独归因于 CSA、HCA 或长度调度。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 9，p. 40。</span>
           </figcaption>
         </figure>
@@ -156,12 +156,12 @@
           <span class="numex-tag">数值演练 · MRCR 衰减点位</span>
           论文 Figure 9（p. 40）数据点（V4-Pro-Max）：
           <ul>
-            <li>8K → 32K：0.90 → 0.94（峰值），<em>仍在涨，因为更多 context 让指代消歧更容易</em>；</li>
+            <li>8K → 32K：0.90 → 0.94（图中峰值）；图表没有解释这段上升的具体原因；</li>
             <li>32K → 128K：0.94 → 0.92，平稳；</li>
             <li>128K → 256K：0.92 → 0.82，<em>开始衰减</em>；</li>
             <li>256K → 1M：0.82 → 0.59，<strong>急降 23 个百分点</strong>。</li>
           </ul>
-          这说明 V4 的"<em>1M 可用</em>"是真的（59% 仍远高于 baseline 25%），但<em>1M 下的能力已不是 128K 下那种"几乎无衰减"的表现</em>。论文 §6（p. 44）conclusion 明确说要继续投入这块。
+          这说明模型能够在 1M 输入上完成该任务，但 Pro-Max 的分数已从 128K 的 0.92 降至 0.59，不能把“支持 1M”理解成全长度范围内性能不衰减。报告结论也将进一步提升超长上下文能力列为后续方向。
         </div>
 
         <h3 id="putnam">3. 形式化数学：Putnam 双轨制（论文 Figure 8, p. 40）</h3>
@@ -172,7 +172,7 @@
             <strong>图 A-4 · Putnam 双轨评测（论文 Figure 8，§5.3.2，p. 40）。</strong>
             <strong>左 Practical Regime</strong>（Putnam-200 Pass@8，受限 tools + bounded sampling）：Seed-1.5-Prover 26.50 / Gemini-3-Pro 26.50 / Seed-2.0-Pro 35.50 / <em>DeepSeek-V4-Flash-Max <strong>81.00</strong></em>。
             <strong>右 Frontier Regime</strong>（Putnam-2025 hybrid formal-informal，大算力）：Aristotle 100/120 / Seed-1.5-Prover 110/120 / Axiom 120/120 / DeepSeek-V4 120/120。
-            两套规则下 V4 都摸到了天花板，体现 Specialist 阶段对数学专家的精雕。
+            Practical 中 Flash-Max 得到 81.0；Frontier 中标注为 DeepSeek-V4 的系统得到 120/120。两者评测设置和模型标注不同，不能合并成同一模型“两边都满分”。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.3.2 Evaluation Results，Figure 8，p. 40。</span>
           </figcaption>
         </figure>
@@ -182,11 +182,11 @@
             <thead><tr><th>设置（论文 Figure 8）</th><th>含义</th><th>V4-Flash-Max</th><th>对照</th></tr></thead>
             <tbody>
               <tr><td>Practical Regime</td><td>Putnam-200 Pass@8，最小工具与有限采样</td><td><strong>81.0</strong></td><td>Seed-2.0-Prover 35.5 / Gemini-3-Pro 26.5</td></tr>
-              <tr><td>Frontier Regime</td><td>Putnam-2025 hybrid formal-informal + 大算力</td><td><strong>120/120</strong></td><td>Aristotle 100/120 / Axiom 120/120</td></tr>
+              <tr><td>Frontier Regime</td><td>Putnam-2025 hybrid formal-informal + 大算力</td><td>DeepSeek-V4：<strong>120/120</strong>（报告未标为 Flash-Max）</td><td>Aristotle 100/120 / Axiom 120/120</td></tr>
             </tbody>
           </table>
         </div>
-        <p>双轨制说明 V4 既能在<strong>受限工具/采样</strong>下打满（Practical 81.0 远超开源 prover），又能在<strong>大算力</strong>下与最强 prover 持平（Frontier 完美 120/120 与 Axiom 并列）。</p>
+        <p>Practical 设置下 Flash-Max 得到 81.0，并非满分；Frontier 设置下 DeepSeek-V4 得到 120/120，与 Axiom 并列。两项结果使用不同题集、工具和计算预算。</p>
 
         <h3 id="comparison">4. 与闭源旗舰对比（论文 Table 6, p. 38）</h3>
         <p>论文 Table 6（p. 38，本附录节选 Pro-Max 对比 vs 闭源旗舰）：</p>
@@ -213,7 +213,7 @@
         <div class="callout callout-warn">
           <div class="callout-title">怎么读这张表</div>
           <p>
-            V4-Pro 是<em>第一份在 Codeforces / LiveCodeBench / Apex Shortlist 上压过闭源旗舰</em>的开源模型；知识类（MMLU-Pro / SimpleQA / GPQA / HLE）落后 Gemini-3.1-Pro 与 GPT-5.4；长上下文 1M 仍未追上 Opus 4.6（83.5 vs 92.9）。论文 §5.3.2（p. 38）自评：开源模型相对前沿闭源仍有约 <em>3-6 个月差距</em>。
+            V4-Pro-Max 在 LiveCodeBench、Codeforces 与 Apex Shortlist 上表现很强，但各闭源模型并非每项都有报告值，不能概括成同时“压过所有闭源旗舰”。论文称，这是开源模型首次在这类编程竞赛任务上达到闭源模型的可比水平。知识类仍落后部分领先闭源模型，MRCR 1M 也低于 Opus 4.6（83.5 vs 92.9）。报告根据标准推理基准的相对表现判断，与前沿模型约有 <em>3–6 个月</em>差距。
           </p>
         </div>
 
@@ -234,7 +234,7 @@
           </table>
         </div>
         <p>
-          推理类（HMMT / Apex / HLE）从 Non-think 到 Max 提升 30-80 分；知识 / 工程类（SimpleQA / SWE）提升 7-13 分。这与 Ch16 §4 demo 的"<em>三档曲线在难任务上才显著分化</em>"完全吻合。
+          不同 benchmark 对 reasoning effort 的敏感度不同：部分数学、代码与推理任务提升更明显，知识或工程任务的增幅较小。具体差值应按各表中的模型和指标读取，不能由此概括所有“难任务”。
         </p>
 
         <!-- ================== A.2 ================== -->
@@ -274,8 +274,8 @@
           <img src="figures/Appendix_A/5.png" alt="V4 论文 Figure 11+12：白领任务胜率分布与四维度明细分">
           <figcaption>
             <strong>图 A-5 · 白领任务胜负平分布与维度细分（论文 Figure 11 + Figure 12，§5.4.3，p. 43）。</strong>
-            <strong>左 Figure 11 Win Rate</strong>：V4-Pro-Max vs Opus-4.6-Max，按 analysis / generation / editing / overall 四组堆叠 Win / Tie / Lose（蓝/灰/红）。<em>analysis 段 V4 win 39.0% / lose 33.0% 略微领先，generation 52.0% / 38.0% 明显领先，editing 47.0% / 25.0% 大幅领先，overall 53.0% / 37.0% 整体领先</em>。
-            <strong>右 Figure 12 Detailed Scores</strong>：四维度评分 Task Completion 99.13 / 96.88、Instruction Following 87.76 / 84.88、Content Quality 83.32 / 79.10、Formatting Aesthetics 72.68 / 84.06、Overall ~84 / ~83。<em>唯一明显落后的是 Formatting Aesthetics</em>—— 印证正文中提到的"slide / 视觉版面设计能力一般"。
+            <strong>左 Figure 11 Win Rate</strong>：analysis 55/8/37，generation 52/10/38，editing 47/18/35，overall 53/10/37（Win/Tie/Lose）。
+            <strong>右 Figure 12 Detailed Scores</strong>：Task Completion 98.32/96.68、Instruction Following 87.76/88.88、Content Quality 83.32/78.00、Formatting Aesthetics 76.68/72.68、Overall 86.52/84.06（DeepSeek/Opus）。论文同时指出，DeepSeek 的 slide 整体视觉设计仍有改进空间。
             <span class="fig-source">来源：DeepSeek-V4 技术报告 §5.4.3 White-Collar Task，Figure 11 + Figure 12，p. 43。</span>
           </figcaption>
         </figure>
@@ -363,8 +363,7 @@
 
         <h3 id="summary">A.3 一句话总结</h3>
         <div class="callout callout-info">
-          <div class="callout-title">把整章压成一句话</div>
-          <p>V4-Pro-Max 是<strong>第一份在 Codeforces / LiveCodeBench / Apex Shortlist 上压过闭源旗舰的开源模型</strong>，知识类落后 Gemini-3.1-Pro 约 18 分（SimpleQA-Verified）、长上下文 1M 落后 Opus 4.6 约 9 分（MRCR）；论文 §5.3.2（p. 38）自评开源相对前沿闭源仍有 <em>3-6 个月差距</em>。真实任务（§5.4, p. 41-44）里 V4 在中文写作 / 编码 Agent 上对 Opus 4.5 显著占优，多轮复杂 Instruction Following 与视觉版面设计仍是短板。</p>
+          <p>V4-Pro-Max 在代码竞赛评测上达到与领先闭源模型可比的水平，Codeforces 评级为 3206；在知识类和 1M 长上下文评测上仍有明显差距。论文依据标准推理基准判断其与前沿模型约有 <em>3–6 个月</em>差距。真实任务评测中，V4 在部分中文写作与 Code Agent 设置上表现突出，而低级错误、复杂多轮指令遵循和视觉版面设计仍是短板。</p>
         </div>
 
       </article>
@@ -379,7 +378,7 @@
   </aside>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: 五战线雷达图 vs 不同闭源旗舰

@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false});"></script>
-<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../styles.css?v=20260724-5" />
 </head>
 <body data-base="../" data-page="ch9">
 
@@ -33,33 +33,33 @@
       <article id="ch9" class="chapter">
         <div class="chapter-eyebrow"><span class="dot"></span>第二部分 · 基础设施 · 09</div>
         <h2 class="chapter-title">批不变与确定性 — 训推一致的护身符</h2>
-        <p class="chapter-sub">同一个 token，不论批次多大、不论排在哪个位置、不论训练还是推理，输出 bit 完全一致。这件事看起来"显而易见"，工程上却几乎所有 GPU 加速优化都默默破坏它 —— V4 是怎么逐个 patch 回来的。</p>
+        <p class="chapter-sub">V4 如何让同一 token 的输出不随 batch 位置改变，并让关键训练 kernel 在相同输入下确定性执行；重点包括 attention、GEMM、sparse-attention backward、MoE backward 与 mHC。</p>
 
         <!-- ================== 名词速通 ================== -->
         <div class="term-card">
           <div class="term-eyebrow">名词速通 · 一分钟看懂"批不变 + 确定性"</div>
           <p class="term-name">批不变 = 同一 token 单独跑、混在 batch 里跑、不同 batch size 跑，输出逐 bit 一致；确定性 = 同一份输入跑两次输出逐 bit 一致</p>
           <p>
-            一句话：<strong>大多数 GPU 优化都默认浮点结合律成立，所以会重排归约顺序换取并行度</strong>；这就破坏了"同一计算图同输入输出固定"的承诺。V4 选择放弃部分并行优化（split-K、atomicAdd），换 train / RL / infer 三段 bit-identical，让 loss spike 可调试、prompt cache 可命中、RL 优势函数可重放。
+            一句话：<strong>浮点归约顺序会影响末位结果，而 batch 组织和并行调度可能改变这个顺序</strong>。V4 通过固定计算路径、隔离累加 buffer 和确定性归约，提高预训练、后训练与推理 kernel 的位级对齐程度。
           </p>
           <dl>
             <dt>浮点结合律不成立</dt>
             <dd>$(a + b) + c \ne a + (b + c)$ 在 FP32 / BF16 下都常出现 1ULP 差异。原因：每次加法做 round-to-nearest，<em>累计误差和加法顺序绑死</em>。这是后面所有 patch 的根源：只要顺序变了，结果就变了。</dd>
 
             <dt>批不变（Batch Invariance）</dt>
-            <dd>性质 A：同一 token 在 batch_size=1 与 batch_size=4096 下走 forward，<em>logits 字节相同</em>。这是 prompt cache 命中、推理 split decode 一致、训练-推理对齐的前提。</dd>
+            <dd>性质 A：对相同 token 和上下文，输出不随它在 batch 中的位置改变。报告将这一性质用于训练复现和跨流水对齐；prompt cache 是否命中通常由 prefix、模型版本和配置键决定。</dd>
 
             <dt>确定性（Determinism）</dt>
             <dd>性质 B：同样代码 + 同样输入 + 同样 seed，跑两遍输出字节相同。<em>比批不变更弱</em>（不要求 batch 变化下也一致），但更基础 —— 没有它连"重启复现"都做不到。</dd>
 
             <dt>split-K（被放弃的优化）</dt>
-            <dd>大 GEMM 把 reduction 维 $K$ 切成多块并行算，最后归约。能把利用率从 60% 提到 90%，<em>但归约顺序由 SM 调度决定</em> —— batch size 一变，分块数变，顺序变，结果也变。V4 的 DeepGEMM 不用 split-K，靠其他优化追平性能。</dd>
+            <dd>大 GEMM 可把 reduction 维 $K$ 切成多块并行计算，再合并部分和。不同切法会改变归约顺序，因此常破坏 batch invariance。V4 在大多数场景放弃 split-K，并用其他优化弥补性能损失；报告没有给出 60%→90% 的固定利用率。</dd>
 
             <dt>atomicAdd（破坏确定性的元凶）</dt>
             <dd>多个 thread 并发加同一个地址，硬件保证<em>加完不丢</em>，但<strong>谁先加谁后加由调度决定</strong>。结果非确定。Sparse Attn 反向、MoE 反向都天然多 writer，原本最爱用它。</dd>
 
             <dt>DeepGEMM（V4 自研 GEMM）</dt>
-            <dd>替代 cuBLAS 的批不变 GEMM 实现。<em>不用 split-K</em>，靠 swizzle、persistent kernel、tile-level 流水把单 SM 利用率拉满。性能与 cuBLAS 持平甚至略胜。</dd>
+            <dd>V4 用 DeepGEMM 端到端替代传统 cuBLAS 路径，并针对小 batch 场景补偿不使用 split-K 的损失。报告称其在多数主要场景可匹配或超过标准 split-K 实现，但没有把原因归结为一组固定技巧。</dd>
 
             <dt>长序列单 SM 解码 + 末尾分布式补 wave</dt>
             <dd>Attention 推理的批不变方案：长 prefix 解码<em>固定一个 SM 串行算</em>（顺序固定），末尾 token 用 distributed shared memory 多 SM 并行补齐 —— <em>第二个 kernel 仍然按确定顺序归约</em>。</dd>
@@ -70,24 +70,23 @@
             <dt>mHC 反向的 split-K（不得不用）</dt>
             <dd>mHC 的 expansion 矩阵输出维只有 24，K 维 7168 → 必须 split-K。V4 的妥协：每个 split <em>单独 output 一个 buffer</em>，再用确定性 reduce kernel 求和（顺序按 split id）。</dd>
           </dl>
-          <div class="term-tagline"><strong>一句话定位：</strong>"批不变 + 确定性"是一组放弃<em>非结合优化</em>换<em>可调试性 + 训推一致 + 缓存命中</em>的工程交易。每一处都有显式代价（DeepGEMM 不用 split-K、Sparse Attn 反向不用 atomicAdd、mHC 自己写 reduce），合起来让 V4 的 1.6T 训练真正可工程化。</div>
+          <div class="term-tagline"><strong>一句话定位：</strong>"批不变 + 确定性"通过固定并行路径和归约顺序，换取更强的可复现调试与训推对齐。主要做法包括大多数 GEMM 避免 split-K、Sparse Attention 反向避免跨 SM atomicAdd，以及 mHC 使用独立部分和与确定性归约。</div>
         </div>
 
         <!-- ================== §1 浮点结合律不成立 ================== -->
         <h3 id="float">1. 一切问题的根源：浮点加法不结合</h3>
         <p>
-          GPU 一切并行归约的优化都默默假设 $(a+b)+c = a+(b+c)$。但这条在 IEEE-754 浮点下<em>从来不成立</em>：每次加法都要 round-to-nearest，<strong>round 的方向取决于当时 mantissa 谁的位多</strong>，所以哪两个数先加会改变最后一位 bit。
+          并行归约常会重排加法顺序，而 IEEE-754 浮点加法通常不满足严格结合律：每次运算都要舍入，因而不同的分组方式可能得到不同的末位结果。
         </p>
 
         <div class="callout callout-info">
           <div class="callout-title">📖 公式白话翻译 · 1ULP 差异是怎么来的</div>
-          <p>BF16 只有 7 bit mantissa，假设算 $1.0 + 1\mathrm{e}{-3} + 1\mathrm{e}{-3}$：</p>
+          <p>BF16 在 $[1,2)$ 区间相邻可表示数相差 $2^{-7}=0.0078125$。令 $x=3\cdot2^{-10}=0.0029296875$，比较 $1+x+x$ 的两种顺序：</p>
           <ul>
-            <li><strong>顺序 A：$(1.0 + 0.001) + 0.001$</strong>。第一步 1.001 → BF16 量化为 $1.0$（小数被吞），再加 0.001 还是 $1.0$。<em>结果 = 1.0</em>。</li>
-            <li><strong>顺序 B：$1.0 + (0.001 + 0.001)$</strong>。第一步 0.002 在 BF16 下是 ~$0.001953$（精确），再加 1.0 → 1.001953 → BF16 量化 → 约 <em>$1.00195$</em>。</li>
+            <li><strong>顺序 A：$(1+x)+x$</strong>。$x$ 小于半个 ULP，第一次相加舍入回 1；第二次仍舍入回 1。<em>结果 = 1.0</em>。</li>
+            <li><strong>顺序 B：$1+(x+x)$</strong>。$x+x=0.005859375$，超过 1 附近的半个 ULP，最终舍入到下一个 BF16 数。<em>结果 = 1.0078125</em>。</li>
           </ul>
-          <p>两个顺序差 ~$2\mathrm{e}{-3}$ —— 在大数 + 一堆小数的累加里这就是<strong>1 ULP 量级的偏差</strong>。看似无害，但累计 1 万次后偏差量级 $\sqrt{10^4}\times 1\text{ULP} = 100$ ULP，足以让 logits 翻不同 token，让 RL 的优势计算翻号。</p>
-          <p>所以"批不变 + 确定性"不是<em>哲学洁癖</em>，而是<strong>"同一段计算的语义</strong>"。要么你接受"每次跑结果不一样、loss spike 永远复现不了"，要么你按下面的方式一项一项守住顺序。</p>
+          <p>这个例子说明归约顺序可以改变结果，但误差不会普遍按 $\sqrt{N}$ 固定增长，也不能据此断言一定会改变采样 token 或 advantage 符号。确定性 kernel 的价值在于去掉这类随调度变化的数值分支，使异常更容易复查。</p>
         </div>
 
         <!-- ================== VIZ: 浮点求和顺序敏感性 ================== -->
@@ -123,9 +122,9 @@
             <button class="viz-btn" id="fp-bigger">N → 64（更大数组）</button>
           </div>
           <p class="viz-caption">
-            <strong>读图法</strong>：四个求和都用 FP32（IEEE-754 单精度）。同一组 16 个数，A/B/C/D 仅<em>顺序</em>不同。"差异 ULP" = (max - min) / ULP(max)。<em>典型差异 1–10 ULP，最坏可达 100+ ULP</em>。
+            <strong>读图法</strong>：四个求和都用 FP32（IEEE-754 单精度）。同一组 16 个数，A/B/C/D 仅<em>顺序</em>不同。"差异 ULP" = (max - min) / ULP(max)。具体差异由输入值和顺序共同决定。
             <br>
-            把 N 加到 64 你能看到差异变得更明显 —— GEMM 的 K 维常 4K-32K，那里的差异会更显著。这就是 split-K 一旦 K 切法变化，结果就变化的本质来源。<strong>V4 的批不变 = 把"顺序"作为一阶语义钉死</strong>。
+            把 N 加到 64 可以观察更长归约链，但差异不保证单调增大。这个示意解释了 split-K 改变归约分组后为何可能改变末位结果；V4 的相关 kernel 通过固定计算路径和确定性归约消除这类调度差异。
           </p>
         </div>
 
@@ -144,20 +143,15 @@
           <li><strong>末尾 wave kernel</strong>：剩下的几十个 token（远小于 SM 数）用 distributed shared memory 跨 SM 协同，但<em>归约阶段按 SM id 排序</em>，仍然确定。</li>
         </ul>
         <p>
-          代价是 prefix 部分单 SM 跑慢约 1.5×，但因为 prefix 通常 cache 命中，绝对开销可接受；末尾 wave 阶段并行度足够，综合下来推理 throughput 比 split-KV 慢 ~10%，换来 batch-invariant logits。
+          固定并行与归约方式会限制部分调度自由。报告称批不变 kernel 仅带来很小开销，但没有给出“单 SM 慢 1.5×”或“整体慢约 10%”的数字。
         </p>
 
-        <h4>2.2 GEMM：DeepGEMM 不用 split-K</h4>
+        <h4>2.2 GEMM：多数场景避免 split-K</h4>
         <p>
-          cuBLAS 在大 K（≥ 4K）时默认 split-K，<em>每个 batch 大小自动选不同切法</em>。V4 自研 DeepGEMM 把 split-K 整体砍掉，靠下面三件事追平性能：
+          报告指出传统 cuBLAS 不能满足 batch invariance，而小 batch GEMM 常借助 split-K 提高性能。V4 端到端使用 DeepGEMM，并在多数场景避免 split-K，再通过专门优化弥补性能损失。报告没有披露 $K\ge4K$ 的切换规则，也没有列出固定的三项实现技巧。
         </p>
-        <ol>
-          <li><strong>Persistent kernel</strong>：一个 kernel 内手动循环 N×M tile，避免反复 launch；</li>
-          <li><strong>Tile-level pipeline</strong>：load 下一 tile 与 compute 当前 tile 重叠，让 SM 利用率不靠 split-K 也能 ≥ 85%；</li>
-          <li><strong>Swizzle layout</strong>：shared memory 按 banks 错位排，避免 bank conflict。</li>
-        </ol>
         <p>
-          实测在 V4 的典型 GEMM shape 下 DeepGEMM 比 cuBLAS-split-K <em>快 2–5%</em>，并且 batch_size 任意变化字节相同。
+          报告称这些优化使实现能在多数主要场景匹配或超过标准 split-K，同时保持 batch invariance，但没有公布统一速度区间。
         </p>
 
         <!-- ================== §3 确定性：sparse attn 反向 / MoE 反向 ================== -->
@@ -196,42 +190,41 @@
         <ul>
           <li>每个 K-split <em>单独 output 到独立 buffer</em>（不直接归约）；</li>
           <li>归约由<em>专门的 deterministic reduce kernel</em> 完成，按 split id 顺序累加；</li>
-          <li>split id 与 batch size 无关，由 K 维分块决定 → batch-invariant 仍然成立。</li>
+          <li>各部分和的缓冲区和归约顺序固定，从而避免原子加法带来的非确定到达顺序。</li>
         </ul>
 
         <div class="numex">
           <span class="numex-tag">数值演练 · 这些 patch 的代价</span>
           <ul>
-            <li><strong>Attention 单 SM prefix</strong>：单 layer 推理慢 ~1.5×，但因 prefix cache 命中率高，整体 wall-time 慢 ~10%；</li>
-            <li><strong>DeepGEMM vs cuBLAS</strong>：实测<em>持平或快 2–5%</em>（大 K 下持平、小 K 下快）；</li>
-            <li><strong>Sparse Attn 反向 buffer</strong>：每 SM 一份 key 切片显存 ~40 MB（H100 SMs=132），可接受；</li>
-            <li><strong>MoE 反向排序</strong>：dispatch 阶段额外 ~5 µs，相对 all-to-all ~480 µs 可忽略；</li>
-            <li><strong>mHC 自定 reduce</strong>：额外 ~3% mHC 层时间，相对总训练 0.2%；</li>
+            <li><strong>Attention</strong>：固定并行方式可能降低部分 shape 下的峰值吞吐；</li>
+            <li><strong>GEMM</strong>：避免依赖 batch size 改变 split-K 策略；</li>
+            <li><strong>Sparse Attention / MoE / mHC backward</strong>：通过固定归约顺序和独立 buffer 换取确定性；</li>
+            <li>报告将这些设计的整体开销描述为 minimal 或 negligible，没有逐项给出毫秒、显存或百分比。</li>
           </ul>
-          <strong>合计代价 ~3–8% wall-time</strong>。换回的是"loss spike 可逐 bit 重放" + "prompt cache 全命中" + "RL rollout 与训练对齐"，工程上是赚的。
+          这些设计的主要价值是复现与调试。不能由此推出 prompt cache “全命中”；缓存键通常由 token prefix、模型版本和配置决定。
         </div>
 
         <!-- ================== §4 为什么这件事重要 ================== -->
-        <h3 id="why">4. 为什么这件事是隐藏 MVP</h3>
+        <h3 id="why">4. 为什么这件事重要</h3>
         <div class="callout callout-good">
-          <div class="callout-title">三件事少一样都做不成</div>
+          <div class="callout-title">主要工程价值</div>
           <ol>
-            <li><strong>调试</strong>：1.6T 模型在第 N 步爆 NaN，没有 bit-identity → 重启复现已偏；有 bit-identity → 保存 checkpoint，重新跑到那一步，attach debugger，<em>逐 head 逐 token 看到底是哪个数先溢出</em>。这是 V4 1.6T 工程化的根本姿态。</li>
-            <li><strong>训推一致</strong>：训练时 logits=L_train，推理同 prompt 给 L_infer。如果两者 bit 不同，RL 的 advantage = log(π_infer / π_train) 永远不为 0，整个 rollout 数据有偏。批不变让 L_train = L_infer 字节相同，<em>RL 的 reward 信号干净</em>。</li>
-            <li><strong>缓存命中</strong>：prompt cache 按 logits / KV 哈希命中。批不变让<em>同一段 prompt 在不同 batch_size、不同部署位置</em>命中同一份 cache，节省 30%+ prefill 算力。</li>
+            <li><strong>调试</strong>：相同输入和执行条件下得到相同结果，有助于复现硬件、软件故障和 loss spike，并缩小数值问题的排查范围。</li>
+            <li><strong>流水对齐</strong>：预训练、后训练和推理采用位级对齐的关键 kernel，可减少实现差异带来的额外分布偏移；这不意味着所有训练与推理 logits 在任意配置下都自动相同。</li>
+            <li><strong>缓存复用</strong>：确定性有助于验证复用结果一致，但 prompt cache 通常按 token prefix 和模型配置建立键。报告没有声称命中率提升 30%。</li>
           </ol>
         </div>
 
         <p>
-          所以批不变 + 确定性<em>不是为了"理论纯洁"</em>，而是为了让前面所有奇技淫巧（CSA / HCA / Muon / FP4 QAT / MegaMoE）<strong>可被复现、可被调试、可被部署</strong>。它是看不见的护城河 —— 平时谁都不会感谢它，出 bug 的那一天它救命。
+          批不变与确定性 kernel 的直接价值是：相同输入在不同 batch 组织或重复运行时保持一致，便于定位训练异常并减少训推实现差异。它是一项基础设施能力，不需要用“护城河”来放大结论。
         </p>
 
         <h3>本章小结</h3>
         <ul>
-          <li>浮点不结合是一切非确定性的根源；GPU 一切并行归约优化默认它结合。</li>
+          <li>浮点加法通常不满足严格结合律；并行归约一旦改变加法分组，末位结果就可能变化。</li>
           <li>批不变 = 同 token 跨 batch_size 字节一致；确定性 = 同输入跨次运行字节一致。两者都不是免费的。</li>
           <li>V4 在 Attention（双 kernel）、GEMM（DeepGEMM 不 split-K）、Sparse Attn 反向（SM-local + 顺序 reduce）、MoE 反向（排序 + buffer）、mHC 反向（split-K + 自定 reduce）逐项守住。</li>
-          <li>合计代价 3–8% wall-time，<strong>换 loss spike 可调、训推 logits 一致、prompt cache 命中</strong>。</li>
+          <li>报告称整体额外开销很小；收益主要是可复现调试与更严格的训推一致性。</li>
         </ul>
 
       </article>
@@ -246,7 +239,7 @@
   </aside>
 </div>
 
-<script src="../app.js"></script>
+<script src="../app.js?v=20260724-5"></script>
 
 <!-- ============================================================
      VIZ: 浮点求和顺序敏感性
